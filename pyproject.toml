@@ -1,0 +1,25 @@
+[project]
+name = "foluma-engine"
+version = "0.1.0"
+description = "Foluma's local document engine"
+requires-python = ">=3.11"
+dependencies = ["PyMuPDF>=1.24,<2", "Pillow>=10,<13"]
+
+[project.optional-dependencies]
+dev = ["ruff>=0.11", "pyinstaller>=6.15"]
+
+[project.scripts]
+foluma-engine = "foluma.__main__:main"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["engine"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP"]

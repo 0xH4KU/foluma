@@ -1,0 +1,38 @@
+name: Check and build
+on: [push, pull_request, workflow_dispatch]
+jobs:
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install -e '.[dev]'
+          npm ci
+          rustup update stable --no-self-update
+      - name: Check
+        run: |
+          .venv/bin/ruff check engine tests scripts
+          npm run test:engine
+          npm test
+          npm run build
+      - name: Package
+        run: |
+          npm run tauri -- build --bundles app
+          codesign --verify --deep --strict src-tauri/target/release/bundle/macos/Foluma.app
+          ditto -c -k --sequesterRsrc --keepParent src-tauri/target/release/bundle/macos/Foluma.app artifacts/Foluma-macos-arm64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: foluma-macos-arm64
+          path: |
+            artifacts/Foluma-macos-arm64.zip
+            artifacts/*.mte-plugin
+            artifacts/catalog.json

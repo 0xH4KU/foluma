@@ -1,0 +1,15 @@
+{
+  "id": "org.foluma.language.zh-hant",
+  "name": "Traditional Chinese (繁體中文)",
+  "version": "0.2.0",
+  "api_version": 1,
+  "description": "Traditional Chinese translations for Foluma and the page editor.",
+  "platforms": [
+    "all"
+  ],
+  "language": {
+    "locale": "zh-Hant",
+    "name": "繁體中文",
+    "messages": "messages.json"
+  }
+}

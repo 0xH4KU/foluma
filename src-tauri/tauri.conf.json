@@ -1,0 +1,46 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Foluma",
+  "version": "0.1.0",
+  "identifier": "io.github.0xh4ku.foluma",
+  "build": {
+    "beforeDevCommand": "npm run package:editor && npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run package:editor && npm run build:engine && npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Foluma",
+        "width": 1180,
+        "height": 820,
+        "minWidth": 860,
+        "minHeight": 600
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self' foluma: http://foluma.localhost; style-src 'self' 'unsafe-inline' foluma: http://foluma.localhost; img-src 'self' data: blob: foluma: http://foluma.localhost; connect-src ipc: http://ipc.localhost 'self' foluma: http://foluma.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "app",
+      "dmg"
+    ],
+    "resources": {
+      "../build/engine/": "engine/"
+    },
+    "icon": [
+      "icons/icon.png",
+      "icons/icon.icns"
+    ],
+    "shortDescription": "A local workspace for books and pages",
+    "category": "Productivity",
+    "macOS": {
+      "signingIdentity": "-",
+      "hardenedRuntime": true
+    }
+  }
+}

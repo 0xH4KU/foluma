@@ -1,0 +1,31 @@
+{
+  "name": "foluma",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc --noEmit && vite build",
+    "build:editor": "vite build --config plugins/editor/vite.config.ts",
+    "package:editor": "npm run build:editor && .venv/bin/python scripts/package_plugin.py",
+    "tauri": "tauri",
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "test:engine": ".venv/bin/python -m unittest discover -s tests -p 'test_*.py'",
+    "build:engine": ".venv/bin/python scripts/build_engine.py"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-dialog": "^2.7.3",
+    "@tauri-apps/plugin-opener": "^2.5.5",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.5",
+    "@types/node": "^24.13.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.6"
+  }
+}

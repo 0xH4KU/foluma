@@ -1,0 +1,10 @@
+:root,:host {
+  --ink: #25282c;
+  --muted: #646b73;
+  --paper: #ededed;
+  --surface: #ffffff;
+  --side: #f5f5f5;
+  --line: #bec2c7;
+  --accent: #3778b5;
+  --hover: #e3ebf3;
+}
