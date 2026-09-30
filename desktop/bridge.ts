@@ -4,8 +4,9 @@ import {LogicalPosition} from "@tauri-apps/api/dpi";
 import {convertFileSrc, invoke} from "@tauri-apps/api/core";
 import {listen} from "@tauri-apps/api/event";
 import {ask, open, save} from "@tauri-apps/plugin-dialog";
-import type {Book, FileOptions, HostAPI, Page, Series, Task} from "../sdk/types";
+import type {Book, FileOptions, HostAPI, Series, Task} from "../sdk/types";
 import {documentRef} from "../sdk/types";
+import {createPreviewLoader} from "./previews";
 
 let book: Book | null = null;
 const listeners = new Set<(book: Book | null) => void>();
@@ -65,19 +66,8 @@ export async function task<T>(params: Record<string, unknown>): Promise<T> {
     taskListeners.forEach(fn => fn(latest));
   });
 }
-// Cache promises as well as completed thumbnails so mounted views share in-flight requests.
-const previews = new Map<string, Promise<string>>();
-async function preview(current: Book, page: Page, size = 320) {
-  const key = `${current.id}/${page.id}/${page.crop}/${size}`;
-  let result = previews.get(key);
-  if (!result) {
-    result = rpc<string>("document.preview", {document_id: current.id, page_id: page.id, size}).then(resourceUrl);
-    previews.set(key, result);
-    result.catch(() => previews.delete(key));
-    if (previews.size > 1500) previews.delete(previews.keys().next().value!);
-  }
-  return result;
-}
+const preview = createPreviewLoader((current, page, size) =>
+  rpc<string>("document.preview", {document_id: current.id, page_id: page.id, size}).then(resourceUrl));
 export function createHost(report: HostAPI["report"], notify: HostAPI["notify"]): HostAPI {
   let contextMenu: Menu | undefined;
   let contextItems: MenuItem[] = [];

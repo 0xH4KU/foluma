@@ -29,12 +29,14 @@ function PageImage({book, page, host, size = 320, splitRatio}: {book: Book; page
   const image = useRef<HTMLImageElement>(null);
   const [bounds,setBounds] = useState({width: 0, height: 0});
   const showGuide = splitRatio !== undefined;
-  const key = `${book.id}/${page.id}/${page.crop}/${size}`;
+  const asset = book.assets[page.asset_id || ""];
+  const key = JSON.stringify([book.id,page.id,page.crop,size,asset?.path,book.sources[asset?.source_id || ""]?.path]);
   useEffect(() => {
-    let active = true; setUrl(""); setError("");
-    if (page.kind !== "blank") host.preview(book,page,size).then(value => {if (active) setUrl(value);})
-      .catch(reason => {if (active) setError(String(reason));});
-    return () => {active = false;};
+    const controller = new AbortController(); setUrl(""); setError("");
+    if (page.kind !== "blank") host.preview(book,page,size,controller.signal)
+      .then(value => {if (!controller.signal.aborted) setUrl(value);})
+      .catch(reason => {if (!controller.signal.aborted) setError(String(reason));});
+    return () => controller.abort();
   }, [key]);
   useEffect(() => {
     const node = image.current;

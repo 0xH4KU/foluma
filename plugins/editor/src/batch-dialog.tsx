@@ -1,5 +1,5 @@
 import React, {useEffect, useRef, useState} from "react";
-import type {HostAPI} from "../../../sdk/types";
+import type {HostAPI, RenderResolution} from "../../../sdk/types";
 import {t} from "../../../sdk/i18n";
 import {runBatch, type BatchRow} from "./batch";
 
@@ -10,7 +10,7 @@ export function BatchDialog({host, close, initialPaths = []}: {host: HostAPI; cl
   const [preset,setPreset] = useState("");
   const [directory,setDirectory] = useState("");
   const [render,setRender] = useState(false);
-  const [dpi,setDpi] = useState(300);
+  const [dpi,setDpi] = useState<RenderResolution>("auto");
   const [running,setRunning] = useState(false);
   const [finished,setFinished] = useState(false);
   useEffect(() => {dialog.current!.showModal(); return () => {abort.current.abort();};}, []);
@@ -39,7 +39,7 @@ export function BatchDialog({host, close, initialPaths = []}: {host: HostAPI; cl
     <fieldset disabled={running}>
       <label>{t("Layout preset")}<button title={preset} aria-label={t("Layout preset: {0}",preset.split(/[\\/]/).pop() || t("Choose preset…"))} onClick={() => void pick("preset")}>{preset.split(/[\\/]/).pop() || t("Choose preset…")}</button></label>
       <label>{t("Output folder")}<button title={directory} aria-label={t("Output folder: {0}",directory || t("Choose folder…"))} onClick={() => void pick("folder")}>{directory || t("Choose folder…")}</button></label>
-      <div className="batch-render"><label><input type="checkbox" checked={render} onChange={event => setRender(event.target.checked)}/>{t("Allow rendering complex PDF pages")}</label><select aria-label={t("Render resolution")} disabled={!render} value={dpi} onChange={event => setDpi(Number(event.target.value))}>{[72,150,200,300,400,600].map(value => <option key={value} value={value}>{value} DPI</option>)}</select></div>
+      <div className="batch-render"><label><input type="checkbox" checked={render} onChange={event => setRender(event.target.checked)}/>{t("Allow rendering complex PDF pages")}</label><select aria-label={t("Render resolution")} disabled={!render} value={dpi} onChange={event => setDpi(event.target.value === "auto" ? "auto" : Number(event.target.value))}><option value="auto">{t("Auto (recommended)")}</option>{[72,150,200,300,400,600].map(value => <option key={value} value={value}>{value} DPI</option>)}</select></div>
       <button onClick={() => void pick("pdf")}>{t("Choose PDFs…")}</button>
     </fieldset>
     <div className="batch-results" aria-live="polite"><table><thead><tr><th>{t("PDF")}</th><th>{t("Result")}</th></tr></thead><tbody>{rows.map(row => <tr key={row.path}><td title={row.path}>{row.path.split(/[\\/]/).pop()}</td><td>{labels[row.state]}{row.output && <small>{row.output}</small>}{row.error && <small className="danger">{row.error}</small>}</td></tr>)}</tbody></table></div>

@@ -6,6 +6,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from .image_types import ImageStream, PdfImageError
+from .object_parser import _read_pdf_object
 
 
 def images_in_pdf_page_order(pdf_path: Path, load_payloads: bool = True) -> list[ImageStream]:
@@ -44,9 +45,16 @@ def _image_from_xref(
     if subtype[1] != "/Image":
         return None
 
-    filter_type, filter_value = doc.xref_get_key(xref, "Filter")
-    if filter_type == "name":
-        filter_name = filter_value.removeprefix("/")
+    # Check the dictionary before extract_image can allocate decoded pixels.
+    width = _xref_required_int(doc, xref, "Width")
+    height = _xref_required_int(doc, xref, "Height")
+    if width <= 0 or height <= 0 or width * height > 100_000_000:
+        raise PdfImageError("Image dimensions must be positive and cannot exceed 100 million pixels")
+
+    image_filter = _xref_object(doc, xref, "Filter") or b""
+    single_filter = re.fullmatch(rb"/(\w+)|\[\s*/(\w+)\s*\]", image_filter)
+    if single_filter:
+        filter_name = (single_filter[1] or single_filter[2]).decode("ascii")
     else:
         extracted = doc.extract_image(xref)
         ext = extracted["ext"]
@@ -79,12 +87,12 @@ def _image_from_xref(
         )
         return ImageStream(
             index=index,
-            width=_xref_required_int(doc, xref, "Width"),
-            height=_xref_required_int(doc, xref, "Height"),
+            width=width,
+            height=height,
             bits_per_component=_xref_required_int(doc, xref, "BitsPerComponent"),
             color_space=_xref_object(doc, xref, "ColorSpace"),
             filter_name=filter_name,
-            decode_parms=_xref_object(doc, xref, "DecodeParms"),
+            decode_parms=_image_decode_parms(doc, xref),
             data=payload[0],
             xref=xref,
             data_loader=payload[1],
@@ -96,12 +104,12 @@ def _image_from_xref(
         )
         return ImageStream(
             index=index,
-            width=_xref_required_int(doc, xref, "Width"),
-            height=_xref_required_int(doc, xref, "Height"),
+            width=width,
+            height=height,
             bits_per_component=_xref_required_int(doc, xref, "BitsPerComponent"),
             color_space=_normalize_xref_color_space(doc, _xref_object(doc, xref, "ColorSpace")),
             filter_name=filter_name,
-            decode_parms=_normalize_pdf_object(_xref_object(doc, xref, "DecodeParms")),
+            decode_parms=_image_decode_parms(doc, xref),
             data=payload[0],
             xref=xref,
             data_loader=payload[1],
@@ -199,6 +207,20 @@ def _normalize_pdf_object(obj: bytes | None) -> bytes | None:
     if obj is None:
         return None
     return obj.strip()
+
+
+def _image_decode_parms(doc, xref: int) -> bytes | None:
+    value = _xref_object(doc, xref, "DecodeParms")
+    if value and value.startswith(b"["):
+        value = value[1:-1].strip()
+        reference = re.fullmatch(rb"(\d+)\s+\d+\s+R", value)
+        if reference:
+            value = doc.xref_object(int(reference[1]), compressed=True).encode("latin1")
+    if value in (None, b"null"):
+        return None
+    if not value.startswith(b"<<") or _read_pdf_object(value, 0) != value:
+        raise PdfImageError("Expected one image DecodeParms dictionary")
+    return value
 
 
 def _normalize_xref_color_space(doc, color_space: bytes | None) -> bytes | None:

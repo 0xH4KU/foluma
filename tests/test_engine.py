@@ -6,6 +6,7 @@ import sys
 import tempfile
 import time
 import unittest
+import zlib
 from pathlib import Path
 from unittest.mock import patch
 from zipfile import ZipFile, ZipInfo
@@ -13,6 +14,9 @@ from zipfile import ZipFile, ZipInfo
 import pymupdf as fitz
 from foluma.media import RenderRequired, export_epub, import_pdf, load_asset, preview
 from foluma.model import Session, new_id
+from foluma.pdf.image_extraction import _image_from_xref
+from foluma.pdf.image_types import PdfImageError
+from foluma.pdf.png import image_to_epub_member
 from foluma.plugins import Plugins, platform_id
 from foluma.service import Engine
 from foluma.storage import open_project, parse_json, save_project
@@ -78,6 +82,95 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual([a["kind"] for a in book["assets"].values()], ["file", "file", "pdf"])
         self.assertEqual(book["pages"][-1]["kind"], "blank")
 
+    def test_auto_rendering_tracks_visible_source_pixels_and_caps_large_pages(self):
+        path = self.root / "auto.pdf"
+        with fitz.open() as doc:
+            for width, height in ((24000, 32000), (240, 320), (320, 240), (240, 320)):
+                page = doc.new_page(width=width, height=height)
+                page.insert_image(page.rect, stream=self.jpeg, rotate=90 if width == 320 else 0)
+                page.insert_text((20, 40), "overlay")
+            doc[1].set_rotation(90)
+            doc[3].set_cropbox(fitz.Rect(60, 80, 180, 240))
+            page = doc.new_page(width=72, height=144)
+            page.insert_text((5, 20), "Text")
+            page = doc.new_page(width=23000, height=46000)
+            page.draw_rect(page.rect, fill=(1, 0, 0))
+            page = doc.new_page(width=1, height=60000)
+            page.draw_rect(page.rect, fill=(0, 0, 1))
+            page = doc.new_page(width=72, height=144)
+            page.insert_text((5, 20), "Small logo")
+            page.insert_image(fitz.Rect(0, 30, 3, 34), stream=self.jpeg)
+            doc.save(path)
+        with self.assertRaises(RenderRequired):
+            import_pdf(str(path), self.root / "assets")
+        book = import_pdf(str(path), self.root / "assets", render=True)
+        self.assertEqual(
+            [(p["width"], p["height"]) for p in book["pages"]],
+            [(240, 320), (320, 240), (320, 240), (120, 160), (200, 400), (3000, 6000), (1, 6000), (200, 400)],
+        )
+        self.assertAlmostEqual(next(iter(book["assets"].values()))["derived_from"]["dpi"], 0.72)
+        for asset in book["assets"].values():
+            with Image.open(asset["path"]) as image:
+                self.assertEqual(image.size, (asset["width"], asset["height"]))
+        with patch("foluma.media.fitz.Page.get_pixmap", side_effect=AssertionError("Allocate only after size check")):
+            with self.assertRaisesRegex(ValueError, "too large to render"):
+                import_pdf(str(path), self.root / "assets", render=True, dpi=300)
+        for dpi in (None, True, 0, 601, 150.5, "300", "invalid"):
+            with self.subTest(dpi=dpi), self.assertRaisesRegex(ValueError, "Render resolution"):
+                import_pdf(str(path), self.root / "assets", render=True, dpi=dpi)
+
+    def test_rendered_png_preserves_gray_levels_tints_and_compositing(self):
+        path = self.root / "render-colors.pdf"
+        pixels = bytes(v for _ in range(32) for level in range(256) for v in (level, level, level))
+        with fitz.open() as doc:
+            for tinted in (False, True):
+                image = Image.frombytes("RGB", (256, 32), pixels)
+                if tinted:
+                    image.putpixel((128, 16), (127, 128, 128))
+                buffer = io.BytesIO()
+                image.save(buffer, "PNG")
+                page = doc.new_page(width=256, height=32)
+                page.insert_image(page.rect, stream=buffer.getvalue())
+                page.insert_text((5, 15), "overlay")
+            doc.save(path)
+        book = import_pdf(str(path), self.root / "assets", render=True)
+        with fitz.open(path) as doc:
+            for page, asset, mode in zip(doc, book["assets"].values(), ("L", "RGB")):
+                expected = page.get_pixmap(dpi=72, alpha=False, colorspace=fitz.csRGB)
+                with Image.open(asset["path"]) as image:
+                    self.assertEqual(image.mode, mode)
+                    self.assertEqual(image.size, (256, 32))
+                    self.assertEqual(image.convert("RGB").tobytes(), expected.samples)
+                    self.assertAlmostEqual(image.info["dpi"][0], 72, delta=0.02)
+        output = self.root / "rendered.epub"
+        export_epub(book, str(output))
+        with ZipFile(output) as archive:
+            for asset_id, asset in book["assets"].items():
+                self.assertEqual(archive.read(f"EPUB/images/{asset_id}.png"), Path(asset["path"]).read_bytes())
+
+    def test_pdf_inspection_uses_drawn_resource_without_pixel_hashing(self):
+        path = self.root / "shared-resources.pdf"
+        unused = io.BytesIO()
+        Image.new("RGB", (240, 320), "blue").save(unused, "JPEG")
+        with fitz.open() as doc:
+            for name in ("Image", "Im#61ge", "Im#20age", "Im#23age"):
+                page = doc.new_page(width=240, height=320)
+                used_xref = page.insert_image(page.rect, stream=self.jpeg)
+                unused_xref = page.insert_image(page.rect, stream=unused.getvalue())
+                doc.xref_set_key(used_xref, "ColorSpace", "/DeviceRGB")
+                resources = int(doc.xref_get_key(page.xref, "Resources")[1].split()[0])
+                doc.xref_set_key(resources, "XObject", f"<< /Unused {unused_xref} 0 R /{name} {used_xref} 0 R >>")
+                content = page.get_contents()[0]
+                doc.update_stream(content, f"% /Unused Do\nq 240 0 0 320 0 0 cm /{name} Do Q".encode())
+                page.set_contents(content)
+            doc.save(path)
+        with patch("foluma.media.fitz.Pixmap", side_effect=AssertionError("Inspection must not hash image pixels")):
+            book = import_pdf(str(path), self.root / "assets")
+        self.assertEqual(len(book["pages"]), 4)
+        for asset_id, asset in book["assets"].items():
+            self.assertEqual(asset["xref"], used_xref)
+            self.assertEqual(load_asset(book, asset_id), self.jpeg)
+
     def test_flate_pixels_and_core_direction_keep_split_identity(self):
         png = io.BytesIO()
         original = Image.new("RGB", (240, 320), "#bada55")
@@ -109,6 +202,88 @@ class IntegrationTests(unittest.TestCase):
         session.apply(book["id"], 0, {"metadata": {"direction": "ltr"}})
         self.assertEqual([p["id"] for p in session.book["pages"]], [left["id"], right["id"]])
         self.assertRaises(ValueError, parse_json, '{"extension": NaN}')
+
+    def test_indexed_flate_inspection_and_preview_compress_only_on_export(self):
+        path = self.root / "indexed.pdf"
+        raw = bytes(range(256)) * 150  # 240 x 320 pixels, packed two 4-bit indices per byte.
+        palette = bytes(value * 17 for value in range(16) for _ in range(3))
+        expected = bytes(index * 17 for byte in raw for index in (byte >> 4, byte & 15) for _ in range(3))
+        with fitz.open(self.pdf) as doc:
+            xref = doc[0].get_images()[0][0]
+            doc.update_object(
+                xref,
+                "<< /Type /XObject /Subtype /Image /Width 240 /Height 320 /BitsPerComponent 4 "
+                f"/ColorSpace [/Indexed /DeviceRGB 15 <{palette.hex()}>] >>",
+            )
+            doc.update_stream(xref, raw, compress=True)
+            doc.save(path)
+        with patch("foluma.pdf.png.zlib.compress", wraps=zlib.compress) as compress:
+            book = import_pdf(str(path), self.root / "assets")
+            page = book["pages"][0]
+            rendered = self.root / preview(book, page["id"], 320, self.root / "previews")
+            self.assertEqual({call.kwargs["level"] for call in compress.call_args_list}, {0})
+            with Image.open(rendered) as image:
+                self.assertEqual(image.convert("RGB").tobytes(), expected)
+            compress.reset_mock()
+            output = self.root / "indexed.epub"
+            export_epub(book, str(output))
+            self.assertEqual({call.kwargs["level"] for call in compress.call_args_list}, {6})
+        with ZipFile(output) as archive:
+            with Image.open(io.BytesIO(archive.read(f"EPUB/images/{page['asset_id']}.png"))) as image:
+                self.assertEqual(image.convert("RGB").tobytes(), expected)
+
+    def test_pdf_filter_arrays_and_size_limits_before_decoding(self):
+        with fitz.open(self.pdf) as doc:
+            xref = doc[0].get_images()[0][0]
+            with patch.object(fitz.Document, "extract_image", side_effect=AssertionError("Unexpected PNG conversion")):
+                doc.xref_set_key(xref, "Filter", "[/DCTDecode]")
+                self.assertEqual(image_to_epub_member(_image_from_xref(doc, xref, 1)), ("jpg", self.jpeg))
+                raw = bytes(range(12))
+                predicted = b"\0" + raw[:6] + b"\2" + bytes([6] * 6)
+                doc.update_object(xref, "<< /Subtype /Image /Width 2 /Height 2 /BitsPerComponent 8 /ColorSpace /DeviceRGB >>")
+                doc.update_stream(xref, zlib.compress(predicted), compress=False)
+                params = "<< /Predictor 15 /Colors 3 /Columns 2 /BitsPerComponent 8 >>"
+                params_xref = doc.get_new_xref()
+                doc.update_object(params_xref, params)
+                filter_xref = doc.get_new_xref()
+                doc.update_object(filter_xref, "[/FlateDecode]")
+                for image_filter, decode_parms in (
+                    ("/FlateDecode", params), ("[/FlateDecode]", f"[{params}]"),
+                    (f"{filter_xref} 0 R", f"[{params_xref} 0 R]"),
+                ):
+                    doc.xref_set_key(xref, "Filter", image_filter)
+                    doc.xref_set_key(xref, "DecodeParms", decode_parms)
+                    _, payload = image_to_epub_member(_image_from_xref(doc, xref, 1), compression_level=0)
+                    with Image.open(io.BytesIO(payload)) as image:
+                        self.assertEqual(image.tobytes(), raw)
+                doc.update_stream(xref, zlib.compress(raw), compress=False)
+                doc.xref_set_key(xref, "Filter", "[/FlateDecode]")
+                doc.xref_set_key(xref, "DecodeParms", "[null]")
+                _, payload = image_to_epub_member(_image_from_xref(doc, xref, 1), compression_level=0)
+                with Image.open(io.BytesIO(payload)) as image:
+                    self.assertEqual(image.tobytes(), raw)
+            with (
+                patch.object(fitz.Document, "extract_image", side_effect=AssertionError("Decoded oversized image")),
+                patch.object(fitz.Document, "xref_stream_raw", side_effect=AssertionError("Read oversized image")),
+            ):
+                for image_filter in ("/DCTDecode", "[/FlateDecode]", "/JBIG2Decode", "null"):
+                    doc.xref_set_key(xref, "Filter", image_filter)
+                    for width in (0, -1, 100_000_001):
+                        doc.xref_set_key(xref, "Width", str(width))
+                        with self.assertRaises(PdfImageError):
+                            _image_from_xref(doc, xref, 1)
+
+    def test_worker_records_import_phase_timings(self):
+        engine = Engine(self.root / "timing-data")
+        self.addCleanup(engine.close)
+        with patch("sys.stderr", new=io.StringIO()) as log:
+            book = engine.run_worker("import", {"path": str(self.pdf)})
+        self.assertEqual(len(book["pages"]), 3)
+        timing = json.loads(log.getvalue().strip().removeprefix("[timing] "))
+        self.assertEqual(timing["operation"], "import")
+        self.assertEqual(set(timing["phases"]), {"Preparing", "Checking PDF pages", "Preparing pages"})
+        self.assertTrue(all(value >= 0 for value in timing["phases"].values()))
+        self.assertAlmostEqual(sum(timing["phases"].values()), timing["seconds"], delta=0.01)
 
     def test_atomic_edits_monotonic_history_and_project_roundtrip(self):
         session = Session(self.book)

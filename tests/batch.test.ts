@@ -24,6 +24,7 @@ for name,count in [('a',4),('b',6),('short',1)]:
  with fitz.open() as doc:
   for _ in range(count):
    page=doc.new_page(width=120,height=160); xref=page.insert_image(page.rect,stream=image.getvalue()); doc.xref_set_key(xref,'ColorSpace','/DeviceRGB')
+   if name=='b': page.insert_text((5,20),'overlay')
   doc.save(directory/'volume.pdf')
 Image.new('RGB',(120,160),'red').save(root/'insert.png')
 `,root]);
@@ -59,7 +60,10 @@ Image.new('RGB',(120,160),'red').save(root/'insert.png')
     await rpc("bundle.write",{...documentRef(book),path:preset,plugin:"org.foluma.editor",...createPreset(book)});
     const directory=join(root,"out");mkdirSync(directory);writeFileSync(join(directory,"volume.epub"),"keep me");
     const paths=[join(root,"a/volume.pdf"),join(root,"short/volume.pdf"),join(root,"b/volume.pdf")], rows: BatchRow[]=[];
-    await runBatch(host,{paths,preset,directory,render:false,dpi:300},new AbortController().signal,(index,row)=>rows[index]=row);
+    const autoBook = await host.task<Book>({operation:"import",path:paths[2],background:true,render:true});
+    assert.ok(Object.values(autoBook.assets).every(asset=>asset.kind==="file" && asset.width===120 && asset.height===160));
+    await rpc("document.release",{document_id:autoBook.id});
+    await runBatch(host,{paths,preset,directory,render:true,dpi:"auto"},new AbortController().signal,(index,row)=>rows[index]=row);
     assert.deepEqual(rows.map(row=>row.state),["completed","failed","completed"],JSON.stringify(rows));
     assert.match(rows[1].error!,/Missing preset asset or PDF page/);
     assert.equal(readFileSync(join(directory,"volume.epub"),"utf8"),"keep me");
@@ -88,7 +92,7 @@ print(json.dumps(counts))
     current=await host.apply(current,{pages:[...current.pages,{id:crypto.randomUUID(),kind:"blank",width:120,height:160}]});
     await rpc("series.review",{id:first.id,reviewed:true});
     const preserved=structuredClone(current), seriesRows: BatchRow[]=[];
-    await runBatch(host,{paths:[first.path,realpathSync(broken),realpathSync(paths[2]),realpathSync(paths[1])],entries:series.items,directory,render:false,dpi:300},new AbortController().signal,(index,row)=>seriesRows[index]=row);
+    await runBatch(host,{paths:[first.path,realpathSync(broken),realpathSync(paths[2]),realpathSync(paths[1])],entries:series.items,directory,render:true,dpi:"auto"},new AbortController().signal,(index,row)=>seriesRows[index]=row);
     assert.deepEqual(seriesRows.map(row=>row.state),["completed","failed","completed","completed"]);
     assert.deepEqual(await rpc("document.get"),preserved,"exporting the current series volume must preserve its edits and undo state");
     const finalSeries=await rpc<Series>("series.get");

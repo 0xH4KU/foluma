@@ -17,7 +17,7 @@ from . import __version__
 from .i18n import messages, t
 from .model import Session, new_id, validate
 from .plugins import Plugins, platform_id, unpack
-from .series import Series
+from .series import FolderProject, Series
 from .storage import atomic_json, digest, open_project, parse_json, save_project
 
 
@@ -81,7 +81,8 @@ class Engine:
         current = data / "series" / "current.json"
         if current.exists():
             try:
-                self.series = Series(data, parse_json(current.read_text("utf-8"))["paths"])
+                location = parse_json(current.read_text("utf-8"))
+                self.series = FolderProject(data, location["project"]) if "project" in location else Series(data, location["paths"])
                 identifier = self.series.state["current_id"]
                 if identifier:
                     self.session = self.series.load(self.series.item(identifier))
@@ -124,7 +125,11 @@ class Engine:
             raise ValueError(t("Parameters must be an object"))
         if method == "document.preview":
             with self.lock:
-                book = copy.deepcopy(self.document(p).book)
+                session = self.document(p)
+                item = self.series.current(session) if self.series else None
+                if item and self.series.managed:
+                    self.series.ensure_source(item)
+                book = copy.deepcopy(session.book)
             with self.preview_slots:
                 return self.run_worker("preview", {"book": book, "page_id": p["page_id"], "size": p.get("size", 320)})
         if method == "plugins.catalog":
@@ -165,6 +170,8 @@ class Engine:
                 self.background_sessions.pop(p["document_id"], None)
                 return True
             if method == "project.open":
+                if (Path(p["path"]) / ".foluma/project.json").is_file():
+                    return self.series_call("series.open_project", p)
                 self.session = Session(open_project(Path(p["path"])), p["path"])
                 return self.changed()
             if method == "project.save":
@@ -176,6 +183,9 @@ class Engine:
                 return self.changed(session)
             if method == "project.relink":
                 session = self.document(p, True)
+                item = self.series.current(session) if self.series else None
+                if item and self.series.managed:
+                    return self.series_call("series.relink", {"id": item["id"], "path": p["path"]})
                 source = session.book["sources"][p["source_id"]]
                 path = Path(p["path"]).resolve(strict=True)
                 if digest(path) != source["sha256"]:
@@ -219,6 +229,37 @@ class Engine:
             return self.series.snapshot() if self.series else None
         if any(job["state"] == "running" for job in self.jobs.values()):
             raise ValueError(t("Complete or cancel the current background task first"))
+        if method in ("series.create", "series.open_project", "series.migrate"):
+            if self.session:
+                self.changed()
+            if method == "series.open_project":
+                project = FolderProject(self.data, p["path"])
+            else:
+                previous = self.series if method == "series.migrate" else None
+                if method == "series.migrate" and (not previous or previous.managed):
+                    raise ValueError(t("Open a legacy series to migrate it"))
+                project = FolderProject.create(self.data, p["parent"], p["name"])
+                if previous:
+                    for item in previous.state["items"]:
+                        saved = previous.project(item)
+                        if not Path(item["path"]).is_file():
+                            project.import_missing(item, saved)
+                        else:
+                            project.add([str(saved) if (saved / "project.json").exists() else item["path"]])
+                        imported = project.state["items"][-1]
+                        for key in ("settings", "reviewed_revision", "exported_revision", "output"):
+                            imported[key] = copy.deepcopy(item[key])
+                        if item["id"] == previous.state["current_id"]:
+                            project.state["current_id"] = imported["id"]
+                    project.state["output_directory"] = previous.state["output_directory"]
+                    project.save()
+            current = project.state["current_id"]
+            session = project.load(project.item(current)) if current else None
+            project.activate()
+            self.series, self.session, self.series_error = project, session, None
+            self.background_sessions.clear()
+            self.notify("document.changed", session.snapshot() if session else None)
+            return self.series_changed()
         if method == "series.scan":
             if self.session:
                 self.changed()
@@ -227,6 +268,40 @@ class Engine:
             return self.series_changed()
         if not self.series:
             raise ValueError(t("Open a series folder first"))
+        if method in ("series.add", "series.move", "series.remove", "series.restore", "series.group",
+                      "series.delete_group", "series.refresh", "series.relink", "series.reorder"):
+            if not self.series.managed:
+                raise ValueError(t("Save this series as a folder project first"))
+            if self.session:
+                self.changed()
+            if method == "series.add":
+                self.series.add(p["paths"], p.get("group", ""))
+            elif method == "series.move":
+                self.series.move_books(p["ids"], p["group"])
+            elif method == "series.remove":
+                self.series.remove(p["ids"])
+            elif method == "series.restore":
+                self.series.restore(p["ids"])
+            elif method == "series.group":
+                self.series.group(p["name"], p.get("previous"))
+            elif method == "series.delete_group":
+                self.series.delete_group(p["name"])
+            elif method == "series.refresh":
+                self.series.refresh()
+            elif method == "series.relink":
+                self.series.relink(p["id"], p["path"])
+            elif method == "series.reorder":
+                self.series.reorder(p["ids"])
+            self.background_sessions.clear()
+            if self.session:
+                item = self.series.current(self.session)
+                if item:
+                    if item.get("removed"):
+                        self.session = None
+                    else:
+                        self.series.synchronize(item, self.session)
+                    self.notify("document.changed", self.session.snapshot() if self.session else None)
+            return self.series_changed()
         if method == "series.review":
             item = self.series.item(p["id"])
             if type(p.get("reviewed")) is not bool or item["revision"] is None:
@@ -334,7 +409,9 @@ class Engine:
         if operation == "series.open":
             if not self.series:
                 raise ValueError(t("Open a series folder first"))
-            self.series.item(p["entry_id"])
+            item = self.series.item(p["entry_id"])
+            if self.series.managed:
+                self.series.ensure_source(item)
             if self.session:
                 self.changed()
         elif operation != "import":
@@ -410,6 +487,8 @@ class Engine:
                 try:
                     for line in process.stdout:
                         message = parse_json(line)
+                        if "timing" in message:
+                            print("[timing] " + json.dumps(message["timing"], ensure_ascii=False), file=sys.stderr, flush=True)
                         if "progress" in message and job:
                             job["progress"] = message["progress"]
                             self.notify("task.changed", self.job_info(job))
@@ -494,7 +573,7 @@ class Engine:
                     entry = self.series.item(p["entry_id"])
                     saved = self.series.load(entry)
                 args = (
-                    {"path": entry["path"] if entry else p["path"], "render": p.get("render", False), "dpi": p.get("dpi", 300)}
+                    {"path": entry["path"] if entry else p["path"], "render": p.get("render", False), "dpi": p.get("dpi", "auto")}
                     if operation in ("import", "series.open")
                     else (
                         {"paths": p["paths"]}

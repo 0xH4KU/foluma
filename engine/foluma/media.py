@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import math
 import re
 from pathlib import Path
 from zipfile import ZIP_STORED, ZipFile
@@ -30,14 +31,13 @@ class RenderRequired(ValueError):
 
 def direct_image(doc, page):
     """Only accept a full-page, upright image drawn without other PDF operations."""
-    images = page.get_image_info(xrefs=True)
+    images = page.get_image_info()
     if not page.get_bboxlog() and not list(page.annots() or ()) and not list(page.widgets() or ()):
         return "blank", None
     if len(images) != 1 or page.rotation or list(page.annots() or ()) or list(page.widgets() or ()):
         return "render", None
     info = images[0]
-    xref = info["xref"]
-    if not xref or page.get_xobjects():
+    if page.get_xobjects():
         return "render", None
     a, b, c, d, x, y = info["transform"]
     rect = page.rect
@@ -55,6 +55,15 @@ def direct_image(doc, page):
     operation = rb"(?:[qQ]\s*|(?:" + number + rb"){6}cm\s*|/[\w.#-]+\s+Do\s*)"
     if not re.fullmatch(rb"\s*(?:" + operation + rb")*", stream):
         return "render", None
+    # Resolve the drawn resource directly: xrefs=True decodes and hashes every resource image.
+    names = re.findall(rb"/([\w.#-]+)\s+Do\b", stream)
+    if len(names) != 1:
+        return "render", None
+    name = re.sub(rb"#([0-9a-fA-F]{2})", lambda m: bytes([int(m[1], 16)]), names[0]).decode("latin1")
+    xrefs = {image[0] for image in page.get_images() if image[7] == name}
+    if len(xrefs) != 1:
+        return "render", None
+    xref = xrefs.pop()
     if any(doc.xref_get_key(xref, key)[0] != "null" for key in ("SMask", "Mask", "Decode")):
         return "render", None
     try:
@@ -65,9 +74,10 @@ def direct_image(doc, page):
             image.filter_name != "DCTDecode" and (image.color_space or b"").startswith(b"[/Indexed")
         ):
             return "render", None
-        ext, payload = image_to_epub_member(image)
+        # Inspection decodes this temporary PNG immediately; compression only helps exports.
+        ext, payload = image_to_epub_member(image, compression_level=0)
         with Image.open(io.BytesIO(payload)) as decoded:
-            if decoded.getexif().get(274, 1) != 1:
+            if decoded.size != (image.width, image.height) or decoded.getexif().get(274, 1) != 1:
                 return "render", None
             decoded.load()
         return "image", {"kind": "pdf", "xref": xref, "width": image.width, "height": image.height, "ext": ext}
@@ -75,10 +85,25 @@ def direct_image(doc, page):
         return "render", None
 
 
-def import_pdf(path: str, asset_dir: Path, render: bool = False, dpi: int = 300, progress=lambda *_: None) -> dict:
+def auto_render_scale(page) -> float:
+    """Follow a scan's displayed pixel density, with a 6000-pixel longest edge."""
+    bounds = page.rect * page.derotation_matrix
+    scale, largest = 200 / 72, 0
+    for image in page.get_image_info():
+        area = (fitz.Rect(image["bbox"]) & bounds).get_area()
+        a, b, c, d, _, _ = image["transform"]
+        width, height = math.hypot(a, b), math.hypot(c, d)
+        if area > largest and width > 0 and height > 0 and a * d != b * c:
+            largest = area
+            # ponytail: a dominant scan sets density; mixed layouts with only small images use 200 DPI.
+            scale = max(image["width"] / width, image["height"] / height) if area >= bounds.get_area() / 2 else 200 / 72
+    return min(scale, 6000 / max(page.rect.width, page.rect.height))
+
+
+def import_pdf(path: str, asset_dir: Path, render: bool = False, dpi: int | str = "auto", progress=lambda *_: None) -> dict:
     source = Path(path).resolve(strict=True)
-    if type(dpi) is not int or not 72 <= dpi <= 600:
-        raise ValueError(t("Render resolution must be between 72 and 600 DPI"))
+    if dpi != "auto" and (type(dpi) is not int or not 72 <= dpi <= 600):
+        raise ValueError(t("Render resolution must be Auto or between 72 and 600 DPI"))
     fingerprint = digest(source)
     with fitz.open(source) as doc:
         if not doc.is_pdf or doc.needs_pass:
@@ -86,6 +111,7 @@ def import_pdf(path: str, asset_dir: Path, render: bool = False, dpi: int = 300,
         if not len(doc):
             raise ValueError(t("The PDF has no pages"))
         inspected = []
+        progress(0, len(doc), t("Checking PDF pages"))
         for i, page in enumerate(doc):
             inspected.append(direct_image(doc, page))
             progress(i + 1, len(doc), t("Checking PDF pages"))
@@ -111,6 +137,7 @@ def import_pdf(path: str, asset_dir: Path, render: bool = False, dpi: int = 300,
             "extensions": {},
         }
         asset_dir.mkdir(parents=True, exist_ok=True)
+        progress(0, len(doc), t("Preparing pages"))
         for i, (kind, asset) in enumerate(inspected):
             page = doc[i]
             if kind == "blank":
@@ -125,18 +152,27 @@ def import_pdf(path: str, asset_dir: Path, render: bool = False, dpi: int = 300,
                 )
             else:
                 if kind == "render":
-                    if page.rect.width * page.rect.height * (dpi / 72) ** 2 > 100_000_000:
+                    scale = auto_render_scale(page) if dpi == "auto" else dpi / 72
+                    bounds = (page.rect * fitz.Matrix(scale, scale)).irect
+                    if bounds.width * bounds.height > 100_000_000:
                         raise ValueError(t("Page {0} is too large to render. Lower the DPI.", i + 1))
-                    pix = page.get_pixmap(dpi=dpi, alpha=False, colorspace=fitz.csRGB)
+                    pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False, colorspace=fitz.csRGB)
+                    pix.set_dpi(max(1, round(scale * 72)), max(1, round(scale * 72)))
                     rendered = asset_dir / f"{fingerprint}-{i + 1}-{dpi}.png"
-                    pix.save(rendered)
+                    image = pix.pil_image()
+                    colors = image.getcolors(256)
+                    # Exact gray detection: all 256 gray levels fit, and even a slight tint keeps RGB.
+                    if colors is not None and all(r == g == b for _, (r, g, b) in colors):
+                        image = image.convert("L")
+                    image.save(rendered, "PNG", compress_level=3, dpi=(pix.xres, pix.yres))
+                    image.close()
                     asset = {
                         "kind": "file",
                         "path": str(rendered),
                         "width": pix.width,
                         "height": pix.height,
                         "ext": "png",
-                        "derived_from": {"source_id": source_id, "page": i + 1, "dpi": dpi},
+                        "derived_from": {"source_id": source_id, "page": i + 1, "dpi": scale * 72},
                     }
                 else:
                     asset["source_id"] = source_id
@@ -151,13 +187,13 @@ def import_pdf(path: str, asset_dir: Path, render: bool = False, dpi: int = 300,
     return book
 
 
-def load_asset(book: dict, asset_id: str) -> bytes:
+def load_asset(book: dict, asset_id: str, *, compression_level: int = 6) -> bytes:
     asset = book["assets"][asset_id]
     if asset["kind"] == "file":
         return Path(asset["path"]).read_bytes()
     source = book["sources"][asset["source_id"]]
     with fitz.open(source["path"]) as doc:
-        ext, data = image_to_epub_member(_image_from_xref(doc, asset["xref"], 1))
+        ext, data = image_to_epub_member(_image_from_xref(doc, asset["xref"], 1), compression_level=compression_level)
         if ext != asset["ext"]:
             raise ValueError(t("Source image format changed"))
         return data
@@ -184,7 +220,7 @@ def preview(book: dict, page_id: str, size: int, directory: Path) -> str:
                 "RGB", (max(1, round(page["width"] * scale)), max(1, round(page["height"] * scale))), "white"
             )
         else:
-            with Image.open(io.BytesIO(load_asset(book, page["asset_id"]))) as original:
+            with Image.open(io.BytesIO(load_asset(book, page["asset_id"], compression_level=0))) as original:
                 if original.size != (page["width"], page["height"]):
                     raise ValueError(t("Asset dimensions do not match the project. Please import again."))
                 image = original.crop(crop_box(page))
@@ -263,10 +299,11 @@ def export_epub(book: dict, path: str, progress=lambda *_: None) -> dict:
     cover = next(p for p in book["pages"] if p["id"] == meta["cover_id"])
     cover_png = None
     if cover["crop"] != [0, 0, 1, 1]:
-        with Image.open(io.BytesIO(load_asset(book, cover["asset_id"]))) as image:
+        with Image.open(io.BytesIO(load_asset(book, cover["asset_id"], compression_level=0))) as image:
             buffer = io.BytesIO()
             image.crop(crop_box(cover)).save(buffer, "PNG")
             cover_png = buffer.getvalue()
+    progress(0, len(active), t("Writing EPUB images"))
     return write_epub_from_pages(
         pages,
         Path(path),

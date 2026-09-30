@@ -4,19 +4,21 @@ import {createRoot} from "react-dom/client";
 import {invoke} from "@tauri-apps/api/core";
 import {getCurrentWindow} from "@tauri-apps/api/window";
 import {revealItemInDir} from "@tauri-apps/plugin-opener";
-import type {Book, HostAPI, Metadata, Page, Plugin, PluginList, Series, SeriesItem, Task} from "../sdk/types";
+import type {Book, HostAPI, Metadata, Page, Plugin, PluginList, RenderResolution, Series, SeriesItem, Task} from "../sdk/types";
 import {documentRef} from "../sdk/types";
 import {Icon} from "../sdk/icons";
-import {connect, createHost, resourceUrl, rpc, setDocument, subscribeActivity, subscribeSeries, subscribeTask} from "./bridge";
-import {SeriesWorkspace} from "./series";
+import {connect, createHost, dropFiles, resourceUrl, rpc, setDocument, subscribeActivity, subscribeSeries, subscribeTask} from "./bridge";
+import {ProjectCreator, SeriesWorkspace} from "./series";
 import "./style.css";
 
 function Preview({book, page, host}: {book: Book; page: Page | undefined; host: HostAPI}) {
   const [url, setUrl] = useState("");
   useEffect(() => {
-    let active = true; setUrl("");
-    if (page) host.preview(book, page, 1024).then(value => {if (active) setUrl(value);}).catch(host.report);
-    return () => {active = false;};
+    const controller = new AbortController(); setUrl("");
+    if (page) host.preview(book, page, 1024, controller.signal)
+      .then(value => {if (!controller.signal.aborted) setUrl(value);})
+      .catch(error => {if (!controller.signal.aborted) host.report(error);});
+    return () => controller.abort();
   }, [book.id, page, host]);
   return <div className="cover-stage">{url ? <img src={url} alt={t("Selected page preview")}/> : <span>{page ? t("Loading preview…") : t("No pages")}</span>}</div>;
 }
@@ -39,7 +41,7 @@ function MetadataForm({book, host, disabled}: {book: Book; host: HostAPI; disabl
   </fieldset>;
 }
 
-function DocumentView({book, host, disabled, dpi, relink, hidden}: {book: Book; host: HostAPI; disabled: boolean; dpi: number; relink: (id: string) => void; hidden: boolean}) {
+function DocumentView({book, host, disabled, dpi, relink, hidden}: {book: Book; host: HostAPI; disabled: boolean; dpi: RenderResolution; relink: (id: string) => void; hidden: boolean}) {
   const [selected, setSelected] = useState<string | null>(null);
   const [viewport, setViewport] = useState({top: 0, height: 600});
   const list = useRef<HTMLDivElement>(null);
@@ -77,7 +79,7 @@ function DocumentView({book, host, disabled, dpi, relink, hidden}: {book: Book; 
     <aside className="book-inspector"><div className="panel-heading"><strong>{t("Book information")}</strong><span>{page ? t("Page {0} preview", book.pages.indexOf(page) + 1) : ""}</span></div>
       <Preview book={book} page={page} host={host}/>
       <div className="output-settings"><MetadataForm book={book} host={host} disabled={disabled}/>
-        <dl className="export-details"><div><dt>{t("Output format")}</dt><dd>{t("EPUB 3 · fixed layout")}</dd></div><div><dt>{t("Image handling")}</dt><dd>{t("Preserve originals")}</dd></div><div><dt>{t("Complex pages")}</dt><dd>{dpi} {t("DPI · ask first")}</dd></div></dl>
+        <dl className="export-details"><div><dt>{t("Output format")}</dt><dd>{t("EPUB 3 · fixed layout")}</dd></div><div><dt>{t("Image handling")}</dt><dd>{t("Preserve originals")}</dd></div><div><dt>{t("Complex pages")}</dt><dd>{dpi === "auto" ? t("Auto · ask first") : `${dpi} ${t("DPI · ask first")}`}</dd></div></dl>
       </div>
     </aside>
   </section>;
@@ -113,6 +115,7 @@ function App() {
   useEffect(() => {document.documentElement.lang = locale.code;}, [locale.code]);
   const [book, setBook] = useState<Book | null>(null);
   const [series, setSeries] = useState<Series | null>(null);
+  const [creatingProject, setCreatingProject] = useState<{migrate: boolean; paths?: string[]} | null>(null);
   const [plugins, setPlugins] = useState<PluginList>({items: [], active: [], errors: [], safe_mode: false, restart_required: false});
   const [tab, setTab] = useState("convert");
   const [message, setMessage] = useState<{text: string; error?: boolean} | null>(null);
@@ -121,11 +124,14 @@ function App() {
   const [working, setWorking] = useState(false);
   const [draggingFiles, setDraggingFiles] = useState(false);
   const [pluginBusy, setPluginBusy] = useState(false);
-  const [dpi, setDpi] = useState(() => {
-    const value = Number(localStorage.getItem("render-dpi"));
-    return [72,150,200,300,400,600].includes(value) ? value : 300;
+  const [dpi, setDpi] = useState<RenderResolution>(() => {
+    const saved = localStorage.getItem("render-resolution");
+    const legacy = localStorage.getItem("render-dpi");
+    // The old default was persisted automatically, so migrate it to Auto once.
+    const value = Number(saved ?? (legacy === "300" ? "auto" : legacy));
+    return [72,150,200,300,400,600].includes(value) ? value : "auto";
   });
-  useEffect(() => localStorage.setItem("render-dpi", String(dpi)), [dpi]);
+  useEffect(() => localStorage.setItem("render-resolution", String(dpi)), [dpi]);
   const [catalog, setCatalog] = useState<{plugins: (Plugin & {url: string; sha256: string})[]; message?: string} | null>(null);
   const [bundled, setBundled] = useState<Plugin[]>([]);
   const [output, setOutput] = useState("");
@@ -140,7 +146,7 @@ function App() {
     const index = series.items.findIndex(item => item.id === volume?.id);
     return [...series.items.slice(index+1),...series.items.slice(0,index)].find(item => !item.reviewed && item.id !== volume?.id);
   })();
-  const latest = useRef({book, busy, editorAvailable}); latest.current = {book, busy, editorAvailable};
+  const latest = useRef({book, busy, editorAvailable,series,tab}); latest.current = {book, busy, editorAvailable,series,tab};
   const run = async (action: () => Promise<unknown>) => {
     setWorking(true); setMessage(null);
     try {await action();} catch (error) {host.report(error);} finally {setWorking(false);}
@@ -155,17 +161,15 @@ function App() {
     catch (error) {
       const data = (error as {data?: {kind: string; pages: number[]}}).data;
       if (data?.kind !== "render_required") throw error;
-      if (!await host.confirm(t("{0} pages require rendering (pages {1}{2}).\n\nRender these pages as PNG at {3} DPI? Other pages will keep their original images.", data.pages.length, data.pages.slice(0, 20).join(", "), data.pages.length > 20 ? "…" : "", dpi), t("Some pages require rendering"))) return;
+      if (!await host.confirm(t("{0} pages require rendering (pages {1}{2}).\n\nRender these pages as PNG using {3}? Other pages will keep their original images.", data.pages.length, data.pages.slice(0, 20).join(", "), data.pages.length > 20 ? "…" : "", dpi === "auto" ? t("Auto resolution") : `${dpi} DPI`), t("Some pages require rendering"))) return;
       await host.task<Book>({operation: "import", path: picked, render: true, dpi});
     }
     setTab("convert"); setOutput("");
   }, [host, replaceAllowed, dpi]);
   const openPdfRef = useRef(openPdf); openPdfRef.current = openPdf;
   const openFolder = async (paths?: string[]) => {
-    const picked = paths || await host.pickFile({directory: true,title: t("Open series folder")});
-    if (!picked) return;
-    setSeries(await rpc<Series>("series.scan",{paths: Array.isArray(picked) ? picked : [picked]}));
-    setTab("series");
+    if (!await replaceAllowed()) return;
+    setCreatingProject({migrate: false,paths});
   };
   const openVolume = (item: SeriesItem) => void run(async () => {
     if (!await replaceAllowed()) return;
@@ -173,7 +177,7 @@ function App() {
     catch (error) {
       const data = (error as {data?: {kind: string; pages: number[]}}).data;
       if (data?.kind !== "render_required") throw error;
-      if (!await host.confirm(t("{0} pages in this book require rendering. Render them as PNG at {1} DPI?",data.pages.length,dpi))) return;
+      if (!await host.confirm(t("{0} pages in this book require rendering. Render them as PNG using {1}?",data.pages.length,dpi === "auto" ? t("Auto resolution") : `${dpi} DPI`))) return;
       await host.task<Book>({operation: "series.open",entry_id: item.id,render: true,dpi});
     }
     setTab(editorAvailable ? "org.foluma.editor" : "convert"); setOutput("");
@@ -198,7 +202,8 @@ function App() {
       setDraggingFiles(payload.type === "enter" || payload.type === "over");
       if (payload.type === "drop" && !latest.current.busy) {
         const paths = payload.paths;
-        if (paths.length === 1 && paths[0].toLowerCase().endsWith(".pdf")) void run(() => openPdfRef.current(paths[0]));
+        if (latest.current.series?.managed && latest.current.tab === "series") dropFiles(paths);
+        else if (paths.length === 1 && paths[0].toLowerCase().endsWith(".pdf")) void run(() => openPdfRef.current(paths[0]));
         else if (paths.length) void run(() => openFolder(paths));
       }
     }).then(addStop);
@@ -240,8 +245,11 @@ function App() {
   });
   const openProject = () => run(async () => {
     if (!await replaceAllowed()) return;
-    const path = await host.pickFile({directory: true, title: t("Choose a .mteproj project folder")});
-    if (typeof path === "string") {await rpc("project.open", {path}); setTab("convert"); setOutput("");}
+    const path = await host.pickFile({directory: true, title: t("Choose a project folder")});
+    if (typeof path === "string") {
+      const result = await rpc<Book | Series>("project.open", {path});
+      setTab("managed" in result ? "series" : "convert"); setOutput("");
+    }
   });
   useEffect(() => {
     const shortcuts = (event: KeyboardEvent) => {
@@ -255,10 +263,20 @@ function App() {
     return () => document.removeEventListener("keydown", shortcuts);
   });
   return <div className="app-shell">
-    {draggingFiles && <div className="file-drop-hint" role="status">{t("Drop a PDF or a series folder")}</div>}
+    {draggingFiles && <div className="file-drop-hint" role="status">{t("Drop PDFs or a folder")}</div>}
+    {creatingProject && <ProjectCreator host={host} initialName={creatingProject.migrate ? series?.name || "" : ""} migrate={creatingProject.migrate}
+      close={() => setCreatingProject(null)} create={async (parent,name) => {
+        if (!await replaceAllowed()) throw new Error(t("Project creation cancelled"));
+        host.setBusy?.(true);
+        try {
+          await rpc(creatingProject.migrate ? "series.migrate" : "series.create",{parent,name});
+          setTab("series"); setOutput("");
+          if (creatingProject.paths?.length) await rpc("series.add",{paths: creatingProject.paths}).catch(host.report);
+        } finally {host.setBusy?.(false);}
+      }}/>}
     <header className="command-bar" aria-label={t("Main toolbar")}>
       <button className="command" title={t("Open PDF (⌘O)")} disabled={!ready || busy} onClick={() => void run(() => openPdf())}><Icon name="pdf"/><span>{t("Open PDF")}</span></button>
-      <button className="command" disabled={!ready || busy} onClick={() => void run(() => openFolder())}><Icon name="folder"/><span>{t("Open folder")}</span></button>
+      <button className="command" disabled={!ready || busy} onClick={() => void run(() => openFolder())}><Icon name="folder"/><span>{t("New project")}</span></button>
       <button className="command" title={t("Open project (⇧⌘O)")} disabled={!ready || busy} onClick={openProject}><Icon name="folder"/><span>{t("Open project")}</span></button>
       <button className="command" title={t("Save project (⌘S)")} disabled={!book || busy} onClick={saveProject}><Icon name="save"/><span>{t("Save project")}</span></button>
       <span className="toolbar-divider"/>
@@ -268,7 +286,7 @@ function App() {
     <div className="document-bar"><Icon name="book"/><strong title={book?.project_path || book?.metadata.title}>{book?.metadata.title || t("No book open")}</strong><span>{book?.dirty ? t("Modified · unsaved") : volume ? t("Changes saved") : book?.project_path ? t("Project saved") : book ? t("PDF document") : ""}</span>{volume && <><label className="review-volume"><input type="checkbox" checked={volume.reviewed} disabled={busy} onChange={event => void run(() => rpc("series.review",{id: volume.id,reviewed: event.target.checked}))}/>{t("Reviewed")}</label><button disabled={busy || !nextVolume} onClick={() => nextVolume && openVolume(nextVolume)}>{t("Next unreviewed")}</button></>}{output && <button onClick={() => void revealItemInDir(output).catch(host.report)}>{t("Show exported file")}</button>}<span className="document-format">PDF → EPUB</span></div>
     <div className="application-body"><aside className="sidebar">
       <nav aria-label={t("Main navigation")}><div className="tree-heading">{t("▾ Workspace")}</div>
-        {series && <button className={tab === "series" ? "selected" : ""} onClick={() => setTab("series")}><Icon name="folder"/>{t("Series")}<span className="nav-count">{series.items.length}</span></button>}
+        {series && <button className={tab === "series" ? "selected" : ""} onClick={() => setTab("series")}><Icon name="folder"/>{t("Project")}<span className="nav-count">{series.items.length}</span></button>}
         <button className={tab === "convert" ? "selected" : ""} aria-current={tab === "convert" ? "page" : undefined} onClick={() => setTab("convert")}><Icon name="book"/>{t("Book information")}</button>
         {plugins.active.filter(p => p.ui).map(p => <button key={p.id} className={tab === p.id ? "selected" : ""} onClick={() => setTab(p.id)}><Icon name="edit"/>{t(p.ui!.title)}</button>)}
         <div className="tree-heading">{t("▾ Tools")}</div>
@@ -280,8 +298,8 @@ function App() {
     </aside><main>
       {message && <div className={`notice ${message.error ? "error" : "success"}`} role={message.error ? "alert" : "status"}>{message.text}<button aria-label={t("Dismiss message")} onClick={() => setMessage(null)}>×</button></div>}
       {job?.state === "running" && <div className="job" role="status"><div><span>{job.progress.message}</span><small>{job.progress.done} / {job.progress.total}</small></div><progress value={job.progress.done} max={job.progress.total || 1}/><button onClick={() => void rpc("task.cancel", {id: job.id}).catch(host.report)}>{t("Cancel")}</button></div>}
-      {!book && tab === "convert" && <section className="welcome"><Icon name="pdf"/><h1>{t("Convert PDF to EPUB")}</h1><p>{t("Drop a PDF or a series folder into this window.")}</p><div className="welcome-actions"><button className="primary" disabled={!ready || !!busy} onClick={() => void run(() => openPdf())}>{t("Open PDF…")}</button><button disabled={!ready || !!busy} onClick={() => void run(() => openFolder())}>{t("Open folder…")}</button></div><p>{t("Review book information and pages, then export a fixed-layout EPUB.")}</p><button className="welcome-project" disabled={!ready || !!busy} onClick={openProject}>{t("Open existing project…")}</button></section>}
-      {series && <SeriesWorkspace key={series.id} series={series} host={host} busy={busy} hidden={tab !== "series"} dpi={dpi} openBook={openVolume}/>}
+      {!book && tab === "convert" && <section className="welcome"><Icon name="pdf"/><h1>{t("Convert PDF to EPUB")}</h1><p>{t("Open one PDF or create a project to organize multiple books.")}</p><div className="welcome-actions"><button className="primary" disabled={!ready || !!busy} onClick={() => void run(() => openPdf())}>{t("Open PDF…")}</button><button disabled={!ready || !!busy} onClick={() => void run(() => openFolder())}>{t("New project")}</button></div><p>{t("Review book information and pages, then export a fixed-layout EPUB.")}</p><button className="welcome-project" disabled={!ready || !!busy} onClick={openProject}>{t("Open existing project…")}</button></section>}
+      {series && <SeriesWorkspace key={series.id} series={series} host={host} busy={busy} hidden={tab !== "series"} dpi={dpi} openBook={openVolume} migrate={() => setCreatingProject({migrate: true})}/>}
       {book && <DocumentView book={book} host={host} hidden={tab !== "convert"} disabled={!!busy} dpi={dpi} relink={id => void run(async () => {const path = await host.pickFile({extensions: ["pdf"], title: t("Relink original PDF")}); if (typeof path === "string" && book) await rpc("project.relink", {...documentRef(book), source_id: id, path});})}/>}
       {tab === "plugins" && <section className="content"><div className="page-heading"><h1>{t("Plugins")}</h1><button disabled={busy} onClick={installLocal}>{t("Install local package…")}</button></div>
         {plugins.restart_required && <div className="restart-banner"><span>{t("Plugin changes take effect after restarting.")}</span><button disabled={busy} onClick={restart}>{t("Restart")}</button></div>}
@@ -300,7 +318,7 @@ function App() {
         {catalog?.plugins.map(plugin => <div className="catalog-row" key={plugin.id}><div><strong>{t(plugin.name)}</strong><p>{t(plugin.description || "")}</p></div><span>{plugin.version}</span><button disabled={busy || plugins.items.some(p => p.id === plugin.id && p.version === plugin.version)} onClick={() => void run(async () => {await rpc("plugins.install_official", {id: plugin.id}); await refreshPlugins();})}>{t("Install")}</button></div>)}
         {!!plugins.errors.length && <div className="notice error">{plugins.errors.join("\n")}</div>}
       </section>}
-      {tab === "settings" && <section className="content settings"><div className="page-heading"><h1>{t("Preferences")}</h1></div><article className="settings-row"><div><h2>{t("Complex page rendering")}</h2><p>{t("PDF pages requiring compositing or rotation are rendered as PNG after confirmation.")}</p></div><label>{t("Resolution")}<select value={dpi} onChange={e => setDpi(Number(e.target.value))}>{[72, 150, 200, 300, 400, 600].map(value => <option key={value} value={value}>{value} DPI</option>)}</select></label></article>
+      {tab === "settings" && <section className="content settings"><div className="page-heading"><h1>{t("Preferences")}</h1></div><article className="settings-row"><div><h2>{t("Complex page rendering")}</h2><p>{t("Auto follows the main image’s resolution, up to 6000 pixels on the longest edge. Text and vector pages use 200 DPI within that limit. Rendering requires confirmation.")}</p></div><label>{t("Resolution")}<select value={dpi} onChange={e => setDpi(e.target.value === "auto" ? "auto" : Number(e.target.value))}><option value="auto">{t("Auto (recommended)")}</option>{[72, 150, 200, 300, 400, 600].map(value => <option key={value} value={value}>{value} DPI</option>)}</select></label></article>
         <article className="settings-row"><div><h2>{t("Interface language")}</h2><p>{t("English is built in. Install or remove other languages in Plugins.")}</p><button onClick={() => setTab("plugins")}>{t("Manage language packs")}</button></div><label>{t("Interface language")}<select value={locale.code} disabled={busy} onChange={e => void run(async () => setLocale(await rpc<Locale>("app.locale", {code: e.target.value})))}>{locale.available.map(item => <option key={item.code} value={item.code}>{item.name}</option>)}</select></label></article>
         <article className="settings-row"><div><h2>{t("Safe mode")}</h2><p>{t("Skip all plugins on the next launch to troubleshoot plugin issues.")}</p></div><button disabled={busy} onClick={() => void run(async () => {if (await replaceAllowed()) {await rpc("app.safe_mode"); await invoke("restart_app");}})}>{t("Restart in safe mode")}</button></article>
       </section>}

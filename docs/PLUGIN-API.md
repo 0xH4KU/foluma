@@ -21,6 +21,8 @@ Plugins are trusted local code. The shadow root isolates styles, **not privilege
 
 The source of truth is [`sdk/types.ts`](../sdk/types.ts). The host optionally provides `getLocale`/`subscribeLocale` for live translation updates, `contextMenu` for native menus, `setBusy`/`cancelTask` for multi-step work, and `onFileDrop` for PDFs routed to the editor. New methods are optional additions to API 1. The host supplies document snapshots, subscriptions, atomic `apply(book, changes)`, `preview`, native file dialogs, confirmation, status/error reporting and `task`/`rpc` methods. A plugin's UI stores only selections, focus and view preferences. Do not keep a mutable parallel document model. A workspace mounts on its first visit and stays mounted while hidden, preserving its UI state across navigation; resize handlers should ignore zero-sized hidden containers.
 
+`host.preview(book, page, size, signal?)` accepts an optional `AbortSignal`. Abort on unmount or when the requested page changes. The host shares matching requests, drops queued work when all consumers cancel, runs at most two previews and prioritizes larger previews over thumbnails. Already running previews finish and populate the cache. Older hosts ignore the optional signal, so views should also ignore results after cancellation.
+
 Every edit uses `document_id` and `base_revision`. Stale edits fail without partial changes. Keep page IDs when moving pages; create UUIDs for inserted or split pages. Assets are immutable and shared between page crops. Crops are normalized `[x, y, width, height]`. The host owns history, retaining up to 100 metadata snapshots. Unknown `extensions[plugin_id]` JSON survives save/open even when its plugin is absent.
 
 | RPC | Parameters / result |
@@ -28,7 +30,18 @@ Every edit uses `document_id` and `base_revision`. Stale edits fail without part
 | `document.get` | Current snapshot or `null` |
 | `app.info` | Startup state, including last series snapshot or `null`, plus `series_error` if restoration failed |
 | `series.get` | Current series snapshot or `null` |
-| `series.scan` | `paths`: folder and/or PDF paths; scans immediate folder contents, naturally sorts volumes, resumes saved entries |
+| `series.scan` | Legacy compatibility: `paths` resumes the former externally linked series |
+| `series.create` | `parent`, `name`: creates a new managed project directory without overwriting an existing folder |
+| `series.open_project` | `path`: opens a managed project, checks external changes and restores the current book; also accepted by `project.open` |
+| `series.migrate` | `parent`, `name`: copies a legacy series and its saved edits into a managed project |
+| `series.add` | `paths`, optional `group`: copies PDFs, immediate folder PDFs, or an edited `.mteproj` into the project |
+| `series.group` | `name`, optional `previous`: creates or renames a real subfolder |
+| `series.move` | `ids`, `group` (empty means root/Ungrouped): moves selected PDF files |
+| `series.remove` / `series.restore` | `ids`: reversible removal/restoration of PDFs with book edits retained |
+| `series.delete_group` | `name`: moves books to Ungrouped; refuses unknown files or name collisions |
+| `series.refresh` | Scans the root and one level of visible subfolders; preserves matching identities and flags changed/missing files |
+| `series.relink` | `id`, `path`: copies a matching original PDF back to a missing project location |
+| `series.reorder` | `ids`: complete ordered list of active book IDs |
 | `series.review` | Entry `id`, boolean `reviewed`; records review of its current saved revision |
 | `series.output` | Existing output `directory` |
 | `series.configure` | Entry `ids`, `metadata` containing only `direction` and/or `cover_only`; returns per-entry `{id, error}` results |
@@ -50,7 +63,7 @@ Every edit uses `document_id` and `base_revision`. Stale edits fail without part
 
 | Operation | Extra parameters |
 | --- | --- |
-| `import` | `path`, optional explicit `render: true`, `dpi` (72–600), optional `background: true` to leave the open book untouched |
+| `import` | `path`, optional explicit `render: true`, `dpi` (`"auto"` by default, or integer 72–600; Auto follows a dominant image’s displayed pixel density, falls back to 200 DPI and caps the longest edge at 6000 pixels), optional `background: true` to leave the open book untouched |
 | `series.open` | `entry_id`; opens its saved project or imports it lazily; accepts the same `render`, `dpi` and `background` options as import |
 | `export` | Document reference + `.epub` `path`, `overwrite`; or `directory` for automatic naming with no overwrites |
 | `images.import` | Document reference + image `paths`, zero-based insertion `position` |
@@ -88,6 +101,6 @@ Series processing opens each entry's independently saved project in the backgrou
 
 ## Series persistence
 
-`series.changed` notifications carry the current series snapshot. Entries have stable path-derived IDs, a saved document ID/revision, reviewed/exported revisions and output paths. An edit invalidates review/export status until the new revision is reviewed/exported. An export does not mark a book reviewed. Settings for unopened books are recorded and applied on first import; page edits are never copied between volumes.
+`series.changed` notifications carry the current series snapshot. Managed entries have stable IDs independent of their paths (legacy entries retain path-derived IDs), a saved document ID/revision, reviewed/exported revisions and output paths. An edit invalidates review/export status until the new revision is reviewed/exported. An export does not mark a book reviewed. Settings for unopened books are recorded and applied on first import; page edits are never copied between volumes.
 
-Each edited volume is an ordinary `.mteproj` under the application data directory's `series/` folder. Edits checkpoint the project before notifying the UI that it is saved; a save failure leaves the document dirty and prevents switching away until it can be saved. The last series and active book restore at startup. Missing source entries remain available for source relinking. Editor review flags live in `extensions["org.foluma.editor"].review`; focus, scroll and preview settings are local per-document UI preferences and do not travel with the project.
+Managed projects store their manifest at `.foluma/project.json`, ordinary `.mteproj` book edits under `.foluma/books/`, and source PDF copies in the root or a single group subfolder. Stored paths are relative so the directory can move. Removed PDFs stay under `.foluma/removed/`; their edits and revisions remain available. Snapshots include `managed`, `directory`, `groups`, active `items` and `removed`; each book includes `group`, `missing` and `changed`. Group changes do not invalidate review/export revisions. External renames are matched only when the original content has one unambiguous candidate. Changed PDFs never replace the expected fingerprint or acquire old edits. Missing, never-opened legacy books may have a null fingerprint until their first source is supplied; edited books retain their known fingerprint. Missing legacy sources do not block migration of their saved edits. Legacy series remain under the application data directory's `series/` folder until explicitly migrated. Edits checkpoint the project before notifying the UI that it is saved; a save failure leaves the document dirty and prevents switching away until it can be saved. The last series and active book restore at startup. Missing source entries remain available for source relinking. Editor review flags live in `extensions["org.foluma.editor"].review`; focus, scroll and preview settings are local per-document UI preferences and do not travel with the project.

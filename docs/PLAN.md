@@ -5,7 +5,7 @@ Accepted direction: a new independent repository, macOS first, portable architec
 ## Boundaries
 
 - Python owns documents, stable page/asset IDs, revisions, validated atomic changes, undo/redo, projects and jobs. UI selection stays in the frontend.
-- PDF physical page order is authoritative. Preserve supported source image streams. Ask before rendering unsupported compositions to PNG; default 300 DPI.
+- PDF physical page order is authoritative. Preserve supported source image streams. Ask before rendering unsupported compositions to PNG; default Auto resolution with a 6000-pixel longest-edge limit.
 - Export staged EPUBs, validate before publication, never damage existing files on errors/cancellation.
 - Plugin packages contain a versioned manifest and either optional web/native code or a data-only language catalog. Code plugins are trusted local code, not an OS sandbox; lifecycle changes take effect on restart. Language packages install, disable and remove immediately, with English built in as the default and fallback.
 - The editor uses the public host API and ships as a separate plugin package inside the app. A fresh profile installs it offline by default; existing settings, including disable/removal, are respected. It includes preview, reader-style leading blank-page pairing, reorder, insert/delete, split/restore, covers, original image export, presets and undo/redo.

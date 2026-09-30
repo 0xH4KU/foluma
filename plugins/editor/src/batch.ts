@@ -1,10 +1,10 @@
-import type {Book, HostAPI} from "../../../sdk/types.ts";
+import type {Book, HostAPI, RenderResolution} from "../../../sdk/types.ts";
 import {documentRef} from "../../../sdk/types.ts";
 import {t} from "../../../sdk/i18n.ts";
 import {applyPreset, type Preset} from "./pages.ts";
 
 export type BatchRow = {path: string; state: "pending" | "working" | "completed" | "failed" | "cancelled" | "skipped"; output?: string; error?: string};
-export type BatchOptions = {paths: string[]; preset?: string; entries?: {id: string; path: string}[]; directory: string; render: boolean; dpi: number};
+export type BatchOptions = {paths: string[]; preset?: string; entries?: {id: string; path: string}[]; directory: string; render: boolean; dpi: RenderResolution};
 
 export async function runBatch(host: HostAPI, options: BatchOptions, signal: AbortSignal, update: (index: number, row: BatchRow) => void): Promise<void> {
   const cancelled = () => {if (signal.aborted) throw Object.assign(new Error(t("Task cancelled")), {cancelled: true});};

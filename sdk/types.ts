@@ -1,3 +1,4 @@
+export type RenderResolution = "auto" | number;
 export type Page = {
   id: string; kind: "image" | "blank"; width: number; height: number;
   asset_id?: string; crop?: [number, number, number, number]; source_page?: number | null;
@@ -36,9 +37,10 @@ export type FileOptions = {extensions?: string[]; multiple?: boolean; directory?
 export type SeriesItem = {
   id: string; path: string; title: string; document_id: string | null; page_count: number | null;
   revision: number | null; reviewed: boolean; exported: boolean; needs_export: boolean; missing: boolean;
+  group: string; changed: boolean;
   output: string | null; settings: Partial<Pick<Metadata,"direction"|"cover_only">>;
 };
-export type Series = {id: string; name: string; roots: string[]; current_id: string | null; output_directory: string; items: SeriesItem[]};
+export type Series = {id: string; name: string; roots: string[]; current_id: string | null; output_directory: string; items: SeriesItem[]; managed: boolean; directory: string; groups: string[]; removed: SeriesItem[]};
 export interface HostAPI {
   version: 1;
   getLocale?(): import("./i18n").Locale;
@@ -52,7 +54,7 @@ export interface HostAPI {
   apply(book: Book, changes: Changes): Promise<Book>;
   rpc<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T>;
   task<T = unknown>(params: Record<string, unknown>): Promise<T>;
-  preview(book: Book, page: Page, size?: number): Promise<string>;
+  preview(book: Book, page: Page, size?: number, signal?: AbortSignal): Promise<string>;
   pickFile(options: FileOptions): Promise<string | string[] | null>;
   saveFile(name: string, extensions: string[]): Promise<string | null>;
   confirm(message: string, title?: string): Promise<boolean>;

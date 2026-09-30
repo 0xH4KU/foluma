@@ -9,17 +9,17 @@ from .image_types import ImageStream, PdfImageError
 from .object_parser import decode_pdf_literal_string, extract_int
 
 
-def image_to_epub_member(image: ImageStream) -> tuple[str, bytes]:
+def image_to_epub_member(image: ImageStream, *, compression_level: int = 6) -> tuple[str, bytes]:
     if image.filter_name == "PNG":
         return "png", image.load_data()
     if image.filter_name == "DCTDecode":
         return "jpg", image.load_data()
     if image.filter_name == "FlateDecode":
-        return "png", flate_image_to_png(image)
+        return "png", flate_image_to_png(image, compression_level=compression_level)
     raise PdfImageError(f"Unsupported image filter: {image.filter_name}")
 
 
-def flate_image_to_png(image: ImageStream) -> bytes:
+def flate_image_to_png(image: ImageStream, *, compression_level: int = 6) -> bytes:
     predictor = _decode_parm_int(image.decode_parms, b"Predictor", 1)
     columns = _decode_parm_int(image.decode_parms, b"Columns", image.width)
     colors = _decode_parm_int(image.decode_parms, b"Colors", _png_channel_count(image.color_space))
@@ -36,7 +36,9 @@ def flate_image_to_png(image: ImageStream) -> bytes:
 
     raw = zlib.decompress(image.load_data())
     scanlines = _undo_predictor(raw, predictor, columns, colors, bpc, image.height)
-    return make_png_from_scanlines(image.width, image.height, bpc, color_type, scanlines, palette)
+    return make_png_from_scanlines(
+        image.width, image.height, bpc, color_type, scanlines, palette, compression_level=compression_level
+    )
 
 
 def _decode_parm_int(decode_parms: bytes | None, key: bytes, default: int) -> int:
@@ -184,6 +186,8 @@ def make_png_from_scanlines(
     color_type: int,
     scanlines: bytes,
     palette: bytes | None = None,
+    *,
+    compression_level: int = 6,
 ) -> bytes:
     row_length = _png_row_length(width, bit_depth, color_type)
     expected = row_length * height
@@ -200,7 +204,7 @@ def make_png_from_scanlines(
         height,
         bit_depth,
         color_type,
-        zlib.compress(bytes(filtered), level=9),
+        zlib.compress(bytes(filtered), level=compression_level),
         palette,
     )
 
