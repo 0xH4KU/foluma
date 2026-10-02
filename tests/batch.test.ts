@@ -8,7 +8,7 @@ import {join} from "node:path";
 import type {Book, HostAPI, Series, Task} from "../sdk/types.ts";
 import {documentRef} from "../sdk/types.ts";
 import {createPreset, splitPages} from "../plugins/editor/src/pages.ts";
-import {runBatch, type BatchRow} from "../plugins/editor/src/batch.ts";
+import {batchSummary, runBatch, type BatchRow} from "../plugins/editor/src/batch.ts";
 
 // Exercise the actual editor preset and batch coordinator against the Python RPC engine.
 test("batch edits different books, preserves active edits, handles collisions, failures and cancellation", async () => {
@@ -63,8 +63,13 @@ Image.new('RGB',(120,160),'red').save(root/'insert.png')
     const autoBook = await host.task<Book>({operation:"import",path:paths[2],background:true,render:true});
     assert.ok(Object.values(autoBook.assets).every(asset=>asset.kind==="file" && asset.width===120 && asset.height===160));
     await rpc("document.release",{document_id:autoBook.id});
+    const renderRows: BatchRow[] = [];
+    await runBatch(host,{paths:[paths[2]],directory,render:false,dpi:"auto"},new AbortController().signal,(index,row)=>renderRows[index]=row);
+    assert.equal(renderRows[0].state,"failed");
+    assert.deepEqual(renderRows[0].renderRequired,[1,2,3,4,5,6],"render-required failures must offer an actionable retry");
     await runBatch(host,{paths,preset,directory,render:true,dpi:"auto"},new AbortController().signal,(index,row)=>rows[index]=row);
     assert.deepEqual(rows.map(row=>row.state),["completed","failed","completed"],JSON.stringify(rows));
+    assert.equal(batchSummary(rows),"2 exported · 1 failed · 0 cancelled or skipped");
     assert.match(rows[1].error!,/Missing preset asset or PDF page/);
     assert.equal(readFileSync(join(directory,"volume.epub"),"utf8"),"keep me");
     assert.equal(rows[0].output,realpathSync(join(directory,"volume (2).epub")));assert.equal(rows[2].output,realpathSync(join(directory,"volume (3).epub")));

@@ -37,10 +37,11 @@ export type FileOptions = {extensions?: string[]; multiple?: boolean; directory?
 export type SeriesItem = {
   id: string; path: string; title: string; document_id: string | null; page_count: number | null;
   revision: number | null; reviewed: boolean; exported: boolean; needs_export: boolean; missing: boolean;
-  group: string; changed: boolean;
+  group: string; changed: boolean; review_count?: number | null;
   output: string | null; settings: Partial<Pick<Metadata,"direction"|"cover_only">>;
 };
-export type Series = {id: string; name: string; roots: string[]; current_id: string | null; output_directory: string; items: SeriesItem[]; managed: boolean; directory: string; groups: string[]; removed: SeriesItem[]};
+export type ProjectSummary = {added?: number; skipped?: number; folders_skipped?: number; renamed?: number; missing?: number; changed?: number};
+export type Series = {id: string; name: string; roots: string[]; current_id: string | null; output_directory: string; items: SeriesItem[]; managed: boolean; directory: string; groups: string[]; removed: SeriesItem[]; refreshed_at?: string; summary?: ProjectSummary};
 export interface HostAPI {
   version: 1;
   getLocale?(): import("./i18n").Locale;
@@ -49,6 +50,8 @@ export interface HostAPI {
   setBusy?(busy: boolean): void;
   cancelTask?(): Promise<void>;
   onFileDrop?(listener: (paths: string[]) => void): () => void;
+  getExportPreferences?(): {directory: string; dpi: RenderResolution};
+  setOutputDirectory?(directory: string): void;
   getDocument(): Book | null;
   subscribe(listener: (book: Book | null) => void): () => void;
   apply(book: Book, changes: Changes): Promise<Book>;
@@ -57,8 +60,8 @@ export interface HostAPI {
   preview(book: Book, page: Page, size?: number, signal?: AbortSignal): Promise<string>;
   pickFile(options: FileOptions): Promise<string | string[] | null>;
   saveFile(name: string, extensions: string[]): Promise<string | null>;
-  confirm(message: string, title?: string): Promise<boolean>;
+  confirm(message: string, title?: string, okLabel?: string): Promise<boolean>;
   report(error: unknown): void;
-  notify(message: string): void;
+  notify(message: string, action?: {label: string; run: () => void}): void;
 }
 export const documentRef = (book: Book) => ({document_id: book.id, base_revision: book.revision});

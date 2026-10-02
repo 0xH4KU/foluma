@@ -17,7 +17,7 @@ from . import __version__
 from .i18n import messages, t
 from .model import Session, new_id, validate
 from .plugins import Plugins, platform_id, unpack
-from .series import FolderProject, Series
+from .series import FolderProject, Series, pending_review_count
 from .storage import atomic_json, digest, open_project, parse_json, save_project
 
 
@@ -274,8 +274,9 @@ class Engine:
                 raise ValueError(t("Save this series as a folder project first"))
             if self.session:
                 self.changed()
+            summary = None
             if method == "series.add":
-                self.series.add(p["paths"], p.get("group", ""))
+                summary = self.series.add(p["paths"], p.get("group", ""))
             elif method == "series.move":
                 self.series.move_books(p["ids"], p["group"])
             elif method == "series.remove":
@@ -283,11 +284,11 @@ class Engine:
             elif method == "series.restore":
                 self.series.restore(p["ids"])
             elif method == "series.group":
-                self.series.group(p["name"], p.get("previous"))
+                self.series.group(p["name"], p.get("previous"), p.get("ids"))
             elif method == "series.delete_group":
                 self.series.delete_group(p["name"])
             elif method == "series.refresh":
-                self.series.refresh()
+                summary = self.series.refresh()
             elif method == "series.relink":
                 self.series.relink(p["id"], p["path"])
             elif method == "series.reorder":
@@ -301,11 +302,17 @@ class Engine:
                     else:
                         self.series.synchronize(item, self.session)
                     self.notify("document.changed", self.session.snapshot() if self.session else None)
-            return self.series_changed()
+            state = self.series_changed()
+            return state | {"summary": summary} if summary is not None else state
         if method == "series.review":
             item = self.series.item(p["id"])
             if type(p.get("reviewed")) is not bool or item["revision"] is None:
                 raise ValueError(t("Open this book before marking it reviewed"))
+            session = self.session if self.series.current(self.session) is item else self.series.load(item)
+            marks = pending_review_count(session.book) if session else 0
+            if p["reviewed"] and marks and p.get("allow_pending") is not True:
+                raise EngineError(t("{0} pages still need attention. Confirm before marking this book reviewed.",marks),
+                                  {"kind": "pending_review", "pages": marks})
             item["reviewed_revision"] = item["revision"] if p["reviewed"] else None
         elif method == "series.output":
             directory = Path(p["directory"]).resolve(strict=True)

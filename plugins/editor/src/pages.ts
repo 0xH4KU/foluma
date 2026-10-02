@@ -14,7 +14,7 @@ export function parseRange(text: string, pages: Page[]): string[] {
   return [...chosen].sort((a,b) => a-b).map(i => pages[i].id);
 }
 
-export function moveBefore(pages: Page[], ids: Set<string>, before: string | null): Page[] {
+export function moveBefore<T extends {id: string}>(pages: T[], ids: Set<string>, before: string | null): T[] {
   if (before && ids.has(before)) return pages;
   const moving = pages.filter(p => ids.has(p.id));
   const rest = pages.filter(p => !ids.has(p.id));

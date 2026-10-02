@@ -12,21 +12,24 @@ Foluma uses Tauri and React/TypeScript for the desktop interface, with a separat
 
 The page editor installs from the bundled package on first launch, without a network connection. It is an independent plugin: disabling or removing it takes effect after restarting, and the app will not automatically reinstall it. Basic conversion remains available without the editor.
 
-For an existing installation, update **Page editor** to **0.3.3** from **Plugins → Included packages**, or install `artifacts/org.foluma.editor-0.3.3.mte-plugin`, then restart.
+For an existing installation, update **Page editor** to **0.3.4** from **Plugins → Included packages**, or install `artifacts/org.foluma.editor-0.3.4.mte-plugin`, then restart. Update the Traditional Chinese pack to **0.3.2** for the new interface text.
 
-English is built in. Install the Traditional Chinese language pack from **Plugins → Included packages**, then select it under **Preferences → Interface language**. Language packs can be disabled or removed immediately. A book's language setting controls EPUB metadata independently of the interface language.
+English is built in. Choose **Install and use 繁體中文** under **Preferences → Interface language** to install the included language pack and switch immediately. Language packs can be disabled or removed immediately. A book's language setting controls EPUB metadata independently of the interface language.
 
 ## Folder projects
 
 A project is a folder you choose. Imported PDFs are copied into it, groups correspond to subfolders, and saved edits and embedded images live in the hidden `.foluma` directory. Move the entire project folder to keep its books and edits together.
 
 - Add PDFs, import the PDF files directly inside a folder, or import an existing `.mteproj` book project.
-- Create and rename groups, move books between them, and change their order. Groups support one level of subfolders.
-- Remove books and recover them from **Removed**. Removing a group moves its books to **Ungrouped**. Import sources are left untouched.
+- Create groups while keeping your selection, or choose to move the selected books into the new group. Rename groups, move books between them, and change their order with arrows or **Move to position**. Groups support one level of subfolders.
+- Search titles and filenames, and use the visible group tabs to switch between **All books**, **Ungrouped**, custom groups and **Removed**.
+- Remove books and use **Undo removal**, or recover them from **Removed**. Removing a group moves its books to **Ungrouped**. Import sources are left untouched.
 - Open the project or choose **Refresh folder** to discover filesystem changes. New PDFs are added; uniquely matching renamed files retain their saved edits. Missing or changed sources are flagged, and relinking an edited book requires the original content.
 - Migrate an older series with **Save series as folder project**. Its individual book layouts and review state are preserved.
 
-Each book keeps its own page order, blanks, crops, review marks, and saved edits. Use **Reviewed** and **Next unreviewed** to track progress. Select books to share reading direction or cover settings, or export each book's own layout without applying a preset. Existing output files are preserved by numbering duplicate names; failed items can be retried. Editing an exported book marks it **Needs re-export**.
+Each book keeps its own page order, blanks, crops, attention marks, and saved edits. Use **Book reviewed** and **Next unreviewed** to track progress. Pending page marks remain visible in the project, and completing review with remaining marks requires confirmation. Select books to share reading direction or cover settings, or export each book's own layout without applying a preset. Batch results show completion counts; a book that needs rendering offers **Allow rendering and retry this book**. Existing output files are preserved by numbering duplicate names. Editing an exported book marks it **Needs re-export**.
+
+The toolbar identifies standalone PDFs and the current book separately from selected project books. In the project view, **Export selected books** and ⌘E export the selection; in a book view they export the current book. Book information is committed before saving, exporting or changing books, including while an input still has focus. Unsaved standalone books offer **Save and continue**, **Discard changes** and **Cancel**.
 
 Standalone books can also be saved as `.mteproj` folders. These reference the original PDF and embed inserted or rendered images. If the PDF moves, relink a file with matching contents. Older series continue to use per-book projects under the app's data directory until migrated.
 
@@ -36,8 +39,8 @@ The desktop layout uses a toolbar, workspace sidebar, page list, preview, inspec
 
 - Switch between list, thumbnail, and spread views. Drag one or several pages to reorder them, or use the context menu. **Shift+F10** opens the same menu from the keyboard.
 - Insert images or blank pages, split spreads with a preview guide, restore splits, and manage covers and reading direction.
-- Navigate by complete spreads in the selected reading direction. Previews show both the current page number and original PDF page number; selection, view mode, scroll position, and zoom are saved per book.
-- Mark pages for review and jump to the next mark.
+- Navigate by complete spreads with left/right keys in the selected reading direction; use up/down in the page list for individual pages, or enter a preview page number to jump directly. Previews show both the current page number and original PDF page number; selection, view mode, scroll position, and zoom are saved per book. Newly inserted images are selected immediately.
+- Mark pages for attention and jump to the next mark.
 - Use **Presets → Apply preset to PDFs…** to apply a portable layout preset to books with matching page structures and export them separately.
 
 **Simulate leading blank** previews the page pairing used by readers such as Apple Books. It does not insert a blank into the document or exported EPUB.

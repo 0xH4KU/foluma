@@ -1,14 +1,15 @@
-import {getLocale, subscribeLocale, t} from "../sdk/i18n";
+import {getLocale, subscribeLocale, t} from "../sdk/i18n.ts";
 import {Menu, MenuItem} from "@tauri-apps/api/menu";
 import {LogicalPosition} from "@tauri-apps/api/dpi";
 import {convertFileSrc, invoke} from "@tauri-apps/api/core";
 import {listen} from "@tauri-apps/api/event";
 import {ask, open, save} from "@tauri-apps/plugin-dialog";
 import type {Book, FileOptions, HostAPI, Series, Task} from "../sdk/types";
-import {documentRef} from "../sdk/types";
-import {createPreviewLoader} from "./previews";
+import {documentRef} from "../sdk/types.ts";
+import {createPreviewLoader} from "./previews.ts";
 
 let book: Book | null = null;
+let project: Series | null = null;
 const listeners = new Set<(book: Book | null) => void>();
 const taskListeners = new Set<(task: Task) => void>();
 const seriesListeners = new Set<(series: Series | null) => void>();
@@ -22,7 +23,11 @@ export const dropFiles = (paths: string[]) => {
   else pendingDrop = paths;
 };
 export const subscribeActivity = (fn: (busy: boolean) => void) => {activityListeners.add(fn); return () => {activityListeners.delete(fn);};};
-export const setDocument = (value: Book | null) => {book = value; listeners.forEach(fn => fn(value));};
+export const setDocument = (value: Book | null, opening = false) => {
+  if (!opening && value && value.id === book?.id && (value.revision < book.revision ||
+      value.revision === book.revision && book.dirty === false && value.dirty === true)) return;
+  book = value; listeners.forEach(fn => fn(value));
+};
 export const subscribeTask = (fn: (task: Task) => void) => {taskListeners.add(fn); return () => {taskListeners.delete(fn);};};
 export const resourceUrl = (path: string) => convertFileSrc(path, "foluma");
 
@@ -32,13 +37,25 @@ function asError(value: unknown): Error & {data?: unknown} {
   return Object.assign(new Error(v?.message || String(value)), {data: v?.data});
 }
 export async function rpc<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
-  try {return await invoke<T>("engine_call", {method, params});}
+  try {
+    const result = await invoke<T>("engine_call", {method, params});
+    if (["document.apply","document.undo","document.redo","project.save","project.relink","project.open"].includes(method)) {
+      const snapshot = result as Book | null;
+      if (snapshot?.schema === 1 && Array.isArray(snapshot.pages) && (method === "project.open" || snapshot.id === book?.id))
+        setDocument(snapshot,method === "project.open");
+    }
+    return result;
+  }
   catch (error) {throw asError(error);}
 }
 export async function connect(onExit: () => void) {
   const stop = await listen<{method: string; params: Book | Task | Series | null}>("engine-event", ({payload}) => {
     if (payload.method === "document.changed") setDocument(payload.params as Book);
-    if (payload.method === "series.changed") seriesListeners.forEach(fn => fn(payload.params as Series | null));
+    if (payload.method === "series.changed") {
+      const next = payload.params as Series | null;
+      if (next?.output_directory && (next.id !== project?.id || next.output_directory !== project?.output_directory)) localStorage.setItem("output-directory",next.output_directory);
+      project = next; seriesListeners.forEach(fn => fn(project));
+    }
     if (payload.method === "task.changed") {
       const task = payload.params as Task;
       latestTasks.set(task.id, task);
@@ -56,7 +73,10 @@ export async function task<T>(params: Record<string, unknown>): Promise<T> {
       if (state.id !== started.id) return;
       if (state.state !== "running") {
         taskListeners.delete(check);
-        if (state.state === "completed") resolve(state.result as T);
+        if (state.state === "completed") {
+          if ((params.operation === "import" || params.operation === "series.open") && !params.background) setDocument(state.result as Book,true);
+          resolve(state.result as T);
+        }
         else reject(Object.assign(new Error(state.state === "cancelled" ? t("Task cancelled") : state.error?.message || t("Task failed")),
                                   {data: state.error?.data, cancelled: state.state === "cancelled"}));
       }
@@ -75,6 +95,11 @@ export function createHost(report: HostAPI["report"], notify: HostAPI["notify"])
   return {
     version: 1, getDocument: () => book,
     getLocale, subscribeLocale,
+    getExportPreferences: () => {
+      const value = Number(localStorage.getItem("render-resolution"));
+      return {directory: localStorage.getItem("output-directory") || project?.output_directory || "",dpi: [72,150,200,300,400,600].includes(value) ? value : "auto"};
+    },
+    setOutputDirectory: directory => localStorage.setItem("output-directory",directory),
     onFileDrop: listener => {
       dropListeners.add(listener);
       if (pendingDrop) {const paths = pendingDrop; pendingDrop = null; queueMicrotask(() => listener(paths));}
@@ -100,6 +125,6 @@ export function createHost(report: HostAPI["report"], notify: HostAPI["notify"])
       filters: options.extensions ? [{name: t("Files"), extensions: options.extensions}] : undefined,
     }),
     saveFile: (name, extensions) => save({defaultPath: name, filters: [{name: extensions.join(" / "), extensions}]}),
-    confirm: (message, title = "Foluma") => ask(message, {title, kind: "warning", okLabel: t("Continue"), cancelLabel: t("Cancel")}),
+    confirm: (message, title = "Foluma", okLabel = t("Continue")) => ask(message, {title, kind: "warning", okLabel, cancelLabel: t("Cancel")}),
   };
 }

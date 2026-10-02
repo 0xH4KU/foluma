@@ -10,7 +10,7 @@ from zipfile import ZipFile
 
 import pymupdf as fitz
 from foluma.model import new_id
-from foluma.service import Engine
+from foluma.service import Engine, EngineError
 from foluma.storage import open_project
 from PIL import Image
 
@@ -49,6 +49,52 @@ class FolderProjectTests(unittest.TestCase):
         state = self.call('series.create', parent=str(self.root), name='漫畫專案')
         self.project = Path(state['directory'])
         return self.call('series.add', paths=[str(self.sources)])
+
+    def test_import_refresh_summaries_and_atomic_create_with_move(self):
+        nested = self.sources / 'nested'
+        nested.mkdir()
+        shutil.copyfile(self.sources / 'Vol.1.pdf',nested / 'nested.pdf')
+        state = self.create()
+        self.assertEqual(state['summary'], {'added': 3, 'skipped': 0, 'folders_skipped': 1})
+        repeated = self.call('series.add',paths=[str(self.sources)])
+        self.assertEqual(repeated['summary'], {'added': 0, 'skipped': 3, 'folders_skipped': 1})
+        one,two,ten = state['items']
+        with patch.object(self.engine.series,'save',side_effect=OSError('disk full')):
+            with self.assertRaisesRegex(OSError,'disk full'):
+                self.call('series.group',name='Rollback',ids=[one['id'],two['id']])
+        self.assertFalse((self.project / 'Rollback').exists())
+        self.assertTrue(Path(one['path']).is_file())
+        self.assertTrue(Path(two['path']).is_file())
+        moved = self.call('series.group',name='Selected',ids=[one['id'],two['id']])
+        self.assertEqual([i['group'] for i in moved['items']], ['Selected','Selected',''])
+        (self.project / 'Selected/Vol.1.pdf').rename(self.project / 'Selected/Renamed.pdf')
+        Path(ten['path']).rename(self.root / 'missing-source.pdf')
+        refreshed = self.call('series.refresh')
+        self.assertEqual(refreshed['summary'], {'added': 0, 'renamed': 1, 'missing': 1, 'changed': 0})
+        self.assertTrue(refreshed['refreshed_at'])
+        self.assertEqual(next(i for i in refreshed['items'] if i['id'] == one['id'])['path'],str(self.project / 'Selected/Renamed.pdf'))
+
+    def test_page_attention_counts_require_explicit_review_override(self):
+        state = self.create()
+        item = state['items'][0]
+        book = self.task('series.open',entry_id=item['id'])
+        book = self.call('document.apply',document_id=book['id'],base_revision=book['revision'],changes={
+            'extension': {'id':'org.foluma.editor','data':{'review':[book['pages'][0]['id'],book['pages'][0]['id'],'gone',{}]}}})
+        self.assertEqual(self.call('series.get')['items'][0]['review_count'],1)
+        with self.assertRaises(EngineError) as error:
+            self.call('series.review',id=item['id'],reviewed=True)
+        self.assertEqual(error.exception.data,{'kind':'pending_review','pages':1})
+        with self.assertRaises(EngineError):
+            self.call('series.review',id=item['id'],reviewed=True,allow_pending='true')
+        reviewed = self.call('series.review',id=item['id'],reviewed=True,allow_pending=True)
+        self.assertTrue(reviewed['items'][0]['reviewed'])
+        self.engine.series.state['items'][0].pop('review_count')
+        self.assertEqual(self.call('series.get')['items'][0]['review_count'],1,'older project manifests must recover page marks')
+        self.call('document.apply',document_id=book['id'],base_revision=book['revision'],changes={
+            'extension': {'id':'org.foluma.editor','data':{'review':[]}}})
+        result = self.call('series.get')['items'][0]
+        self.assertEqual(result['review_count'],0)
+        self.assertFalse(result['reviewed'],'editing invalidates the earlier review')
 
     def test_folder_lifecycle_portability_and_external_changes(self):
         originals = {p.name: p.read_bytes() for p in self.sources.iterdir()}

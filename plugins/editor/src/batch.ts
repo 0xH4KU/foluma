@@ -3,8 +3,12 @@ import {documentRef} from "../../../sdk/types.ts";
 import {t} from "../../../sdk/i18n.ts";
 import {applyPreset, type Preset} from "./pages.ts";
 
-export type BatchRow = {path: string; state: "pending" | "working" | "completed" | "failed" | "cancelled" | "skipped"; output?: string; error?: string};
+export type BatchRow = {path: string; state: "pending" | "working" | "completed" | "failed" | "cancelled" | "skipped"; output?: string; error?: string; renderRequired?: number[]};
 export type BatchOptions = {paths: string[]; preset?: string; entries?: {id: string; path: string}[]; directory: string; render: boolean; dpi: RenderResolution};
+
+export function batchSummary(rows: BatchRow[]): string {
+  return t("{0} exported · {1} failed · {2} cancelled or skipped",rows.filter(row => row.state === "completed").length,rows.filter(row => row.state === "failed").length,rows.filter(row => row.state === "cancelled" || row.state === "skipped").length);
+}
 
 export async function runBatch(host: HostAPI, options: BatchOptions, signal: AbortSignal, update: (index: number, row: BatchRow) => void): Promise<void> {
   const cancelled = () => {if (signal.aborted) throw Object.assign(new Error(t("Task cancelled")), {cancelled: true});};
@@ -29,7 +33,9 @@ export async function runBatch(host: HostAPI, options: BatchOptions, signal: Abo
       update(index,{path,state: "completed",output: result.path});
     } catch (error) {
       stopped = signal.aborted || !!(error as {cancelled?: boolean})?.cancelled;
-      update(index,{path,state: stopped ? "cancelled" : "failed",error: error instanceof Error ? error.message : String(error)});
+      const data = (error as {data?: {kind?: string; pages?: number[]}})?.data;
+      update(index,{path,state: stopped ? "cancelled" : "failed",error: error instanceof Error ? error.message : String(error),
+        ...(data?.kind === "render_required" ? {renderRequired: data.pages || []} : {})});
     } finally {
       if (book) await host.rpc("document.release",{document_id: book.id}).catch(host.report);
     }

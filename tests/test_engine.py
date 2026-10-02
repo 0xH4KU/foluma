@@ -609,7 +609,8 @@ class IntegrationTests(unittest.TestCase):
         }})
         self.assertFalse(book["dirty"])
         first = copy.deepcopy(book)
-        engine.call("series.review", {"id": one, "reviewed": True})
+        self.assertEqual(engine.call("series.get", {})["items"][0]["review_count"], 1)
+        engine.call("series.review", {"id": one, "reviewed": True, "allow_pending": True})
         output = self.root / "exports"
         output.mkdir()
         engine.call("series.output", {"directory": str(output)})

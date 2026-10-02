@@ -11,6 +11,8 @@ use std::{
         Arc, Mutex,
     },
 };
+#[cfg(target_os = "macos")]
+use tauri::menu::{Menu, MenuItemBuilder, MenuItemKind};
 use tauri::{Emitter, Manager};
 use tokio::sync::oneshot;
 
@@ -21,6 +23,7 @@ struct Engine {
     child: Mutex<Child>,
     pending: Pending,
     alive: Arc<AtomicBool>,
+    quit_allowed: AtomicBool,
     next: AtomicU64,
 }
 
@@ -97,7 +100,9 @@ fn start_engine(app: &tauri::AppHandle) -> Result<Engine, Box<dyn std::error::Er
         }
         reader_alive.store(false, Ordering::SeqCst);
         for (_, sender) in reader_pending.lock().unwrap().drain() {
-            let _ = sender.send(Err(json!({"message": "The conversion engine stopped. Please restart Foluma."})));
+            let _ = sender.send(Err(
+                json!({"message": "The conversion engine stopped. Please restart Foluma."}),
+            ));
         }
         let _ = handle.emit("engine-exit", ());
     });
@@ -106,6 +111,7 @@ fn start_engine(app: &tauri::AppHandle) -> Result<Engine, Box<dyn std::error::Er
         child: Mutex::new(child),
         pending,
         alive,
+        quit_allowed: AtomicBool::new(false),
         next: AtomicU64::new(1),
     })
 }
@@ -136,8 +142,15 @@ async fn engine_call(
 }
 
 #[tauri::command]
-fn restart_app(app: tauri::AppHandle) {
-    app.restart();
+fn restart_app(app: tauri::AppHandle, engine: tauri::State<'_, Engine>) {
+    engine.quit_allowed.store(true, Ordering::SeqCst);
+    app.request_restart();
+}
+
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle, engine: tauri::State<'_, Engine>) {
+    engine.quit_allowed.store(true, Ordering::SeqCst);
+    app.exit(0);
 }
 
 fn resource(app: &tauri::AppHandle, path: &str) -> Option<(Vec<u8>, &'static str)> {
@@ -178,7 +191,7 @@ fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![engine_call, restart_app])
+        .invoke_handler(tauri::generate_handler![engine_call, restart_app, quit_app])
         .register_uri_scheme_protocol("foluma", |context, request| {
             let found = resource(context.app_handle(), request.uri().path());
             let (status, body, mime) = match found {
@@ -196,11 +209,48 @@ fn main() {
         .setup(|app| {
             let engine = start_engine(app.handle())?;
             app.manage(engine);
+            #[cfg(target_os = "macos")]
+            {
+                let menu = Menu::default(app.handle())?;
+                if let Some(MenuItemKind::Submenu(app_menu)) = menu.items()?.first() {
+                    // Tauri's default macOS app submenu ends with native terminate:, bypassing close requests.
+                    let count = app_menu.items()?.len();
+                    app_menu.remove_at(count - 1)?;
+                    app_menu.append(
+                        &MenuItemBuilder::with_id("quit-foluma", "Quit Foluma")
+                            .accelerator("CmdOrCtrl+Q")
+                            .build(app)?,
+                    )?;
+                }
+                app.set_menu(menu)?;
+                app.on_menu_event(|app, event| {
+                    if event.id().as_ref() == "quit-foluma" {
+                        if app.get_webview_window("main").is_some() {
+                            let _ = app.emit("app-quit-requested", ());
+                        } else {
+                            if let Some(engine) = app.try_state::<Engine>() {
+                                engine.quit_allowed.store(true, Ordering::SeqCst);
+                            }
+                            app.exit(0);
+                        }
+                    }
+                });
+            }
             Ok(())
         })
         .build(tauri::generate_context!())
         .expect("Foluma could not start");
     app.run(|app, event| {
+        if let tauri::RunEvent::ExitRequested { api, .. } = &event {
+            if app.get_webview_window("main").is_some()
+                && app
+                    .try_state::<Engine>()
+                    .is_some_and(|engine| !engine.quit_allowed.load(Ordering::SeqCst))
+            {
+                api.prevent_exit();
+                let _ = app.emit("app-quit-requested", ());
+            }
+        }
         if matches!(event, tauri::RunEvent::Exit) {
             if let Some(engine) = app.try_state::<Engine>() {
                 let mut child = engine.child.lock().unwrap();

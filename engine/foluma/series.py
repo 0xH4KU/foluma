@@ -10,6 +10,7 @@ import re
 import shutil
 import tempfile
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .i18n import t
@@ -23,6 +24,13 @@ def path_id(path: str) -> str:
 
 def natural_key(path: str):
     return [int(part) if part.isdigit() else part.casefold() for part in re.split(r"(\d+)", path)]
+
+
+def pending_review_count(book: dict) -> int:
+    data = book["extensions"].get("org.foluma.editor", {})
+    marks = data.get("review", []) if isinstance(data, dict) else []
+    pages = {page["id"] for page in book["pages"]}
+    return len({mark for mark in marks if isinstance(mark, str) and mark in pages}) if isinstance(marks, list) else 0
 
 
 class Series:
@@ -86,7 +94,8 @@ class Series:
         # ponytail: checkpoint one ordinary project per edit; coalesce writes if large books make this slow.
         save_project(session.book, path)
         item.update(document_id=session.book["id"], revision=session.book["revision"],
-                    title=session.book["metadata"]["title"], page_count=len(session.book["pages"]))
+                    title=session.book["metadata"]["title"], page_count=len(session.book["pages"]),
+                    review_count=pending_review_count(session.book))
         self.save()
         session.project_path = str(path)
         session.saved_revision = session.book["revision"]
@@ -97,6 +106,13 @@ class Series:
         return None
 
     def snapshot(self) -> dict:
+        for item in self.state["items"]:
+            if "review_count" not in item:
+                try:
+                    saved = self.load(item) if item["document_id"] else None
+                    item["review_count"] = pending_review_count(saved.book) if saved else 0
+                except (OSError, ValueError, KeyError):
+                    item["review_count"] = None
         result = copy.deepcopy(self.state)
         result.update(managed=self.managed, directory=str(self.directory), groups=[], removed=[])
         for item in result["items"]:
@@ -285,11 +301,13 @@ class FolderProject(Series):
         destination = self.group_path(group)
         if not isinstance(paths, list) or not paths or not all(isinstance(path, str) for path in paths):
             raise ValueError(t("Choose a folder or PDF files"))
-        inputs = []
+        inputs, folders_skipped, skipped = [], 0, 0
+        before = len(self.state["items"])
         for name in paths:
             path = Path(name).resolve(strict=True)
             if path.is_dir() and path.suffix != ".mteproj":
                 inputs.extend(sorted((p for p in path.iterdir() if p.is_file() and p.suffix.lower() == ".pdf"), key=lambda p: natural_key(p.name)))
+                folders_skipped += sum(p.is_dir() and not p.name.startswith(".") for p in path.iterdir())
             else:
                 inputs.append(path)
         if not inputs:
@@ -313,8 +331,10 @@ class FolderProject(Series):
                 known = next((item for item in self.state["items"] if not item.get("removed")
                               and item.get("imported_from") == str(source) and item["sha256"] == fingerprint), None)
                 if known and not book:
+                    skipped += 1
                     continue
                 if any(item["path"] == str(source) and not item.get("removed") for item in self.state["items"]) and not book:
+                    skipped += 1
                     continue
                 number = 2
                 while target.exists() or any(item["path"] == str(target) for item in self.state["items"]):
@@ -337,7 +357,8 @@ class FolderProject(Series):
                             copies.append(local)
                         source_info["path"] = str(local)
                     save_project(book, self.project(item))
-                    item.update(document_id=book["id"], revision=book["revision"], title=book["metadata"]["title"], page_count=len(book["pages"]))
+                    item.update(document_id=book["id"], revision=book["revision"], title=book["metadata"]["title"], page_count=len(book["pages"]),review_count=pending_review_count(book))
+        return {"added": len(self.state["items"])-before,"skipped": skipped,"folders_skipped": folders_skipped}
 
     def import_missing(self, entry: dict, saved: Path):
         """Keep legacy edits reachable even when their original source is already missing."""
@@ -370,9 +391,16 @@ class FolderProject(Series):
             raise ValueError(t("The selected books are no longer available in this view"))
         return items
 
-    def move_books(self, ids: list[str], group: str):
-        destination, items = self.group_path(group), self.selected(ids)
-        with self.change() as (move, _, _directories):
+    def move_books(self, ids: list[str], group: str, create=False):
+        destination = contained(self.root, folder_name(group)) if create else self.group_path(group)
+        items = self.selected(ids)
+        with self.change() as (move, _, directories):
+            if create:
+                if destination.exists() or group in self.state["groups"]:
+                    raise ValueError(t("Destination already exists: {0}", group))
+                destination.mkdir()
+                directories.append(destination)
+                self.state["groups"].append(group)
             for item in items:
                 old, target = Path(item["path"]), destination / Path(item["path"]).name
                 if old == target:
@@ -409,8 +437,12 @@ class FolderProject(Series):
                 item.update(path=str(target), group=group, removed=False)
                 item.pop("restore_path", None)
 
-    def group(self, name: str, previous: str | None = None):
+    def group(self, name: str, previous: str | None = None, ids: list[str] | None = None):
         name = folder_name(name)
+        if ids is not None:
+            if previous is not None:
+                raise ValueError(t("Only a new group can move selected books"))
+            return self.move_books(ids,name,create=True)
         if previous is not None:
             source = self.group_path(previous)
             if not previous:
@@ -480,6 +512,7 @@ class FolderProject(Series):
             self.state["items"] = [self.item(identifier) for identifier in ids] + [item for item in self.state["items"] if item.get("removed")]
 
     def refresh(self):
+        previous = {item["id"]: item["path"] for item in self.state["items"] if not item.get("removed")}
         if self.state["output_directory"] and not Path(self.state["output_directory"]).is_absolute():
             self.state["output_directory"] = str(contained(self.root, self.state["output_directory"]))
         groups = sorted((p.name for p in self.root.iterdir() if p.is_dir() and not p.is_symlink() and not p.name.startswith(".") and p.suffix != ".mteproj"), key=natural_key)
@@ -513,6 +546,12 @@ class FolderProject(Series):
             for path in sorted(files.keys() - known, key=natural_key):
                 self.state["items"].append(self.new_item(Path(path), files[path]))
             self.state["groups"] = list(dict.fromkeys([*groups, *(item["group"] for item in active if item["group"])]))
+            self.state["refreshed_at"] = datetime.now(UTC).isoformat()
+        items = [item for item in self.state["items"] if not item.get("removed")]
+        return {"added": sum(item["id"] not in previous for item in items),
+                "renamed": sum(item["id"] in previous and item["path"] != previous[item["id"]] for item in items),
+                "missing": sum(not Path(item["path"]).is_file() for item in items),
+                "changed": sum(bool(item.get("changed")) for item in items)}
 
     def snapshot(self) -> dict:
         result = super().snapshot()

@@ -27,3 +27,9 @@ input,select {background: white; border: 1px solid #b1b6bd; border-radius: 2px; 
 .paired-view.rtl .drop-before::before {left: auto; right: -2px;}.paired-view.rtl .drop-after::after {right: auto; left: -2px;}
 .review-actions {display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 6px 8px; background: #f4f5f6; border-bottom: 1px solid var(--line);}.review-actions button {font-size: 10px; padding: 3px 6px;}.review-actions button[aria-pressed=true] {background: #f6e4c9; border-color: #b98a48;}.current-preview > small {color: #174f7d; font-weight: 600;}.virtual-gap > span {padding: 8px; text-align: center; font-size: 11px;}
 .preset-menu {position: relative; align-self: center; font-size: 11px;}.preset-menu summary {cursor: pointer; padding: 5px 7px;}.preset-menu > div {position: absolute; z-index: 5; top: 100%; right: 0; min-width: 175px; display: flex; flex-direction: column; gap: 5px; background: #f7f7f7; border: 1px solid var(--line); padding: 7px; box-shadow: 0 4px 12px #0003;}
+
+.page-jump {display:flex; align-items:center; gap:5px; font-size:11px; white-space:nowrap;}.page-jump input {width:50px; height:25px; text-align:center; padding:2px 4px;}
+.inspector-actions > summary {padding:8px 10px; cursor:pointer; font-size:11px; font-weight:600; border-bottom:1px solid #c7cbd0; background:#e8e8e8;}.inspector-actions section {padding-top:10px;}
+.preview-help summary {cursor:pointer; font-size:11px;}.preview-help p {margin-top:7px; font-size:11px;}
+.full-width {white-space:normal;}.batch-results td > button {display:block; max-width:100%; white-space:normal; margin-top:5px; font-size:11px;}
+@media(max-width:1030px) {.preview-navigation {gap:5px; padding:0 6px;}.page-jump input {width:42px;}.zoom-control small {min-width:25px;}}

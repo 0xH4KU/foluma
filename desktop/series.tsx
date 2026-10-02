@@ -2,7 +2,8 @@ import React, {useEffect, useRef, useState} from "react";
 import {revealItemInDir} from "@tauri-apps/plugin-opener";
 import type {HostAPI, Metadata, RenderResolution, Series, SeriesItem} from "../sdk/types";
 import {t} from "../sdk/i18n";
-import {runBatch, type BatchRow} from "../plugins/editor/src/batch";
+import {batchSummary, runBatch, type BatchRow} from "../plugins/editor/src/batch";
+import {moveBefore} from "../plugins/editor/src/pages";
 
 export function ProjectCreator({host, initialName, migrate, create, close}: {
   host: HostAPI; initialName: string; migrate: boolean;
@@ -30,72 +31,133 @@ export function ProjectCreator({host, initialName, migrate, create, close}: {
   </dialog>;
 }
 
-export function SeriesWorkspace({series,host,busy,hidden,dpi,openBook,migrate}: {
+function GroupDialog({initialName,count,rename,create,close}: {
+  initialName: string; count: number; rename: boolean;
+  create: (name: string,move: boolean) => Promise<unknown>; close: () => void;
+}) {
+  const [name,setName] = useState(initialName);
+  const [move,setMove] = useState(false);
+  const [working,setWorking] = useState(false);
+  const [error,setError] = useState("");
+  const dialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => {dialog.current?.showModal();}, []);
+  return <dialog ref={dialog} className="project-dialog" aria-labelledby="group-title" onCancel={event => {event.preventDefault(); if (!working) close();}}>
+    <h1 id="group-title">{t(rename ? "Rename group" : "New group")}</h1>
+    <form onSubmit={event => {event.preventDefault(); if (working) return; setWorking(true); setError(""); void create(name.trim(),move).then(result => {if (result !== false) close();}).catch(reason => setError(String(reason))).finally(() => setWorking(false));}}>
+      <fieldset disabled={working}><label>{t("Group name")}<input autoFocus required maxLength={120} value={name} onChange={event => setName(event.target.value)}/></label>
+        {!rename && count > 0 && <label className="check-label"><input type="checkbox" checked={move} onChange={event => setMove(event.target.checked)}/>{t("Move the {0} selected books into this group",count)}</label>}
+        {error && <p role="alert" className="series-error">{error}</p>}
+        <div className="project-dialog-actions"><button type="button" onClick={close}>{t("Cancel")}</button><button className="primary" disabled={!name.trim()}>{t(rename ? "Rename group" : move ? "Create group and move books" : "Create group")}</button></div>
+      </fieldset>
+    </form>
+  </dialog>;
+}
+
+export function SeriesWorkspace({series,host,busy,hidden,dpi,openBook,migrate,selectionChanged,prepare}: {
   series: Series; host: HostAPI; busy: boolean; hidden: boolean; dpi: RenderResolution;
   openBook: (item: SeriesItem) => void; migrate: () => void;
+  selectionChanged: (count: number) => void; prepare: () => Promise<void>;
 }) {
   const [selected,setSelected] = useState<Set<string>>(new Set());
   const [group,setGroup] = useState("all");
-  const [groupName,setGroupName] = useState("");
+  const [groupDialog,setGroupDialog] = useState<{previous?: string} | null>(null);
   const [destination,setDestination] = useState("");
   const [filter,setFilter] = useState("all");
+  const [search,setSearch] = useState("");
   const [direction,setDirection] = useState("");
   const [cover,setCover] = useState("");
   const [render,setRender] = useState(false);
   const [running,setRunning] = useState(false);
+  const [finished,setFinished] = useState(false);
+  const [progress,setProgress] = useState<{title: string; index: number; total: number} | null>(null);
   const [rows,setRows] = useState<Record<string,BatchRow>>({});
+  const [moving,setMoving] = useState<{item: SeriesItem; position: number} | null>(null);
+  const moveDialog = useRef<HTMLDialogElement>(null);
+  const working = useRef(false);
   const abort = useRef(new AbortController());
   const removed = group === "removed";
   const activeGroup = group.startsWith("group/") ? group.slice(6) : "";
   const visible = (removed ? series.removed : series.items).filter(item =>
-    (removed || group === "all" || item.group === activeGroup) && (filter === "all" || (filter === "review" ? !item.reviewed : !item.exported)));
+    (removed || group === "all" || item.group === activeGroup) &&
+    (filter === "all" || (filter === "review" ? !item.reviewed || !!item.review_count : !item.exported)) &&
+    (item.title+" "+item.path.split(/[\\/]/).pop()).toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()));
   const chosen = visible.filter(item => selected.has(item.id));
+  useEffect(() => {selectionChanged(chosen.length);}, [chosen.length,selectionChanged]);
   useEffect(() => () => abort.current.abort(), []);
+  useEffect(() => {if (moving) moveDialog.current?.showModal();}, [!!moving]);
   useEffect(() => {
     if (activeGroup && !series.groups.includes(activeGroup)) setGroup("all");
     if (destination && !series.groups.includes(destination)) setDestination("");
     const ids = new Set([...series.items,...series.removed].map(item => item.id));
     setSelected(old => new Set([...old].filter(id => ids.has(id))));
   }, [series]);
-  const run = async (action: () => Promise<unknown>) => {
-    if (busy) return;
-    host.setBusy?.(true);
-    try {await action();} catch (error) {host.report(error);} finally {host.setBusy?.(false);}
+  const run = async (action: () => Promise<unknown>, reportError = true) => {
+    if (busy || working.current) return false;
+    working.current = true; host.notify(""); host.setBusy?.(true);
+    try {await prepare(); await action(); return true;}
+    catch (error) {if (!reportError) throw error; host.report(error); return false;}
+    finally {working.current = false; host.setBusy?.(false);}
   };
+  const chooseGroup = (value: string) => {setGroup(value); setSelected(new Set());};
   const addPaths = (paths: string[]) => run(async () => {
-    await host.rpc("series.add",{paths,group: activeGroup});
-    host.notify(t("Books added to the project"));
+    const result = await host.rpc<Series>("series.add",{paths,group: activeGroup});
+    const summary = result.summary;
+    host.notify(t("{0} books added to {1} · {2} duplicates skipped · {3} subfolders skipped",
+      summary?.added || 0,activeGroup || t("Ungrouped"),summary?.skipped || 0,summary?.folders_skipped || 0));
+    if (removed) setGroup("all");
+    setFilter("all"); setSearch("");
   });
   useEffect(() => {
     if (hidden || !series.managed) return;
     return host.onFileDrop?.(paths => void addPaths(paths));
   }, [hidden,series.managed,group,busy]);
-  const add = (kind: "pdf" | "folder" | "book") => run(async () => {
-    const picked = await host.pickFile(kind === "pdf" ? {extensions: ["pdf"],multiple: true,title: t("Add PDFs to project")} :
-      {directory: true,title: t(kind === "book" ? "Choose a .mteproj project folder" : "Import PDFs from folder")});
-    if (picked) await host.rpc("series.add",{paths: Array.isArray(picked) ? picked : [picked],group: activeGroup});
+  const add = async (kind: "pdf" | "folder" | "book") => {
+    try {
+      const picked = await host.pickFile(kind === "pdf" ? {extensions:["pdf"],multiple:true,title:t("Add PDFs to project")} :
+        {directory:true,title:t(kind === "book" ? "Choose a .mteproj book folder" : "Import PDFs from this folder only")});
+      if (picked) await addPaths(Array.isArray(picked) ? picked : [picked]);
+    } catch (error) {host.report(error);}
+  };
+  const refresh = () => run(async () => {
+    const result = await host.rpc<Series>("series.refresh"), summary = result.summary;
+    host.notify(t("Folder refreshed · {0} added · {1} renamed · {2} missing · {3} changed",
+      summary?.added || 0,summary?.renamed || 0,summary?.missing || 0,summary?.changed || 0));
   });
-  const chooseGroup = (value: string) => {setGroup(value); setSelected(new Set()); setGroupName(value.startsWith("group/") ? value.slice(6) : "");};
+  const restore = (ids: string[]) => run(async () => {
+    await host.rpc("series.restore",{ids});
+    setGroup("all");
+    setFilter("all"); setSearch(""); setSelected(new Set(ids));
+    host.notify(t("{0} books restored",ids.length));
+  });
+  const remove = () => run(async () => {
+    const ids = chosen.map(item => item.id);
+    await host.rpc("series.remove",{ids});
+    setSelected(new Set());
+    host.notify(t("{0} books moved to Removed",ids.length),{label:t("Undo removal"),run:() => void restore(ids)});
+  });
   const applySettings = () => run(async () => {
     const metadata: Partial<Metadata> = {};
     if (direction) metadata.direction = direction as "rtl"|"ltr";
-    if (cover) metadata.cover_only = cover === "exclude";
-    if (!await host.confirm(t("Apply shared settings to {0} selected books?\n\n{1}",chosen.length,chosen.map(item => item.title).join("\n")))) return;
-    const results = await host.rpc<{id: string; error: string|null}[]>("series.configure",{ids: chosen.map(item => item.id),metadata});
+    if (cover) metadata.cover_only = cover === "shelf";
+    const changes = [direction && t(direction === "rtl" ? "Right to left" : "Left to right"),cover && t(cover === "shelf" ? "Bookshelf only" : "Bookshelf and book body")].filter(Boolean).join(" · ");
+    if (!await host.confirm(t("Apply {0} to {1} selected books?\n\n{2}",changes,chosen.length,chosen.map(item => item.title).join("\n")),t("Apply shared settings"),t("Apply settings"))) return;
+    const results = await host.rpc<{id: string; error: string|null}[]>("series.configure",{ids:chosen.map(item => item.id),metadata});
     const errors = results.filter(result => result.error);
-    if (errors.length) host.report(new Error(errors.map(result => `${series.items.find(item => item.id === result.id)!.title}: ${result.error}`).join("\n")));
+    if (errors.length) host.report(new Error(errors.map(result => (series.items.find(item => item.id === result.id)?.title || result.id)+": "+result.error).join("\n")));
     else host.notify(t("Shared settings applied to {0} books",chosen.length));
   });
-  const exportBooks = async (items = chosen) => {
-    if (busy || !items.length || !series.output_directory) return;
-    const cohort = items.map(item => ({id: item.id,path: item.path}));
-    setRows(Object.fromEntries(cohort.map(item => [item.id,{path: item.path,state: "pending" as const}])));
-    setRunning(true); host.setBusy?.(true); abort.current = new AbortController();
+  const exportBooks = async (items = chosen, allowRendering = render, retrying = false) => {
+    if (busy || working.current || !items.length || !series.output_directory) return;
+    const cohort = items.map(item => ({id:item.id,path:item.path,title:item.title}));
+    working.current = true; host.notify(""); host.setBusy?.(true);
+    setFinished(false); setRunning(true); abort.current = new AbortController();
+    setRows(old => ({...retrying ? old : {},...Object.fromEntries(cohort.map(item => [item.id,{path:item.path,state:"pending" as const}]))}));
     try {
-      await runBatch(host,{paths: cohort.map(item => item.path),entries: cohort,directory: series.output_directory,render,dpi},abort.current.signal,
-        (index,row) => setRows(old => ({...old,[cohort[index].id]: row})));
+      await prepare(); host.setOutputDirectory?.(series.output_directory);
+      await runBatch(host,{paths:cohort.map(item => item.path),entries:cohort,directory:series.output_directory,render:allowRendering,dpi},abort.current.signal,
+        (index,row) => {setRows(old => ({...old,[cohort[index].id]:row})); if (row.state === "working") setProgress({title:cohort[index].title,index:index+1,total:cohort.length});});
     } catch (error) {host.report(error);}
-    finally {setRunning(false); host.setBusy?.(false);}
+    finally {setRunning(false); setFinished(true); setProgress(null); working.current = false; host.setBusy?.(false);}
   };
   const reorder = (item: SeriesItem, offset: number) => run(async () => {
     const other = visible[visible.indexOf(item)+offset];
@@ -104,52 +166,105 @@ export function SeriesWorkspace({series,host,busy,hidden,dpi,openBook,migrate}: 
     [ids[a],ids[b]] = [ids[b],ids[a]];
     await host.rpc("series.reorder",{ids});
   });
-  const retry = visible.filter(item => rows[item.id] && rows[item.id].state !== "completed");
-  const labels = {pending: t("Pending"),working: t("Processing"),completed: t("Exported"),failed: t("Failed"),cancelled: t("Cancelled"),skipped: t("Skipped")};
-  const realGroup = !!activeGroup;
+  const moveTo = () => run(async () => {
+    if (!moving || !Number.isInteger(moving.position) || moving.position < 1 || moving.position > visible.length) throw new Error(t("Destination position is out of range"));
+    const index = visible.findIndex(item => item.id === moving.item.id), target = moving.position-1;
+    if (target !== index) {
+      const before = target < index ? visible[target].id : visible[target+1]?.id || null;
+      await host.rpc("series.reorder",{ids:moveBefore(series.items,new Set([moving.item.id]),before).map(item => item.id)});
+      host.notify(t("Book moved to position {0}",moving.position));
+    }
+    setMoving(null);
+  });
+  const retry = series.items.filter(item => rows[item.id] && rows[item.id].state !== "completed");
+  const labels = {pending:t("Pending"),working:t("Processing"),completed:t("Exported"),failed:t("Failed"),cancelled:t("Cancelled"),skipped:t("Skipped")};
   return <section className="series-workspace" hidden={hidden}>
+    {groupDialog && <GroupDialog initialName={groupDialog.previous || ""} count={chosen.length} rename={!!groupDialog.previous} close={() => setGroupDialog(null)}
+      create={(name,move) => run(async () => {
+        await host.rpc("series.group",{name,...groupDialog.previous ? {previous:groupDialog.previous} : {},...move ? {ids:chosen.map(item => item.id)} : {}});
+        if (groupDialog.previous || move) setGroup("group/"+name);
+        if (!groupDialog.previous || destination === groupDialog.previous) setDestination(name);
+        host.notify(move ? t("Group {0} created · {1} books moved",name,chosen.length) : t(groupDialog.previous ? "Group renamed to {0}" : "Group {0} created",name));
+      },false)}/>}
+    {moving && <dialog ref={moveDialog} className="project-dialog" aria-labelledby="move-book-title" onCancel={event => {event.preventDefault(); if (!busy) setMoving(null);}}>
+      <h1 id="move-book-title">{t("Move book to position")}</h1><p>{moving.item.title}</p>
+      <form onSubmit={event => {event.preventDefault(); void moveTo();}}><fieldset disabled={busy}><label>{t("Position in this list")}<input autoFocus type="number" required min={1} max={visible.length} value={moving.position} onChange={event => setMoving({...moving,position:Number(event.target.value)})}/></label>
+        <div className="project-dialog-actions"><button type="button" onClick={() => setMoving(null)}>{t("Cancel")}</button><button className="primary">{t("Move book")}</button></div>
+      </fieldset></form>
+    </dialog>}
     <div className="series-heading"><div><h1>{series.name}</h1><p>{t("{0} books · {1} reviewed · {2} exported",series.items.length,series.items.filter(item => item.reviewed).length,series.items.filter(item => item.exported).length)}</p></div>
-      {series.managed ? <div className="project-actions"><button disabled={busy} onClick={() => void run(() => host.rpc("series.refresh"))}>{t("Refresh folder")}</button><button onClick={() => void revealItemInDir(series.directory).catch(host.report)}>{t("Show project folder")}</button></div> : <button disabled={busy} className="primary" onClick={migrate}>{t("Save series as folder project")}</button>}
+      {series.managed ? <div className="project-actions"><button disabled={busy} onClick={() => void refresh()}>{t("Refresh folder")}</button><button onClick={() => void revealItemInDir(series.directory).catch(host.report)}>{t("Show project folder")}</button></div> : <button disabled={busy} className="primary" onClick={migrate}>{t("Save series as folder project")}</button>}
     </div>
-    <p className="series-help">{t(series.managed ? "PDFs and saved edits live in this project folder. Groups match its subfolders." : "This legacy series links to external files. Save it as a folder project to organize your books.")}</p>
-    {series.managed && <div className="project-tools">
-      <button disabled={busy} onClick={() => void add("pdf")}>{t("Add PDFs…")}</button><button disabled={busy} onClick={() => void add("folder")}>{t("Import folder…")}</button><button disabled={busy} onClick={() => void add("book")}>{t("Import book project…")}</button>
-      <label>{t("Group name")}<input disabled={busy} value={groupName} maxLength={120} onChange={event => setGroupName(event.target.value)}/></label>
-      <button disabled={busy || !groupName.trim()} onClick={() => void run(async () => {await host.rpc("series.group",{name: groupName.trim()}); chooseGroup("group/"+groupName.trim());})}>{t("New group")}</button>
-      {realGroup && <><button disabled={busy || !groupName.trim() || groupName.trim() === activeGroup} onClick={() => void run(async () => {await host.rpc("series.group",{name: groupName.trim(),previous: activeGroup}); chooseGroup("group/"+groupName.trim());})}>{t("Rename group")}</button><button disabled={busy} onClick={() => void run(async () => {if (await host.confirm(t("Remove group “{0}”? Its books will move to Ungrouped.",activeGroup))) {await host.rpc("series.delete_group",{name: activeGroup}); chooseGroup("group/");}})}>{t("Remove group")}</button></>}
-    </div>}
+    {series.managed ? <div className="project-tools">
+      <button className="primary" disabled={busy || removed} onClick={() => void add("pdf")}>{t("Add PDFs…")}</button>
+      <details className="group-menu" onClickCapture={event => {if ((event.target as HTMLElement).closest("button")) event.currentTarget.open = false;}}><summary>{t("More import options")}</summary><div>
+        <button disabled={busy || removed} onClick={() => void add("folder")}>{t("Import folder · this level only…")}</button>
+        <button disabled={busy || removed} onClick={() => void add("book")}>{t("Import book project…")}</button>
+      </div></details>
+      <button disabled={busy} onClick={() => setGroupDialog({})}>{t("New group…")}</button>
+      {!!activeGroup && <details className="group-menu" onClickCapture={event => {if ((event.target as HTMLElement).closest("button")) event.currentTarget.open = false;}}><summary>{t("Group actions")}</summary><div>
+        <button disabled={busy} onClick={() => setGroupDialog({previous:activeGroup})}>{t("Rename group…")}</button>
+        <button disabled={busy} onClick={() => void run(async () => {if (await host.confirm(t("Remove group “{0}”? Its books will move to Ungrouped.",activeGroup),t("Remove group"),t("Remove group"))) {await host.rpc("series.delete_group",{name:activeGroup}); setGroup("group/"); host.notify(t("Group removed · books moved to Ungrouped"));}})}>{t("Remove group")}</button>
+      </div></details>}
+      {series.refreshed_at && <small className="refresh-time">{t("Refreshed at {0}",new Date(series.refreshed_at).toLocaleTimeString(undefined,{hour:"2-digit",minute:"2-digit"}))}</small>}
+    </div> : <p className="series-help">{t("This legacy series links to external files. Save it as a folder project to organize your books.")}</p>}
+    <nav className="project-groups" aria-label={t("Book groups")}>
+      <button aria-pressed={group === "all"} disabled={busy} onClick={() => chooseGroup("all")}>{t("All books")}</button>
+      <button aria-pressed={group === "group/"} disabled={busy} onClick={() => chooseGroup("group/")}>{t("Ungrouped")}</button>
+      {series.groups.map(name => <button key={name} aria-pressed={group === "group/"+name} disabled={busy} onClick={() => chooseGroup("group/"+name)}>{name}</button>)}
+      {series.managed && <button aria-pressed={removed} disabled={busy} onClick={() => chooseGroup("removed")}>{t("Removed ({0})",series.removed.length)}</button>}
+    </nav>
     <div className="project-filters">
-      <label>{t("Group")}<select value={group} disabled={busy} onChange={event => chooseGroup(event.target.value)}><option value="all">{t("All books")}</option><option value="group/">{t("Ungrouped")}</option>{series.groups.map(name => <option key={name} value={"group/"+name}>{name}</option>)}{series.managed && <option value="removed">{t("Removed ({0})",series.removed.length)}</option>}</select></label>
+      <input type="search" aria-label={t("Search books")} placeholder={t("Search title or filename…")} value={search} onChange={event => {setSearch(event.target.value); setSelected(new Set());}}/>
       <label>{t("Show")}<select value={filter} disabled={busy} onChange={event => {setFilter(event.target.value); setSelected(new Set());}}><option value="all">{t("All books")}</option><option value="review">{t("Needs review")}</option><option value="export">{t("Needs export")}</option></select></label>
+      <span>{t("{0} books shown",visible.length)}</span>
     </div>
-    <div className="series-selection"><button disabled={busy} onClick={() => setSelected(new Set(visible.map(item => item.id)))}>{t("Select visible")}</button><button disabled={busy || removed} onClick={() => setSelected(new Set(visible.filter(item => item.reviewed && !item.exported).map(item => item.id)))}>{t("Select reviewed for export")}</button><button disabled={busy} onClick={() => setSelected(new Set())}>{t("Clear selection")}</button><span>{t("{0} selected",chosen.length)}</span>
-      {series.managed && (removed ? <button disabled={busy || !chosen.length} onClick={() => void run(() => host.rpc("series.restore",{ids: chosen.map(item => item.id)}))}>{t("Restore selected")}</button> : <>
-        <select aria-label={t("Move selected books to group")} disabled={busy} value={destination} onChange={event => setDestination(event.target.value)}><option value="">{t("Ungrouped")}</option>{series.groups.map(name => <option key={name}>{name}</option>)}</select>
-        <button disabled={busy || !chosen.length} onClick={() => void run(() => host.rpc("series.move",{ids: chosen.map(item => item.id),group: destination}))}>{t("Move selected")}</button>
-        <button disabled={busy || !chosen.length} onClick={() => void run(async () => {await host.rpc("series.remove",{ids: chosen.map(item => item.id)}); host.notify(t("Books moved to Removed. Restore them from the group menu."));})}>{t("Remove selected")}</button>
-      </>)}
-    </div>
+    {visible.length > 0 && <div className="series-selection">
+      <button disabled={busy} onClick={() => setSelected(new Set(visible.map(item => item.id)))}>{t("Select visible")}</button>
+      {!removed && visible.some(item => item.reviewed && !item.exported) && <button disabled={busy} onClick={() => setSelected(new Set(visible.filter(item => item.reviewed && !item.exported).map(item => item.id)))}>{t("Select reviewed for export")}</button>}
+      {!!chosen.length && <><button disabled={busy} onClick={() => setSelected(new Set())}>{t("Clear selection")}</button><span>{t("{0} selected",chosen.length)}</span>
+        {series.managed && (removed ? <button disabled={busy} onClick={() => void restore(chosen.map(item => item.id))}>{t("Restore selected")}</button> : <>
+          <label>{t("Move to")}<select aria-label={t("Move selected books to group")} disabled={busy} value={destination} onChange={event => setDestination(event.target.value)}><option value="">{t("Ungrouped")}</option>{series.groups.map(name => <option key={name}>{name}</option>)}</select></label>
+          <button disabled={busy} onClick={() => void run(async () => {await host.rpc("series.move",{ids:chosen.map(item => item.id),group:destination}); host.notify(t("{0} books moved to {1}",chosen.length,destination || t("Ungrouped")));})}>{t("Move selected")}</button>
+          <button disabled={busy} onClick={() => void remove()}>{t("Remove selected")}</button>
+        </>)}
+      </>}
+    </div>}
     <div className="series-table-scroll"><table className="series-table"><thead><tr><th>{t("Select")}</th><th>{t("Volume")}</th><th>{t("Pages")}</th><th>{t("Review")}</th><th>{t("Export")}</th>{series.managed && !removed && <th>{t("Order")}</th>}</tr></thead><tbody>{visible.map((item,index) => {
       const row = rows[item.id];
       return <tr key={item.id} className={item.id === series.current_id ? "current-volume" : ""}>
         <td><input type="checkbox" aria-label={t("Select {0}",item.title)} disabled={busy} checked={selected.has(item.id)} onChange={event => {const next = new Set(selected); if(event.target.checked) next.add(item.id); else next.delete(item.id); setSelected(next);}}/></td>
-        <td><button className="volume-link" disabled={busy || removed || item.changed || item.missing} title={item.path} onClick={() => openBook(item)}>{item.title}</button><small>{item.group || t("Ungrouped")} · {item.path.split(/[\\/]/).pop()}{item.missing ? ` · ${t("Source missing")}` : item.changed ? ` · ${t("Source changed")}` : ""}</small>
-          {series.managed && !removed && (item.missing || item.changed) && <button onClick={() => void run(async () => {const path = await host.pickFile({extensions: ["pdf"],title: t("Locate the original PDF")}); if (typeof path === "string") await host.rpc("series.relink",{id: item.id,path});})} disabled={busy}>{t("Relink…")}</button>}
+        <td><button className="volume-link" disabled={busy || removed || item.changed || item.missing} title={t("Edit pages: {0}",item.title)} onClick={() => openBook(item)}>{item.title}</button>
+          <small>{item.group || t("Ungrouped")} · {item.path.split(/[\\/]/).pop()}{item.missing ? " · "+t("Source missing") : item.changed ? " · "+t("Source changed") : ""}</small>
+          {series.managed && !removed && (item.missing || item.changed) && <button onClick={() => void run(async () => {const path = await host.pickFile({extensions:["pdf"],title:t("Locate the original PDF")}); if (typeof path === "string") {await host.rpc("series.relink",{id:item.id,path}); host.notify(t("Source relinked: {0}",item.title));}})} disabled={busy}>{t("Relink…")}</button>}
         </td>
-        <td>{item.page_count ?? "—"}</td><td>{item.reviewed ? t("Reviewed") : item.revision === null ? t("Not started") : t("Editing")}</td>
-        <td aria-live="polite">{row && row.state !== "completed" ? labels[row.state] : item.exported ? t("Exported") : item.needs_export ? t("Needs re-export") : "—"}{row?.error && <small className="series-error">{row.error}</small>}{(row?.output || item.output) && <button className="export-link" onClick={() => void revealItemInDir(row?.output || item.output!).catch(host.report)}>{t("Show file")}</button>}</td>
-        {series.managed && !removed && <td className="project-order"><button aria-label={t("Move {0} up",item.title)} disabled={busy || index === 0} onClick={() => void reorder(item,-1)}>↑</button><button aria-label={t("Move {0} down",item.title)} disabled={busy || index === visible.length-1} onClick={() => void reorder(item,1)}>↓</button></td>}
+        <td>{item.page_count ?? "—"}</td><td>{item.reviewed ? t("Book reviewed") : item.revision === null ? t("Not started") : t("Not reviewed")}{!!item.review_count && <small className="review-pending">{t("{0} pages need attention",item.review_count)}</small>}{item.review_count === null && <small>{t("Open to check page marks")}</small>}</td>
+        <td aria-live="polite">{row && row.state !== "completed" ? labels[row.state] : item.exported ? t("Exported") : item.needs_export ? t("Needs re-export") : "—"}
+          {row?.error && <small className="series-error">{row.renderRequired ? t("{0} pages need rendering before export",row.renderRequired.length) : row.error}</small>}
+          {!removed && row?.state === "failed" && <button disabled={busy} onClick={() => {if (row.renderRequired) setRender(true); void exportBooks([item],!!row.renderRequired || render,true);}}>{t(row.renderRequired ? "Allow rendering and retry this book" : "Retry this book")}</button>}
+          {(row?.output || item.output) && <button className="export-link" onClick={() => void revealItemInDir(row?.output || item.output!).catch(host.report)}>{t("Show file")}</button>}
+        </td>
+        {series.managed && !removed && <td className="project-order"><button aria-label={t("Move {0} up",item.title)} disabled={busy || index === 0} onClick={() => void reorder(item,-1)}>↑</button><button aria-label={t("Move {0} down",item.title)} disabled={busy || index === visible.length-1} onClick={() => void reorder(item,1)}>↓</button><button aria-label={t("Move {0} to position…",item.title)} disabled={busy} onClick={() => setMoving({item,position:index+1})}>…</button></td>}
       </tr>;
-    })}</tbody></table>{!visible.length && <p className="empty-row">{t("No books match this filter")}</p>}</div>
-    {!removed && <><details className="shared-settings"><summary>{t("Shared settings for selected books")}</summary><fieldset disabled={busy}>
-      <label>{t("Reading direction")}<select value={direction} onChange={event => setDirection(event.target.value)}><option value="">{t("Keep each book's setting")}</option><option value="rtl">{t("Right to left")}</option><option value="ltr">{t("Left to right")}</option></select></label>
-      <label>{t("Cover in body")}<select value={cover} onChange={event => setCover(event.target.value)}><option value="">{t("Keep each book's setting")}</option><option value="include">{t("Include")}</option><option value="exclude">{t("Exclude")}</option></select></label>
-      <button disabled={!chosen.length || !direction && !cover} onClick={() => void applySettings()}>{t("Apply to {0} books",chosen.length)}</button>
-    </fieldset><p>{t("Only selected books are affected. Page order, blanks and crops remain individual to each volume.")}</p></details>
-    <div className="series-export"><button className="output-folder" disabled={busy} title={series.output_directory} onClick={() => void run(async () => {const directory = await host.pickFile({directory: true,title: t("Choose output folder")}); if(typeof directory === "string") await host.rpc("series.output",{directory});})}>{series.output_directory || t("Choose output folder")}</button>
-      <label><input type="checkbox" checked={render} disabled={busy} onChange={event => setRender(event.target.checked)}/>{t("Allow rendering complex PDF pages")} ({dpi === "auto" ? t("Auto resolution") : `${dpi} DPI`})</label>
-      {running ? <button onClick={() => {abort.current.abort(); void host.cancelTask?.().catch(host.report);}}>{t("Cancel batch")}</button> : <><button disabled={busy || !retry.length || !series.output_directory} onClick={() => void exportBooks(retry)}>{t("Retry remaining")}</button><button className="primary" disabled={busy || !chosen.length || !series.output_directory} onClick={() => void exportBooks()}>{t("Export {0} books",chosen.length)}</button></>}
-    </div>
-    <p className="series-help">{t("Each book exports its own saved layout. Existing output files are kept; duplicate names receive a number.")}</p></>}
+    })}</tbody></table>{!visible.length && <div className="project-empty">
+      <h2>{t(removed ? "No removed books" : !series.items.length ? "Add your first book" : "No books match this filter")}</h2>
+      <p>{t(removed ? "Removed books will appear here. You can restore them at any time." : !series.items.length ? "Add PDFs or drop files here. Copies and saved edits stay in this project." : "Try another group, clear the search or show all books.")}</p>
+      {series.managed && !removed && !series.items.length && <button className="primary" disabled={busy} onClick={() => void add("pdf")}>{t("Add PDFs…")}</button>}
+    </div>}</div>
+    {!removed && <>
+      {!!chosen.length && <details className="shared-settings"><summary>{t("Shared settings for {0} selected books",chosen.length)}</summary><fieldset disabled={busy}>
+        <label>{t("Reading direction")}<select value={direction} onChange={event => setDirection(event.target.value)}><option value="">{t("Keep each book's setting")}</option><option value="rtl">{t("Right to left")}</option><option value="ltr">{t("Left to right")}</option></select></label>
+        <label>{t("Cover placement")}<select value={cover} onChange={event => setCover(event.target.value)}><option value="">{t("Keep each book's setting")}</option><option value="both">{t("Bookshelf and book body")}</option><option value="shelf">{t("Bookshelf only")}</option></select></label>
+        <button disabled={!direction && !cover} onClick={() => void applySettings()}>{t("Apply to {0} books",chosen.length)}</button>
+      </fieldset><p>{t("Only selected books are affected. Page order, blanks and crops remain individual to each volume.")}</p></details>}
+      {running && progress && <p className="batch-summary" role="status">{t("Book {0} of {1}: {2}",progress.index,progress.total,progress.title)}</p>}
+      {finished && <p className="batch-summary" role="status">{batchSummary(Object.values(rows))}</p>}
+      {!!series.items.length && <div className="series-export">
+        <label className="output-directory">{t("Output folder")}<button className="output-folder" disabled={busy} title={series.output_directory} onClick={() => void run(async () => {const directory = await host.pickFile({directory:true,title:t("Choose output folder")}); if(typeof directory === "string") {await host.rpc("series.output",{directory}); host.setOutputDirectory?.(directory);}})}>{series.output_directory || t("Choose output folder…")}</button></label>
+        <label><input type="checkbox" checked={render} disabled={busy} onChange={event => setRender(event.target.checked)}/>{t("Allow rendering complex PDF pages")} ({dpi === "auto" ? t("Auto resolution") : t("{0} DPI",dpi)})</label>
+        {running ? <button onClick={() => {abort.current.abort(); void host.cancelTask?.().catch(host.report);}}>{t("Cancel batch")}</button> : <><button disabled={busy || !retry.length || !series.output_directory} onClick={() => void exportBooks(retry,render,true)}>{t("Retry remaining")}</button><button id="export-selected-books" className="primary" disabled={busy || !chosen.length || !series.output_directory} onClick={() => void exportBooks()}>{t("Export {0} selected books",chosen.length)}</button></>}
+        {!series.output_directory && <small>{t("Choose an output folder to enable export.")}</small>}
+      </div>}
+    </>}
   </section>;
 }

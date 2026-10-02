@@ -1,0 +1,30 @@
+import assert from "node:assert/strict";
+import {test} from "node:test";
+import type {Book} from "../sdk/types.ts";
+
+test("document RPC acknowledgements update the active revision before notifications arrive", async () => {
+  const before = {schema:1,id:"active",revision:0,pages:[],metadata:{title:"Before"}} as unknown as Book;
+  const after = {...before,revision:1,metadata:{...before.metadata,title:"After"}};
+  (globalThis as any).window = {__TAURI_INTERNALS__:{invoke:async () => after}};
+  const {createHost,rpc,setDocument} = await import("../desktop/bridge.ts");
+  const host = createHost(error => {throw error;},()=>{});
+  setDocument(before,true);
+  await host.apply(before,{metadata:{title:"After"}});
+  assert.equal(host.getDocument()!.revision,1,"Save must immediately see the acknowledged revision");
+  setDocument(before);
+  assert.equal(host.getDocument()!.metadata.title,"After","late notifications cannot restore an older revision");
+  const saved = {...after,dirty:false,project_path:"saved.mteproj"};
+  (globalThis as any).window.__TAURI_INTERNALS__.invoke = async () => saved;
+  await rpc("project.save",{document_id:after.id,base_revision:after.revision});
+  setDocument({...after,dirty:true,project_path:null});
+  assert.equal(host.getDocument()!.dirty,false,"late edit notifications cannot undo the acknowledged save");
+  assert.equal(host.getDocument()!.project_path,"saved.mteproj");
+  const background = {...after,id:"background",revision:2};
+  (globalThis as any).window.__TAURI_INTERNALS__.invoke = async () => background;
+  await rpc("document.apply",{document_id:background.id});
+  assert.equal(host.getDocument()!.id,"active","background edits cannot replace the active book");
+  (globalThis as any).window.__TAURI_INTERNALS__.invoke = async () => before;
+  await rpc("project.open",{path:"saved.mteproj"});
+  assert.equal(host.getDocument()!.revision,0,"explicitly reopening a saved book can restore its saved revision");
+  delete (globalThis as any).window;
+});
