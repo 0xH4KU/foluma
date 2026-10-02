@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import hashlib
 import io
-import json
 import math
 import re
 from pathlib import Path
@@ -18,7 +16,7 @@ from .i18n import t
 from .model import image_page, new_id, validate
 from .pdf.image_extraction import _image_from_xref
 from .pdf.png import image_to_epub_member
-from .storage import check_sources, copy_asset, digest
+from .storage import check_sources, copy_asset, digest, preview_path
 
 
 class RenderRequired(ValueError):
@@ -207,12 +205,9 @@ def crop_box(page: dict) -> tuple[int, int, int, int]:
 
 
 def preview(book: dict, page_id: str, size: int, directory: Path) -> str:
-    if type(size) is not int or not 64 <= size <= 2048:
-        raise ValueError(t("Preview size is out of range"))
+    output = preview_path(book, page_id, size, directory)
     page = next(p for p in book["pages"] if p["id"] == page_id)
-    key = hashlib.sha256(json.dumps([book["id"], page, size], sort_keys=True).encode()).hexdigest()
     directory.mkdir(parents=True, exist_ok=True)
-    output = directory / f"{key}.png"
     if not output.exists():
         if page["kind"] == "blank":
             scale = size / max(page["width"], page["height"])

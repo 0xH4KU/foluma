@@ -1,5 +1,6 @@
 import copy
 import io
+import os
 import shutil
 import tempfile
 import time
@@ -49,6 +50,146 @@ class FolderProjectTests(unittest.TestCase):
         state = self.call('series.create', parent=str(self.root), name='漫畫專案')
         self.project = Path(state['directory'])
         return self.call('series.add', paths=[str(self.sources)])
+
+    def test_close_project_preserves_edits_and_stops_startup_restore(self):
+        state = self.create()
+        book = self.task('series.open', entry_id=state['items'][0]['id'])
+        book = self.call('document.apply', document_id=book['id'], base_revision=book['revision'],
+                         changes={'metadata': {'title': 'Saved title'}})
+        self.engine.jobs['blocking'] = {'state': 'running'}
+        with self.assertRaisesRegex(ValueError, 'background task'):
+            self.call('series.close')
+        del self.engine.jobs['blocking']
+        self.engine.session.apply(book['id'], book['revision'], {'metadata': {'title': 'Unsaved'}})
+        with self.assertRaisesRegex(ValueError, 'Save your changes'):
+            self.call('series.close')
+        self.call('series.close', discard=True)
+        self.assertIsNone(self.call('document.get'))
+        self.assertIsNone(self.call('series.get'))
+        self.assertFalse((self.root / 'data/series/current.json').exists())
+        restarted = Engine(self.root / 'data')
+        self.addCleanup(restarted.close)
+        self.assertIsNone(restarted.series)
+        self.assertIsNone(restarted.session)
+        self.call('series.open_project', path=str(self.project))
+        self.assertEqual(self.call('document.get')['metadata']['title'], 'Saved title')
+        self.assertTrue(Path(state['items'][0]['path']).is_file())
+
+    def test_permanent_delete_rolls_back_and_preserves_other_files(self):
+        state = self.create()
+        item, other = state['items'][:2]
+        book = self.task('series.open', entry_id=item['id'])
+        exported = self.root / 'kept.epub'
+        exported.write_bytes(b'exported')
+        self.engine.series.state['items'][0]['output'] = str(exported)
+        with self.assertRaises(ValueError):
+            self.call('series.delete', ids=[item['id']])
+        self.call('series.remove', ids=[item['id']])
+        removed = Path(self.call('series.get')['removed'][0]['path'])
+        info = self.call('series.delete_info', ids=[item['id'], item['id']])
+        self.assertEqual(info['count'], 1)
+        self.assertGreater(info['bytes'], removed.stat().st_size)
+        with patch.object(self.engine.series, 'save', side_effect=OSError('disk full')):
+            with self.assertRaisesRegex(OSError, 'disk full'):
+                self.call('series.delete', ids=[item['id']])
+        self.assertTrue(removed.exists())
+        self.assertTrue(Path(book['project_path']).is_dir())
+        self.assertEqual(len(self.call('series.get')['removed']), 1)
+        deleted = self.call('series.delete', ids=[item['id']])
+        self.assertEqual(deleted['summary'], {'deleted': 1, 'cleanup_pending': False})
+        self.assertFalse(removed.exists())
+        self.assertFalse(Path(book['project_path']).exists())
+        self.assertTrue(Path(other['path']).exists())
+        self.assertEqual(exported.read_bytes(), b'exported')
+        self.assertTrue((self.sources / 'Vol.1.pdf').exists())
+        self.call('series.open_project', path=str(self.project))
+        self.assertEqual(len(self.call('series.get')['items']), 2)
+        self.assertFalse(self.call('series.get')['removed'])
+
+    def test_delete_recovers_interruption_and_retries_failed_cleanup(self):
+        item = self.create()['items'][0]
+        book = self.task('series.open', entry_id=item['id'])
+        self.call('series.remove', ids=[item['id']])
+        removed = Path(self.call('series.get')['removed'][0]['path'])
+        staged = self.project / '.foluma/deleted' / item['id']
+        staged.mkdir(parents=True)
+        removed.parent.rename(staged / 'pdf')
+        Path(book['project_path']).rename(staged / 'book')
+        self.call('series.open_project', path=str(self.project))
+        self.assertTrue(removed.exists())
+        self.assertTrue(Path(book['project_path']).exists())
+        self.assertFalse(staged.exists())
+        with patch('foluma.series.shutil.rmtree', side_effect=OSError('busy')):
+            result = self.call('series.delete', ids=[item['id']])
+        self.assertTrue(result['summary']['cleanup_pending'])
+        self.assertFalse(result['removed'])
+        self.assertTrue(staged.exists())
+        self.call('series.open_project', path=str(self.project))
+        self.assertFalse(staged.exists())
+
+    def test_delete_rejects_symlinks_and_embedded_exports(self):
+        item = self.create()['items'][0]
+        book = self.task('series.open', entry_id=item['id'])
+        self.call('series.remove', ids=[item['id']])
+        alias = Path(book['project_path']) / 'external'
+        alias.symlink_to(self.sources, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, 'symbolic links'):
+            self.call('series.delete', ids=[item['id']])
+        self.assertTrue((self.sources / 'Vol.1.pdf').exists())
+        alias.unlink()
+        self.engine.series.state['items'][0]['output'] = str(Path(book['project_path']) / 'export.epub')
+        with self.assertRaisesRegex(ValueError, 'exported files'):
+            self.call('series.delete', ids=[item['id']])
+
+    def test_cache_limit_clear_protection_and_preview_regeneration(self):
+        self.assertEqual(self.call('storage.info')['limit'], 5_000_000_000)
+        self.call('storage.configure', limit=10_000_000_000)
+        for invalid in [True, 0, 999_999_999, 1_000_000_000_001, '5', 1.5]:
+            with self.assertRaises(ValueError):
+                self.call('storage.configure', limit=invalid)
+        restarted = Engine(self.root / 'data')
+        self.addCleanup(restarted.close)
+        self.assertEqual(restarted.cache_limit(), 10_000_000_000)
+        directory = self.root / 'data/previews'
+        directory.mkdir()
+        old, newer, active = [directory / f'{name}.png' for name in ['old', 'newer', 'active']]
+        for index, path in enumerate([old, newer, active]):
+            path.write_bytes(b'12345678')
+            os.utime(path, (index, index))
+        self.engine.previewing[active] = 1
+        with patch.object(self.engine, 'cache_limit', return_value=16):
+            result = self.call('storage.info')
+        self.assertEqual(result['used'], 16)
+        self.assertFalse(old.exists())
+        self.assertTrue(newer.exists())
+        os.utime(newer, None)
+        with patch.object(self.engine, 'cache_limit', return_value=1):
+            self.assertEqual(self.call('storage.info')['used'], 16)
+        asset = self.root / 'data/assets/keep.png'
+        asset.parent.mkdir(exist_ok=True)
+        asset.write_bytes(b'keep image')
+        cleared = self.call('storage.clear')
+        self.assertEqual(cleared['freed'], 8)
+        self.assertTrue(active.exists())
+        self.assertTrue(asset.exists())
+        del self.engine.previewing[active]
+        self.call('storage.clear')
+        item = self.create()['items'][0]
+        book = self.task('series.open', entry_id=item['id'])
+        params = {'document_id': book['id'], 'page_id': book['pages'][0]['id']}
+        preview = self.call('document.preview', **params)
+        with patch.object(self.engine, 'run_worker', side_effect=AssertionError('cached preview started worker')):
+            self.assertEqual(self.call('document.preview', **params), preview)
+        self.call('storage.clear')
+        self.assertFalse((self.root / 'data' / preview).exists())
+        self.assertEqual(self.call('document.preview', **params), preview)
+        self.assertTrue((self.root / 'data' / preview).exists())
+        self.assertEqual(self.call('document.get')['pages'], book['pages'])
+        self.assertTrue(Path(item['path']).exists())
+        (directory / 'escape.png').symlink_to(asset)
+        with self.assertRaisesRegex(ValueError, 'symbolic links'):
+            self.call('storage.clear')
+        self.assertEqual(asset.read_bytes(), b'keep image')
 
     def test_import_refresh_summaries_and_atomic_create_with_move(self):
         nested = self.sources / 'nested'

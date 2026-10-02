@@ -12,7 +12,7 @@ Foluma uses Tauri and React/TypeScript for the desktop interface, with a separat
 
 The page editor installs from the bundled package on first launch, without a network connection. It is an independent plugin: disabling or removing it takes effect after restarting, and the app will not automatically reinstall it. Basic conversion remains available without the editor.
 
-For an existing installation, update **Page editor** to **0.3.4** from **Plugins → Included packages**, or install `artifacts/org.foluma.editor-0.3.4.mte-plugin`, then restart. Update the Traditional Chinese pack to **0.3.2** for the new interface text.
+For an existing installation, update **Page editor** to **0.3.4** from **Plugins → Included packages**, or install `artifacts/org.foluma.editor-0.3.4.mte-plugin`, then restart. Update the Traditional Chinese pack to **0.3.3** for the new interface text.
 
 English is built in. Choose **Install and use 繁體中文** under **Preferences → Interface language** to install the included language pack and switch immediately. Language packs can be disabled or removed immediately. A book's language setting controls EPUB metadata independently of the interface language.
 
@@ -24,6 +24,8 @@ A project is a folder you choose. Imported PDFs are copied into it, groups corre
 - Create groups while keeping your selection, or choose to move the selected books into the new group. Rename groups, move books between them, and change their order with arrows or **Move to position**. Groups support one level of subfolders.
 - Search titles and filenames, and use the visible group tabs to switch between **All books**, **Ungrouped**, custom groups and **Removed**.
 - Remove books and use **Undo removal**, or recover them from **Removed**. Removing a group moves its books to **Ungrouped**. Import sources are left untouched.
+- In **Removed**, permanently delete selected books or **Empty Removed** after reviewing the book count and size. This deletes project PDF copies and saved edits; original import sources and exported files are kept.
+- **Close project** returns to the welcome screen and stops reopening that project on the next launch. Saved project files are kept, and unsaved changes use the existing save/discard/cancel prompt. Finish or cancel background tasks before closing.
 - Open the project or choose **Refresh folder** to discover filesystem changes. New PDFs are added; uniquely matching renamed files retain their saved edits. Missing or changed sources are flagged, and relinking an edited book requires the original content.
 - Migrate an older series with **Save series as folder project**. Its individual book layouts and review state are preserved.
 
@@ -64,6 +66,8 @@ Supported full-page images are extracted directly, preserving their original ima
 
 PNG rendering uses lossless compression. Pages are stored as grayscale only when every pixel's red, green, and blue channels are equal; even a slight tint retains RGB. Preview requests prioritize the large preview and discard obsolete queued work.
 
+**Preferences → Storage** shows preview cache usage and offers a **1 GB / 5 GB / 10 GB / Custom** limit (default 5 GB; custom 1–1000 GB). Save the limit to apply it. Oldest-used previews are removed automatically; recent or generating previews may temporarily exceed the limit. **Clear cache now** clears available previews immediately and reports the space freed. Previews regenerate when needed. PDFs, saved edits, imported/rendered image assets and Removed books are excluded from this cache limit and cleanup.
+
 In a local 243-page benchmark, the faster PNG encoder reduced a fresh import from approximately **127 seconds to 50 seconds**. All rendered pages retained identical decoded pixels, while total PNG size increased by about 2%. Results depend on the PDF and hardware; see the [validation record](docs/VALIDATION.md) for the measurements and test coverage. Reopening a saved project reuses its rendered images.
 
 ## Development
@@ -92,7 +96,7 @@ The build produces editor and Traditional Chinese language packages, plus a plug
 
 This is a local test build for macOS Apple Silicon, using an ad-hoc signature without notarization. Windows and Linux have not been validated. Plugin catalog fetching and hash verification are implemented; local and bundled packages are the supported distribution path for this iteration.
 
-Folder changes are reconciled when opening or refreshing a project, without a continuous watcher. Preview files and generated assets are retained locally; automatic cache cleanup is not implemented. Plugins are trusted local code and are not sandboxed.
+Folder changes are reconciled when opening or refreshing a project, without a continuous watcher. Preview files are subject to the configured cache limit; generated image assets are retained locally. Plugins are trusted local code and are not sandboxed.
 
 ## Provenance
 

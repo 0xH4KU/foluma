@@ -47,6 +47,38 @@ def contained(root: Path, relative: str) -> Path:
     return path
 
 
+def preview_path(book: dict, page_id: str, size: int, directory: Path) -> Path:
+    if type(size) is not int or not 64 <= size <= 2048:
+        raise ValueError(t("Preview size is out of range"))
+    page = next(page for page in book["pages"] if page["id"] == page_id)
+    key = hashlib.sha256(json.dumps([book["id"], page, size], sort_keys=True).encode()).hexdigest()
+    return directory / f"{key}.png"
+
+
+def owned_files(root: Path, path: Path) -> list[Path]:
+    for part in (path, *path.parents):
+        if part == root:
+            break
+        if part.is_symlink():
+            raise ValueError(t("Cannot clean a folder containing symbolic links"))
+    contained(root, path.relative_to(root).as_posix())
+    if not path.exists():
+        return []
+    if path.is_file():
+        return [path]
+    files = []
+    def fail(error):
+        raise error
+
+    for directory, folders, names in os.walk(path, onerror=fail):
+        for name in [*folders, *names]:
+            child = Path(directory) / name
+            if child.is_symlink():
+                raise ValueError(t("Cannot clean a folder containing symbolic links"))
+        files.extend(Path(directory) / name for name in names)
+    return files
+
+
 def copy_asset(source: Path, directory: Path, extension: str) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     destination = directory / f"{digest(source)}.{extension}"

@@ -11,6 +11,7 @@ import {Icon} from "../sdk/icons";
 import {connect, createHost, dropFiles, resourceUrl, rpc, setDocument, subscribeActivity, subscribeSeries, subscribeTask} from "./bridge";
 import {ProjectCreator, SeriesWorkspace} from "./series";
 import {flushMetadata, type MetadataDraft} from "./metadata";
+import {StorageSettings} from "./storage";
 import "./style.css";
 
 function Preview({book, page, host}: {book: Book; page: Page | undefined; host: HostAPI}) {
@@ -41,7 +42,7 @@ function MetadataForm({book, host, disabled, information}: {book: Book; host: Ho
   </fieldset>;
 }
 
-function DocumentView({book, host, disabled, dpi, relink, hidden, information}: {book: Book; host: HostAPI; disabled: boolean; dpi: RenderResolution; relink: (id: string) => void; hidden: boolean; information: MetadataEditor}) {
+function DocumentView({book, host, disabled, dpi, relink, hidden, information, previewGeneration}: {book: Book; host: HostAPI; disabled: boolean; dpi: RenderResolution; relink: (id: string) => void; hidden: boolean; information: MetadataEditor; previewGeneration: number}) {
   const [selected, setSelected] = useState<string | null>(null);
   const [viewport, setViewport] = useState({top: 0, height: 600});
   const list = useRef<HTMLDivElement>(null);
@@ -77,7 +78,7 @@ function DocumentView({book, host, disabled, dpi, relink, hidden, information}: 
       <div className="list-footer">{t("Selected page {0}",page ? book.pages.indexOf(page) + 1 : 0)}<span>{t("Output: EPUB 3 / fixed layout")}</span></div>
     </div>
     <aside className="book-inspector"><div className="panel-heading"><strong>{t("Book information")}</strong><span>{page ? t("Page {0} preview", book.pages.indexOf(page) + 1) : ""}</span></div>
-      <Preview book={book} page={page} host={host}/>
+      {!hidden && <Preview key={previewGeneration} book={book} page={page} host={host}/>}
       <div className="output-settings"><MetadataForm book={book} host={host} disabled={disabled} information={information}/>
         <dl className="export-details"><div><dt>{t("Output format")}</dt><dd>{t("EPUB 3 · fixed layout")}</dd></div><div><dt>{t("Image handling")}</dt><dd>{t("Preserve originals")}</dd></div><div><dt>{t("Complex pages")}</dt><dd>{dpi === "auto" ? t("Auto · ask first") : `${dpi} ${t("DPI · ask first")}`}</dd></div></dl>
       </div>
@@ -136,6 +137,7 @@ function App() {
   const [selectedBooks,setSelectedBooks] = useState(0);
   const [job, setJob] = useState<Task | null>(null);
   const [ready, setReady] = useState(false);
+  const [previewGeneration, setPreviewGeneration] = useState(0);
   const [working, setWorking] = useState(false);
   const [draggingFiles, setDraggingFiles] = useState(false);
   const [pluginBusy, setPluginBusy] = useState(false);
@@ -318,6 +320,13 @@ function App() {
       setTab("managed" in result ? "series" : "convert"); setOutput("");
     }
   },false);
+  const closeProject = () => run(async () => {
+    if (!await replaceAllowed(t("Close project"))) return;
+    await rpc("series.close", {discard: true});
+    setDocument(null); setSeries(null); setSelectedBooks(0); setOutput(""); setTab("convert");
+    setPreviewGeneration(value => value + 1);
+    host.notify(t("Project closed"));
+  },false);
   useEffect(() => {
     const shortcuts = (event: KeyboardEvent) => {
       if (!(event.metaKey || event.ctrlKey) || busy || !ready) return;
@@ -346,6 +355,7 @@ function App() {
       <button className="command" title={t("Open standalone PDF (⌘O)")} disabled={!ready || busy} onClick={() => void run(() => openPdf(),false)}><Icon name="pdf"/><span>{t("Open standalone PDF")}</span></button>
       <button className="command" disabled={!ready || busy} onClick={() => void run(() => openFolder(),false)}><Icon name="folder"/><span>{t("New project")}</span></button>
       <button className="command" title={t("Open project (⇧⌘O)")} disabled={!ready || busy} onClick={openProject}><Icon name="folder"/><span>{t("Open project")}</span></button>
+      {series && <button className="command" disabled={!ready || busy} onClick={closeProject}><Icon name="folder"/><span>{t("Close project")}</span></button>}
       <button className="command" title={t("Save current book project (⌘S)")} disabled={!book || busy} onClick={saveProject}><Icon name="save"/><span>{t("Save book project")}</span></button>
       <span className="toolbar-divider"/>
       <button className="command primary" title={tab === "series" ? t("Export selected books (⌘E)") : t("Export current book: {0} (⌘E)",book?.metadata.title || "")}
@@ -377,7 +387,7 @@ function App() {
       {job?.state === "running" && <div className="job" role="status"><div><span>{job.progress.message}</span><small>{job.progress.done} / {job.progress.total}</small></div><progress value={job.progress.done} max={job.progress.total || 1}/><button onClick={() => void rpc("task.cancel", {id: job.id}).catch(host.report)}>{t("Cancel")}</button></div>}
       {!book && tab === "convert" && <section className="welcome"><Icon name="pdf"/><h1>{t("Convert PDF to EPUB")}</h1><p>{t("Open one PDF or create a project to organize multiple books.")}</p><div className="welcome-actions"><button className="primary" disabled={!ready || !!busy} onClick={() => void run(() => openPdf())}>{t("Open PDF…")}</button><button disabled={!ready || !!busy} onClick={() => void run(() => openFolder())}>{t("New project")}</button></div><p>{t("Review book information and pages, then export a fixed-layout EPUB.")}</p><button className="welcome-project" disabled={!ready || !!busy} onClick={openProject}>{t("Open existing project…")}</button></section>}
       {series && <SeriesWorkspace key={series.id} series={series} host={host} busy={busy} hidden={tab !== "series"} dpi={dpi} openBook={openVolume} selectionChanged={setSelectedBooks} prepare={commitInformation} migrate={() => setCreatingProject({migrate: true})}/>}
-      {book && <DocumentView book={book} host={host} hidden={tab !== "convert"} disabled={busy || !!savingInformation} dpi={dpi} information={{draft:metadataDraft,change:changeInformation,commit:commitInformation}} relink={id => void run(async () => {const path = await host.pickFile({extensions: ["pdf"], title: t("Relink original PDF")}); if (typeof path === "string") await rpc("project.relink", {...documentRef(host.getDocument()!), source_id: id, path});})}/>}
+      {book && <DocumentView previewGeneration={previewGeneration} book={book} host={host} hidden={tab !== "convert"} disabled={busy || !!savingInformation} dpi={dpi} information={{draft:metadataDraft,change:changeInformation,commit:commitInformation}} relink={id => void run(async () => {const path = await host.pickFile({extensions: ["pdf"], title: t("Relink original PDF")}); if (typeof path === "string") await rpc("project.relink", {...documentRef(host.getDocument()!), source_id: id, path});})}/>}
       {tab === "plugins" && <section className="content"><div className="page-heading"><h1>{t("Plugins")}</h1><button disabled={busy} onClick={installLocal}>{t("Install local package…")}</button></div>
         {plugins.restart_required && <div className="restart-banner"><span>{t("Plugin changes take effect after restarting.")}</span><button disabled={busy} onClick={restart}>{t("Restart")}</button></div>}
         {plugins.safe_mode && <div className="notice">{t("Safe mode: plugins were not loaded for this session.")}<button onClick={restart}>{t("Restart normally")}</button></div>}
@@ -398,9 +408,10 @@ function App() {
       </section>}
       {tab === "settings" && <section className="content settings"><div className="page-heading"><h1>{t("Preferences")}</h1></div><article className="settings-row"><div><h2>{t("Complex page rendering")}</h2><p>{t("Auto follows the main image’s resolution, up to 6000 pixels on the longest edge. Text and vector pages use 200 DPI within that limit. Rendering requires confirmation.")}</p></div><label>{t("Resolution")}<select value={dpi} onChange={e => setDpi(e.target.value === "auto" ? "auto" : Number(e.target.value))}><option value="auto">{t("Auto (recommended)")}</option>{[72, 150, 200, 300, 400, 600].map(value => <option key={value} value={value}>{value} DPI</option>)}</select></label></article>
         <article className="settings-row"><div><h2>{t("Interface language")}</h2><p>{t("Changes menus and buttons. Book language controls EPUB metadata separately.")}</p><button onClick={() => void navigate("plugins")}>{t("Manage language packs")}</button></div><label>{t("Interface language")}<select value={locale.code} disabled={busy} onChange={e => void useLanguage(e.target.value)}>{locale.available.map(item => <option key={item.code} value={item.code}>{item.name}</option>)}{bundled.filter(item => item.language && !locale.available.some(value => value.code === item.language!.locale)).map(item => <option key={item.id} value={item.language!.locale}>{t(plugins.items.some(value => value.id === item.id) ? "Enable and use {0}" : "Install and use {0}",item.language!.name)}</option>)}</select></label></article>
+        <StorageSettings host={host} busy={busy} prepare={commitInformation} refreshPreviews={() => setPreviewGeneration(value => value + 1)}/>
         <article className="settings-row"><div><h2>{t("Safe mode")}</h2><p>{t("Skip all plugins on the next launch to troubleshoot plugin issues.")}</p></div><button disabled={busy} onClick={() => void run(async () => {if (await replaceAllowed(t("Restart in safe mode"))) {await rpc("app.safe_mode"); await invoke("restart_app");}})}>{t("Restart in safe mode")}</button></article>
       </section>}
-      {plugins.active.filter(plugin => plugin.ui).map(plugin => <PluginWorkspace key={plugin.id} plugin={plugin} host={host} visible={plugin.id === tab}/>)}
+      {plugins.active.filter(plugin => plugin.ui).map(plugin => <PluginWorkspace key={`${plugin.id}:${previewGeneration}`} plugin={plugin} host={host} visible={plugin.id === tab}/>)}
     </main></div><footer className="statusbar"><span className={`status-dot ${ready ? "online" : ""}`}/><span>{plugins.safe_mode ? t("Safe mode") : !ready ? t("Starting engine") : job?.state === "running" ? job.progress.message : t("Ready")}</span><span className="status-right">{tab === "series" ? t("{0} selected",selectedBooks) : book ? t("{0} pages · {1}",book.pages.length,book.metadata.direction === "rtl" ? t("RTL") : t("LTR")) : "PDF → EPUB"}<span>{t("Tasks: ")}{busy ? 1 : 0}</span><span>{t("Processed locally")}</span></span></footer>
   </div>;
 }

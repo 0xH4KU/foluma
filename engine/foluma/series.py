@@ -15,7 +15,7 @@ from pathlib import Path
 
 from .i18n import t
 from .model import Session, new_id
-from .storage import atomic_json, contained, digest, open_project, parse_json, save_project
+from .storage import atomic_json, contained, digest, open_project, owned_files, parse_json, save_project
 
 
 def path_id(path: str) -> str:
@@ -164,6 +164,7 @@ class FolderProject(Series):
                 contained(self.root, item["restore_path"])
         for group in self.state.get("groups", []):
             folder_name(group)
+        self.finish_deletions()
         # A process interrupted between moving a PDF to Removed and saving the manifest
         # leaves a deterministic recovery location. Restore that uncommitted move on open.
         for item in self.state["items"]:
@@ -436,6 +437,60 @@ class FolderProject(Series):
                     move(old, target)
                 item.update(path=str(target), group=group, removed=False)
                 item.pop("restore_path", None)
+
+    def deletion_paths(self, identifier: str) -> tuple[Path, Path]:
+        return self.root / ".foluma/removed" / identifier, self.root / ".foluma/books" / f"{identifier}.mteproj"
+
+    def delete_info(self, ids: list[str]) -> dict:
+        items = self.selected(ids, removed=True)
+        files = []
+        for item in items:
+            for path in self.deletion_paths(item["id"]):
+                files.extend(owned_files(self.root, path))
+                if any(other.get("output") and Path(other["output"]).resolve().is_relative_to(path.resolve())
+                       for other in self.state["items"]):
+                    raise ValueError(t("Move exported files out of this book's data folder before deleting it"))
+        return {"count": len(items), "bytes": sum(path.stat().st_size for path in files)}
+
+    def finish_deletions(self) -> bool:
+        directory = self.root / ".foluma/deleted"
+        owned_files(self.root, directory)
+        pending = False
+        for staged in directory.iterdir() if directory.exists() else []:
+            if not staged.is_dir() or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", staged.name):
+                raise ValueError(t("Invalid project book identity"))
+            item = next((item for item in self.state["items"] if item["id"] == staged.name), None)
+            if item:
+                if not item.get("removed"):
+                    raise ValueError(t("Invalid project book identity"))
+                for name, destination in zip(("pdf", "book"), self.deletion_paths(item["id"])):
+                    source = staged / name
+                    if source.exists():
+                        owned_files(self.root, destination)
+                        if destination.exists():
+                            raise ValueError(t("Destination already exists: {0}", destination.name))
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        source.rename(destination)
+            try:
+                shutil.rmtree(staged)
+            except OSError:
+                pending = True
+        return pending
+
+    def delete(self, ids: list[str]) -> dict:
+        info = self.delete_info(ids)
+        items = self.selected(ids, removed=True)
+        self.finish_deletions()
+        with self.change() as (move, _, _directories):
+            for item in items:
+                for name, source in zip(("pdf", "book"), self.deletion_paths(item["id"])):
+                    if source.exists():
+                        move(source, self.root / ".foluma/deleted" / item["id"] / name)
+            self.state["items"] = [item for item in self.state["items"] if item not in items]
+            if self.state["current_id"] in ids:
+                self.state["current_id"] = None
+        pending = self.finish_deletions()
+        return {"deleted": info["count"], "cleanup_pending": pending}
 
     def group(self, name: str, previous: str | None = None, ids: list[str] | None = None):
         name = folder_name(name)

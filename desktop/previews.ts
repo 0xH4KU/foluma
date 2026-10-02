@@ -4,7 +4,6 @@ type Waiter = {resolve: (url: string) => void; reject: (error: unknown) => void}
 type Preview = {size: number; started: boolean; load: () => Promise<string>; waiters: Set<Waiter>};
 
 export function createPreviewLoader(load: (book: Book, page: Page, size: number) => Promise<string>): HostAPI["preview"] {
-  const cache = new Map<string, string>();
   const pending = new Map<string, Preview>();
   let running = 0;
 
@@ -17,8 +16,6 @@ export function createPreviewLoader(load: (book: Book, page: Page, size: number)
       const [key, preview] = next;
       preview.started = true; running++;
       Promise.resolve().then(preview.load).then(url => {
-        cache.set(key, url);
-        if (cache.size > 1500) cache.delete(cache.keys().next().value!);
         pending.delete(key);
         preview.waiters.forEach(waiter => waiter.resolve(url));
       }, error => {
@@ -33,8 +30,6 @@ export function createPreviewLoader(load: (book: Book, page: Page, size: number)
     const asset = book.assets?.[page.asset_id || ""];
     const source = book.sources?.[asset?.source_id || ""];
     const key = JSON.stringify([book.id,page.id,page.asset_id,page.width,page.height,page.crop,size,asset?.path,source?.path]);
-    const cached = cache.get(key);
-    if (cached !== undefined) {resolve(cached); return;}
     let preview = pending.get(key);
     if (!preview) {
       preview = {size,started: false,load: () => load(book,page,size),waiters: new Set()};

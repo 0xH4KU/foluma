@@ -4,6 +4,7 @@ import type {HostAPI, Metadata, RenderResolution, Series, SeriesItem} from "../s
 import {t} from "../sdk/i18n";
 import {batchSummary, runBatch, type BatchRow} from "../plugins/editor/src/batch";
 import {moveBefore} from "../plugins/editor/src/pages";
+import {formatBytes} from "./storage";
 
 export function ProjectCreator({host, initialName, migrate, create, close}: {
   host: HostAPI; initialName: string; migrate: boolean;
@@ -135,6 +136,13 @@ export function SeriesWorkspace({series,host,busy,hidden,dpi,openBook,migrate,se
     setSelected(new Set());
     host.notify(t("{0} books moved to Removed",ids.length),{label:t("Undo removal"),run:() => void restore(ids)});
   });
+  const deleteBooks = (ids: string[]) => run(async () => {
+    const info = await host.rpc<{count: number; bytes: number}>("series.delete_info", {ids});
+    if (!await host.confirm(t("Permanently delete {0} removed books ({1})? Their project PDF copies and saved edits will be deleted. Import sources and exported files are kept. This cannot be undone.", info.count, formatBytes(info.bytes)), t("Permanently delete books"), t("Delete permanently"))) return;
+    const result = await host.rpc<Series & {summary: {deleted: number; cleanup_pending: boolean}}>("series.delete", {ids});
+    setSelected(new Set());
+    host.notify(result.summary.cleanup_pending ? t("Books deleted. Some files could not be cleaned; Foluma will retry when this project is opened.") : t("{0} books permanently deleted", result.summary.deleted));
+  });
   const applySettings = () => run(async () => {
     const metadata: Partial<Metadata> = {};
     if (direction) metadata.direction = direction as "rtl"|"ltr";
@@ -218,12 +226,13 @@ export function SeriesWorkspace({series,host,busy,hidden,dpi,openBook,migrate,se
       <input type="search" aria-label={t("Search books")} placeholder={t("Search title or filename…")} value={search} onChange={event => {setSearch(event.target.value); setSelected(new Set());}}/>
       <label>{t("Show")}<select value={filter} disabled={busy} onChange={event => {setFilter(event.target.value); setSelected(new Set());}}><option value="all">{t("All books")}</option><option value="review">{t("Needs review")}</option><option value="export">{t("Needs export")}</option></select></label>
       <span>{t("{0} books shown",visible.length)}</span>
+      {removed && !!series.removed.length && <button disabled={busy} onClick={() => void deleteBooks(series.removed.map(item => item.id))}>{t("Empty Removed…")}</button>}
     </div>
     {visible.length > 0 && <div className="series-selection">
       <button disabled={busy} onClick={() => setSelected(new Set(visible.map(item => item.id)))}>{t("Select visible")}</button>
       {!removed && visible.some(item => item.reviewed && !item.exported) && <button disabled={busy} onClick={() => setSelected(new Set(visible.filter(item => item.reviewed && !item.exported).map(item => item.id)))}>{t("Select reviewed for export")}</button>}
       {!!chosen.length && <><button disabled={busy} onClick={() => setSelected(new Set())}>{t("Clear selection")}</button><span>{t("{0} selected",chosen.length)}</span>
-        {series.managed && (removed ? <button disabled={busy} onClick={() => void restore(chosen.map(item => item.id))}>{t("Restore selected")}</button> : <>
+        {series.managed && (removed ? <><button disabled={busy} onClick={() => void restore(chosen.map(item => item.id))}>{t("Restore selected")}</button><button disabled={busy} onClick={() => void deleteBooks(chosen.map(item => item.id))}>{t("Delete selected permanently…")}</button></> : <>
           <label>{t("Move to")}<select aria-label={t("Move selected books to group")} disabled={busy} value={destination} onChange={event => setDestination(event.target.value)}><option value="">{t("Ungrouped")}</option>{series.groups.map(name => <option key={name}>{name}</option>)}</select></label>
           <button disabled={busy} onClick={() => void run(async () => {await host.rpc("series.move",{ids:chosen.map(item => item.id),group:destination}); host.notify(t("{0} books moved to {1}",chosen.length,destination || t("Ungrouped")));})}>{t("Move selected")}</button>
           <button disabled={busy} onClick={() => void remove()}>{t("Remove selected")}</button>
@@ -248,7 +257,7 @@ export function SeriesWorkspace({series,host,busy,hidden,dpi,openBook,migrate,se
       </tr>;
     })}</tbody></table>{!visible.length && <div className="project-empty">
       <h2>{t(removed ? "No removed books" : !series.items.length ? "Add your first book" : "No books match this filter")}</h2>
-      <p>{t(removed ? "Removed books will appear here. You can restore them at any time." : !series.items.length ? "Add PDFs or drop files here. Copies and saved edits stay in this project." : "Try another group, clear the search or show all books.")}</p>
+      <p>{t(removed ? "Removed books will appear here. Restore them or permanently delete them to free space." : !series.items.length ? "Add PDFs or drop files here. Copies and saved edits stay in this project." : "Try another group, clear the search or show all books.")}</p>
       {series.managed && !removed && !series.items.length && <button className="primary" disabled={busy} onClick={() => void add("pdf")}>{t("Add PDFs…")}</button>}
     </div>}</div>
     {!removed && <>

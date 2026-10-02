@@ -38,13 +38,15 @@ test("previews drop obsolete work, prioritize the current page, share requests a
   work.get("current")!.resolve("current.png");
   work.get("thumbnail")!.resolve("thumbnail.png");
   await Promise.all([current,thumbnail]);
-  assert.equal(await preview(book,page("current"),1024),"current.png");
-  assert.equal(started.length,4);
+  const reloaded = preview(book,page("current"),1024);
+  await setImmediate(); work.get("current")!.resolve("regenerated.png");
+  assert.equal(await reloaded,"regenerated.png","disk previews may have been evicted between requests");
+  assert.equal(started.length,5);
   const relocated = {id: "book", assets: {current: {kind: "pdf",source_id: "source"}}, sources: {source: {path: "/new/group/book.pdf"}}} as unknown as Book;
   const fresh = preview(relocated,page("current"),1024);
   await setImmediate(); work.get("current")!.resolve("relocated.png");
   assert.equal(await fresh,"relocated.png");
-  assert.equal(started.length,5,"a moved source must not reuse work queued with the old path");
+  assert.equal(started.length,6,"a moved source must not reuse work queued with the old path");
   const failed = preview(book,page("retry"));
   const rejected = assert.rejects(failed,/decode failed/);
   await setImmediate(); work.get("retry")!.reject(new Error("decode failed"));

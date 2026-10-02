@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -18,7 +19,7 @@ from .i18n import messages, t
 from .model import Session, new_id, validate
 from .plugins import Plugins, platform_id, unpack
 from .series import FolderProject, Series, pending_review_count
-from .storage import atomic_json, digest, open_project, parse_json, save_project
+from .storage import atomic_json, digest, open_project, owned_files, parse_json, preview_path, save_project
 
 
 class EngineError(ValueError):
@@ -75,6 +76,9 @@ class Engine:
         self.jobs: dict[str, dict] = {}
         self.processes: dict[int, subprocess.Popen] = {}
         self.closing = False
+        self.previewing: dict[Path, int] = {}
+        self.cache_timer: threading.Timer | None = None
+        self.cache_checked = 0.0
         self.notify = notify
         self.series: Series | None = None
         self.series_error = None
@@ -88,6 +92,43 @@ class Engine:
                     self.session = self.series.load(self.series.item(identifier))
             except (OSError, ValueError, KeyError, TypeError) as error:
                 self.series_error = str(error)
+        self.maintain_cache()
+
+    def cache_limit(self) -> int:
+        value = self.plugins.config.get("preview_cache_limit", 5_000_000_000)
+        return value if type(value) is int and 1_000_000_000 <= value <= 1_000_000_000_000 else 5_000_000_000
+
+    def cache_storage(self, clear=False) -> dict:
+        # ponytail: periodic scans hold the engine lock; index sizes if large caches make scans slow.
+        directory = self.data / "previews"
+        entries = [(path, path.stat()) for path in owned_files(self.data, directory) if path.suffix == ".png"]
+        used = sum(stat.st_size for _, stat in entries)
+        before, limit, now = used, self.cache_limit(), time.time()
+        for path, stat in sorted(entries, key=lambda entry: entry[1].st_mtime):
+            if not clear and used <= limit:
+                break
+            if path in self.previewing or not clear and now - stat.st_mtime < 60:
+                continue
+            path.unlink()
+            used -= stat.st_size
+        return {"used": used, "limit": limit, "freed": before - used}
+
+    def maintain_cache(self):
+        with self.lock:
+            if self.closing:
+                return
+            self.cache_checked = time.monotonic()
+            if self.cache_timer:
+                self.cache_timer.cancel()
+                self.cache_timer = None
+            try:
+                state = self.cache_storage()
+                if state["used"] > state["limit"]:
+                    self.cache_timer = threading.Timer(60, self.maintain_cache)
+                    self.cache_timer.daemon = True
+                    self.cache_timer.start()
+            except (OSError, ValueError):
+                pass
 
     def document(self, params: dict, revision: bool = False) -> Session:
         session = self.session if self.session and self.session.book["id"] == params.get("document_id") else self.background_sessions.get(params.get("document_id"), self.session)
@@ -130,8 +171,27 @@ class Engine:
                 if item and self.series.managed:
                     self.series.ensure_source(item)
                 book = copy.deepcopy(session.book)
-            with self.preview_slots:
-                return self.run_worker("preview", {"book": book, "page_id": p["page_id"], "size": p.get("size", 320)})
+                output = preview_path(book, p["page_id"], p.get("size", 320), self.data / "previews")
+                if output.is_file():
+                    output.touch()
+                    if time.monotonic() - self.cache_checked >= 30:
+                        self.maintain_cache()
+                    return f"previews/{output.name}"
+                self.previewing[output] = self.previewing.get(output, 0) + 1
+            try:
+                with self.preview_slots:
+                    return self.run_worker("preview", {"book": book, "page_id": p["page_id"], "size": p.get("size", 320)})
+            finally:
+                with self.lock:
+                    self.previewing[output] -= 1
+                    if not self.previewing[output]:
+                        del self.previewing[output]
+                    if time.monotonic() - self.cache_checked >= 30:
+                        self.maintain_cache()
+                    elif self.cache_timer is None and not self.closing:
+                        self.cache_timer = threading.Timer(30, self.maintain_cache)
+                        self.cache_timer.daemon = True
+                        self.cache_timer.start()
         if method == "plugins.catalog":
             return self.plugins.catalog()
         if method == "plugins.install_official":
@@ -150,6 +210,19 @@ class Engine:
                 }
             if method == "app.locale":
                 return self.plugins.set_locale(p["code"]) if "code" in p else self.plugins.locale()
+            if method in ("storage.info", "storage.configure", "storage.clear"):
+                if method != "storage.info" and any(job["state"] == "running" for job in self.jobs.values()):
+                    raise ValueError(t("Complete or cancel the current background task first"))
+                if method == "storage.configure":
+                    limit = p.get("limit")
+                    if type(limit) is not int or not 1_000_000_000 <= limit <= 1_000_000_000_000:
+                        raise ValueError(t("Enter a cache limit between 1 and 1000 GB"))
+                    config = self.plugins.config | {"preview_cache_limit": limit}
+                    atomic_json(self.plugins.config_path, config)
+                    self.plugins.config = config
+                result = self.cache_storage(clear=method == "storage.clear")
+                self.maintain_cache()
+                return result
             if method == "app.safe_mode":
                 self.plugins.config["safe_next_start"] = True
                 atomic_json(self.plugins.config_path, self.plugins.config)
@@ -229,6 +302,14 @@ class Engine:
             return self.series.snapshot() if self.series else None
         if any(job["state"] == "running" for job in self.jobs.values()):
             raise ValueError(t("Complete or cancel the current background task first"))
+        if method == "series.close":
+            if self.session and self.session.snapshot()["dirty"] and p.get("discard") is not True:
+                raise ValueError(t("Save your changes before continuing?"))
+            (self.data / "series/current.json").unlink(missing_ok=True)
+            self.series, self.session, self.series_error = None, None, None
+            self.background_sessions.clear()
+            self.notify("document.changed", None)
+            return self.series_changed()
         if method in ("series.create", "series.open_project", "series.migrate"):
             if self.session:
                 self.changed()
@@ -268,7 +349,11 @@ class Engine:
             return self.series_changed()
         if not self.series:
             raise ValueError(t("Open a series folder first"))
-        if method in ("series.add", "series.move", "series.remove", "series.restore", "series.group",
+        if method == "series.delete_info":
+            if not self.series.managed:
+                raise ValueError(t("Save this series as a folder project first"))
+            return self.series.delete_info(p["ids"])
+        if method in ("series.add", "series.move", "series.remove", "series.restore", "series.delete", "series.group",
                       "series.delete_group", "series.refresh", "series.relink", "series.reorder"):
             if not self.series.managed:
                 raise ValueError(t("Save this series as a folder project first"))
@@ -283,6 +368,8 @@ class Engine:
                 self.series.remove(p["ids"])
             elif method == "series.restore":
                 self.series.restore(p["ids"])
+            elif method == "series.delete":
+                summary = self.series.delete(p["ids"])
             elif method == "series.group":
                 self.series.group(p["name"], p.get("previous"), p.get("ids"))
             elif method == "series.delete_group":
@@ -649,6 +736,8 @@ class Engine:
     def close(self) -> None:
         with self.lock:
             self.closing = True
+            if self.cache_timer:
+                self.cache_timer.cancel()
             for job in self.jobs.values():
                 job["cancelled"] = True
             for process in list(self.processes.values()):
