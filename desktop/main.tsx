@@ -32,6 +32,7 @@ import { DocumentView } from "./document";
 import { PluginManager } from "./plugin-manager";
 import { Toolbar, DocumentBar, Sidebar, StatusBar } from "./shell";
 import { Preferences } from "./preferences";
+import { ProjectWizard } from "./project-wizard";
 import "./style.css";
 
 function PluginWorkspace({
@@ -340,30 +341,43 @@ function App() {
           {t("Drop book files or a folder")}
         </div>
       )}
-      {creatingProject && (
-        <ProjectCreator
-          host={host}
-          initialName={creatingProject.migrate ? series?.name || "" : ""}
-          migrate={creatingProject.migrate}
-          close={() => setCreatingProject(null)}
-          create={async (parent, name) => {
-            if (!(await replaceAllowed())) throw new Error(t("Project creation cancelled"));
-            host.setBusy?.(true);
-            try {
-              await rpc(creatingProject.migrate ? "series.migrate" : "series.create", {
-                parent,
-                name,
-              });
-              setTab("series");
-              setOutput("");
-              if (creatingProject.paths?.length)
-                await rpc("series.add", { paths: creatingProject.paths }).catch(host.report);
-            } finally {
-              host.setBusy?.(false);
-            }
-          }}
-        />
-      )}
+      {creatingProject &&
+        (creatingProject.migrate ? (
+          <ProjectCreator
+            host={host}
+            initialName={series?.name || ""}
+            migrate
+            close={() => setCreatingProject(null)}
+            create={async (parent, name) => {
+              if (!(await replaceAllowed())) throw new Error(t("Project creation cancelled"));
+              host.setBusy?.(true);
+              try {
+                await rpc("series.migrate", { parent, name });
+                setTab("series");
+                setOutput("");
+              } finally {
+                host.setBusy?.(false);
+              }
+            }}
+          />
+        ) : (
+          <ProjectWizard
+            host={host}
+            initialPaths={creatingProject.paths}
+            close={() => setCreatingProject(null)}
+            create={async (settings) => {
+              if (!(await replaceAllowed())) throw new Error(t("Project creation cancelled"));
+              host.setBusy?.(true);
+              try {
+                await rpc("series.create", { ...settings });
+                setTab("series");
+                setOutput("");
+              } finally {
+                host.setBusy?.(false);
+              }
+            }}
+          />
+        ))}
       <Toolbar
         ready={ready}
         busy={busy}

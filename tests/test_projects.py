@@ -1,5 +1,6 @@
 import copy
 import io
+import json
 import os
 import shutil
 import tempfile
@@ -362,6 +363,117 @@ class FolderProjectTests(unittest.TestCase):
         state = self.call('project.open',path=str(self.project))
         self.assertFalse(next(i for i in state['items'] if i['id']==one)['missing'])
         self.assertTrue((self.project/'Vol.1.pdf').is_file())
+
+    def test_creation_information_is_per_book_and_survives_restart(self):
+        preview = self.call('series.preview', paths=[str(self.sources)])
+        self.assertEqual([book['title'] for book in preview['books']], ['Vol.1', 'Vol.2', 'Vol.10'])
+        self.assertIsNone(self.call('series.get'))
+        planned = [{'path': book['path'], 'metadata': {'title': f'Series 第{volume:02}卷', 'author': 'Writer', 'direction': 'ltr'}}
+                   for book, volume in zip(preview['books'], [1, 2, 10])]
+        state = self.call('series.create', parent=str(self.root), name='Setup',
+                          paths=[book['path'] for book in preview['books']], books=planned)
+        self.assertEqual([item['title'] for item in state['items']], ['Series 第01卷', 'Series 第02卷', 'Series 第10卷'])
+        self.assertTrue(all(item['revision'] is None for item in state['items']))
+        book = self.task('series.open', entry_id=state['items'][0]['id'])
+        self.assertEqual(book['metadata']['title'], 'Series 第01卷')
+        self.assertEqual(book['metadata']['author'], 'Writer')
+        self.assertEqual(book['metadata']['direction'], 'ltr')
+        restarted = Engine(self.root / 'data')
+        self.addCleanup(restarted.close)
+        self.assertEqual(restarted.call('series.get', {})['items'][1]['title'], 'Series 第02卷')
+        manifest = json.loads((Path(state['directory']) / '.foluma/project.json').read_text())
+        self.assertNotIn('defaults', manifest)
+        future = self.root / 'Future.pdf'
+        shutil.copyfile(self.sources / 'Vol.1.pdf', future)
+        added = self.call('series.add', paths=[str(future)])['items'][-1]
+        self.assertEqual(added['title'], 'Future')
+        self.assertFalse(added['settings'])
+        self.assertEqual(self.task('series.open', entry_id=added['id'])['metadata']['author'], '')
+
+        saved = self.task('series.open', entry_id=state['items'][0]['id'])
+        saved = self.call('document.apply', document_id=saved['id'], base_revision=saved['revision'], changes={
+            'pages': [*saved['pages'], {'id': new_id(), 'kind': 'blank', 'width': 40, 'height': 60}],
+            'extension': {'id': 'test.information', 'data': {'keep': True}},
+        })
+        original = Path(saved['project_path']) / 'project.json'
+        original_bytes = original.read_bytes()
+        preview = self.call('series.preview', paths=[saved['project_path']])['books'][0]
+        self.assertEqual(preview['metadata']['author'], 'Writer')
+        created = self.call('series.create', parent=str(self.root), name='Saved book setup',
+                            paths=[preview['path']], books=[{'path': preview['path'], 'metadata': {
+                                'title': 'Renamed side story', 'direction': 'rtl',
+                            }}])
+        reopened = self.task('series.open', entry_id=created['items'][0]['id'])
+        self.assertEqual(reopened['metadata']['title'], 'Renamed side story')
+        self.assertEqual(reopened['metadata']['author'], 'Writer', 'omitting the author preserves saved metadata')
+        self.assertEqual(reopened['metadata']['direction'], 'rtl')
+        self.assertEqual(reopened['pages'], saved['pages'])
+        self.assertEqual(reopened['extensions'], saved['extensions'])
+        self.assertEqual(original.read_bytes(), original_bytes)
+
+    def test_batch_information_preserves_review_and_page_edits_but_requires_reexport(self):
+        state = self.create()
+        one, two = state['items'][:2]
+        book = self.task('series.open', entry_id=one['id'])
+        book = self.call('document.apply', document_id=book['id'], base_revision=book['revision'], changes={
+            'pages': [*book['pages'], {'id': new_id(), 'kind': 'blank', 'width': 40, 'height': 60}],
+            'extension': {'id': 'test.information', 'data': {'keep': True}},
+        })
+        self.call('series.review', id=one['id'], reviewed=True)
+        output = self.task('export', document_id=book['id'], base_revision=book['revision'], directory=str(self.root))
+        exported = Path(output['path']).read_bytes()
+        result = self.call('series.configure', ids=[one['id'], two['id']], metadata={'author': 'Writer', 'language': 'ja'}, books=[
+            {'id': one['id'], 'base_revision': book['revision'], 'metadata': {'title': 'Series 第01卷'}},
+            {'id': two['id'], 'base_revision': None, 'metadata': {'title': 'Series 第02卷'}},
+        ])
+        self.assertTrue(all(item['error'] is None for item in result))
+        current = self.call('document.get')
+        self.assertEqual(current['pages'], book['pages'])
+        self.assertEqual(current['extensions'], book['extensions'])
+        self.assertEqual(current['metadata']['author'], 'Writer')
+        row = self.call('series.get')['items'][0]
+        self.assertTrue(row['reviewed'])
+        self.assertTrue(row['needs_export'])
+        self.assertEqual(Path(output['path']).read_bytes(), exported)
+        stale = self.call('series.configure', ids=[one['id']], books=[
+            {'id': one['id'], 'base_revision': book['revision'], 'metadata': {'title': 'Stale'}},
+        ])
+        self.assertTrue(stale[0]['error'])
+        self.assertEqual(self.call('document.get')['metadata']['title'], 'Series 第01卷')
+        opened = self.task('series.open', entry_id=two['id'])
+        self.assertEqual(opened['metadata']['title'], 'Series 第02卷')
+        self.assertEqual(opened['metadata']['author'], 'Writer')
+        self.call('series.configure', ids=[one['id']], metadata={'direction': 'ltr'})
+        self.assertFalse(self.call('series.get')['items'][0]['reviewed'])
+
+    def test_project_setup_failure_keeps_the_current_project_and_sources(self):
+        self.create()
+        before = self.call('series.get')['id']
+        preview = self.call('series.preview', paths=[str(self.sources)])
+        paths = [book['path'] for book in preview['books']]
+        with self.assertRaises(ValueError):
+            self.call('series.create', parent=str(self.root), name='Bad metadata', paths=paths,
+                      books=[{'path': paths[0], 'metadata': {'title': ''}}])
+        self.assertFalse((self.root / 'Bad metadata').exists())
+        for invalid in [{'paths': False}, {'books': False}, {'paths': [False]}]:
+            with self.assertRaises(ValueError):
+                self.call('series.create', parent=str(self.root), name='Invalid setup', **invalid)
+            self.assertFalse((self.root / 'Invalid setup').exists())
+        original_copy = self.engine.series.copy_source
+        copied = 0
+        def fail_second(source, target):
+            nonlocal copied
+            copied += 1
+            if copied == 2:
+                raise OSError('copy failed')
+            return original_copy(source, target)
+        with patch('foluma.series.FolderProject.copy_source', side_effect=fail_second):
+            with self.assertRaisesRegex(OSError, 'copy failed'):
+                self.call('series.create', parent=str(self.root), name='Rollback setup', paths=paths,
+                          books=[{'path': paths[0], 'metadata': {'title': 'Planned title'}}])
+        self.assertFalse((self.root / 'Rollback setup').exists())
+        self.assertEqual(self.call('series.get')['id'], before)
+        self.assertTrue(all(Path(path).is_file() for path in paths))
 
     def test_legacy_migration_preserves_saved_edits_with_sources_present(self):
         state = self.call('series.scan', paths=[str(self.sources)])

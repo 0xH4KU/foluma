@@ -13,6 +13,9 @@ export type Metadata = {
   title: string; author: string; language: string; direction: "rtl" | "ltr";
   cover_id: string | null; cover_only: boolean;
 };
+export type BookInformation = Partial<Pick<Metadata, "title" | "author" | "language" | "direction" | "cover_only">>;
+export type BookCandidate = {path: string; title: string; filename?: string; metadata: BookInformation};
+export type ProjectCreation = {parent: string; name: string; paths: string[]; books: {path: string; metadata: BookInformation}[]};
 export type Book = {
   schema: 1; id: string; revision: number; metadata: Metadata; pages: Page[];
   assets: Record<string, Asset>; sources: Record<string, {path: string; sha256: string; page_count: number}>;
@@ -39,7 +42,8 @@ export type SeriesItem = {
   id: string; path: string; title: string; document_id: string | null; page_count: number | null;
   revision: number | null; reviewed: boolean; exported: boolean; needs_export: boolean; missing: boolean;
   group: string; changed: boolean; review_count?: number | null;
-  output: string | null; settings: Partial<Pick<Metadata,"direction"|"cover_only">>;
+  metadata?: BookInformation;
+  output: string | null; settings: BookInformation;
 };
 export type ProjectSummary = {added?: number; skipped?: number; folders_skipped?: number; renamed?: number; missing?: number; changed?: number};
 export type Series = {id: string; name: string; roots: string[]; current_id: string | null; output_directory: string; items: SeriesItem[]; managed: boolean; directory: string; groups: string[]; removed: SeriesItem[]; refreshed_at?: string; summary?: ProjectSummary};

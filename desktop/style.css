@@ -973,34 +973,6 @@ main {
 .series-error {
   color: #923c36;
 }
-.shared-settings {
-  padding: 10px 14px;
-  border-top: 1px solid var(--line);
-  background: #f7f8f9;
-}
-.shared-settings summary {
-  cursor: pointer;
-  font-size: 12px;
-}
-.shared-settings fieldset {
-  border: 0;
-  padding: 12px 0 8px;
-  display: flex;
-  align-items: end;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-.shared-settings label {
-  font-size: 11px;
-  flex: 1;
-  min-width: 160px;
-}
-.shared-settings select {
-  margin-top: 5px;
-}
-.shared-settings p {
-  font-size: 11px;
-}
 .series-export {
   border-top: 1px solid var(--line);
 }
@@ -1357,4 +1329,166 @@ main {
 }
 .storage-settings progress {
   width: 100%;
+}
+
+.project-wizard,
+.book-information-dialog {
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+}
+.project-wizard.with-preview,
+.book-information-dialog {
+  width: min(1160px, calc(100vw - 40px));
+}
+.wizard-steps {
+  display: flex;
+  gap: 12px;
+  padding: 0 0 12px;
+  list-style: none;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+}
+.wizard-steps [aria-current="step"] {
+  color: var(--accent);
+  font-weight: 600;
+}
+.wizard-location,
+.book-information-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.project-dialog .volume-options {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 12px;
+}
+.volume-options legend {
+  padding: 0 4px;
+  font-weight: 600;
+}
+.direction-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.project-dialog .direction-choice {
+  flex: 1;
+  min-width: 110px;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.direction-choice:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--hover);
+}
+.direction-pages {
+  grid-column: 2;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.direction-pages i {
+  font-style: normal;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+.information-summary,
+.wizard-import {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.information-summary span {
+  color: var(--muted);
+}
+.information-layout {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: 20px;
+  margin-top: 12px;
+}
+.information-preview {
+  max-height: min(400px, 48vh);
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.information-preview table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.information-preview th,
+.information-preview td {
+  padding: 8px;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--line);
+}
+.information-preview th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface);
+}
+.information-preview td:nth-child(2) {
+  min-width: 120px;
+  max-width: 220px;
+  overflow-wrap: anywhere;
+}
+.information-preview input[type="number"] {
+  width: 72px;
+}
+.information-preview td:nth-child(4) input {
+  min-width: 230px;
+  width: 100%;
+}
+.information-preview .series-error {
+  display: block;
+  margin-top: 4px;
+}
+.information-preview .excluded-book {
+  color: var(--muted);
+  background: var(--paper);
+}
+.information-preview td:last-child button + button {
+  margin-left: 4px;
+}
+.project-dialog .information-preview > p {
+  padding: 12px;
+}
+@media (max-width: 920px) {
+  .information-layout {
+    grid-template-columns: 1fr;
+  }
+  .book-information-dialog .book-information-fields {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+  .book-information-dialog .direction-choices,
+  .book-information-dialog .volume-options {
+    grid-column: 1 / -1;
+  }
+}
+
+.direction-choices .direction-keep {
+  flex-basis: 100%;
+  padding: 6px 10px;
+}
+.project-wizard .project-dialog-actions,
+.book-information-dialog .project-dialog-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  background: var(--surface);
+  padding: 12px 0 0;
+  border-top: 1px solid var(--line);
 }

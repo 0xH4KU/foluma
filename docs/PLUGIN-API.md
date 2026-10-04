@@ -35,7 +35,8 @@ Shared frontend helpers live in `sdk/order.ts` (stable item moves) and `sdk/batc
 | `app.info` | Startup state, including last series snapshot or `null`, plus `series_error` if restoration failed |
 | `series.get` | Current series snapshot or `null` |
 | `series.scan` | Legacy compatibility: `paths` resumes the former externally linked series |
-| `series.create` | `parent`, `name`: creates a new managed project directory without overwriting an existing folder |
+| `series.create` | `parent`, `name`, optional initial `paths` and `books: [{path, metadata}]`: creates a managed project and applies information to this first batch, without overwriting an existing folder |
+| `series.preview` | `paths`: returns resolved `books: [{path, filename, title, metadata}]` and `folders_skipped` without importing images or changing the project |
 | `series.open_project` | `path`: opens a managed project, checks external changes and restores the current book; also accepted by `project.open` |
 | `series.migrate` | `parent`, `name`: copies a legacy series and its saved edits into a managed project |
 | `series.add` | `paths`, optional `group`: copies supported source files, immediate folder files, or an edited `.mteproj`; response adds `summary: {added, skipped, folders_skipped}` |
@@ -48,7 +49,7 @@ Shared frontend helpers live in `sdk/order.ts` (stable item moves) and `sdk/batc
 | `series.reorder` | `ids`: complete ordered list of active book IDs |
 | `series.review` | Entry `id`, boolean `reviewed`; requires explicit `allow_pending: true` to complete review when built-in editor page marks remain |
 | `series.output` | Existing output `directory` |
-| `series.configure` | Entry `ids`, `metadata` containing only `direction` and/or `cover_only`; returns per-entry `{id, error}` results |
+| `series.configure` | Entry `ids`, optional shared `metadata` and per-book `books: [{id, metadata, base_revision?}]`; supported fields are `title`, `author`, `language`, `direction`, `cover_only`; returns per-entry `{id, error}` results |
 | `document.apply` | Document reference + `changes: {pages?, metadata?, extension?: {id, data}}` |
 | `document.undo`, `document.redo` | `document_id` |
 | `document.release` | `document_id`; releases a background document after batch processing |
@@ -144,3 +145,5 @@ Series processing opens each entry's independently saved project in the backgrou
 Managed projects store their manifest at `.foluma/project.json`, ordinary `.mteproj` book edits under `.foluma/books/`, and source copies in the root or a single group subfolder. Stored paths are relative so the directory can move. Removed sources stay under `.foluma/removed/`; their edits and revisions remain available. Snapshots include `managed`, `directory`, `groups`, active `items` and `removed`; each book includes `group`, `missing` and `changed`. Group changes do not invalidate review/export revisions. External renames are matched only when the original content has one unambiguous candidate. Changed sources never replace the expected fingerprint or acquire old edits. Missing, never-opened legacy books may have a null fingerprint until their first source is supplied; edited books retain their known fingerprint. Missing legacy sources do not block migration of their saved edits. Legacy series remain under the application data directory's `series/` folder until explicitly migrated. Edits checkpoint the project before notifying the UI that it is saved; a save failure leaves the document dirty and prevents switching away until it can be saved. The last series and active book restore at startup. Missing source entries remain available for source relinking. Editor review flags live in `extensions["org.foluma.editor"].review`; focus, scroll and preview settings are local per-document UI preferences and do not travel with the project.
 
 Each entry also reports `review_count`, counting unique attention marks on pages still present in the saved book. Older manifests derive this count from their saved book on first inspection; unavailable saved layouts return `null` rather than an assumed count. Other plugin extension payloads remain opaque.
+
+Project creation validates the selected files and per-book information before activating the new project. Failed initial copying removes the newly created folder and keeps the previous project active. Unopened books store their individual information until import; saved `.mteproj` books keep their page edits and embedded assets. These are per-book settings, with no project defaults inherited by later imports. A supplied per-book `base_revision`, including `null` for unopened books, rejects stale batch changes. Descriptive changes to title, author or language preserve completed review; changes to pages, reading/cover settings or extension data invalidate it. All metadata changes invalidate a previous export.

@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from .i18n import t
-from .model import Session, new_id
+from .model import INFORMATION_FIELDS, Session, information_patch, new_id
 from .storage import atomic_json, contained, digest, open_project, owned_files, parse_json, save_project
 
 
@@ -24,6 +24,53 @@ def path_id(path: str) -> str:
 
 def natural_key(path: str):
     return [int(part) if part.isdigit() else part.casefold() for part in re.split(r"(\d+)", path)]
+
+
+def project_inputs(paths: list[str], extensions: set[str]) -> tuple[list[Path], int]:
+    if not isinstance(paths, list) or not paths or not all(isinstance(path, str) for path in paths):
+        raise ValueError(t("Choose a folder or supported book files"))
+    inputs, folders_skipped = [], 0
+    for name in paths:
+        path = Path(name).resolve(strict=True)
+        if path.is_dir() and path.suffix != ".mteproj":
+            inputs.extend(
+                sorted(
+                    (p for p in path.iterdir() if p.is_file() and p.suffix.lower() in extensions),
+                    key=lambda p: natural_key(p.name),
+                )
+            )
+            folders_skipped += sum(p.is_dir() and not p.name.startswith(".") for p in path.iterdir())
+        else:
+            inputs.append(path)
+    if not inputs:
+        raise ValueError(t("No supported book files were found in this folder"))
+    return list(dict.fromkeys(inputs)), folders_skipped
+
+
+def preview_inputs(paths: list[str], extensions=()) -> dict:
+    suffixes = {f".{extension}" for extension in extensions}
+    inputs, folders_skipped = project_inputs(paths, suffixes)
+    books = []
+    for path in inputs:
+        book = open_project(path) if path.is_dir() and path.suffix == ".mteproj" else None
+        if not book and (not path.is_file() or path.suffix.lower() not in suffixes or path.name.startswith(".")):
+            raise ValueError(t("Choose supported book files or a .mteproj book folder"))
+        if book:
+            if not book["sources"]:
+                raise ValueError(t("This book project has no source file"))
+            primary = next(iter(book["sources"].values()))
+            source = Path(primary["path"]).resolve(strict=True)
+            if not source.is_file() or digest(source) != primary["sha256"]:
+                raise ValueError(t("The file differs from the original source and cannot be relinked"))
+        books.append(
+            {
+                "path": str(path),
+                "filename": source.name if book else path.name,
+                "title": book["metadata"]["title"] if book else path.stem,
+                "metadata": {key: book["metadata"][key] for key in INFORMATION_FIELDS} if book else {},
+            }
+        )
+    return {"books": books, "folders_skipped": folders_skipped}
 
 
 def pending_review_count(book: dict) -> int:
@@ -116,8 +163,9 @@ class Series:
             return None
         return Session(open_project(path), str(path))
 
-    def remember(self, item: dict, session: Session):
+    def remember(self, item: dict, session: Session, preserve_review=False):
         path = self.project(item)
+        reviewed = item["revision"] is not None and item["reviewed_revision"] == item["revision"]
         # ponytail: checkpoint one ordinary project per edit; coalesce writes if large books make this slow.
         save_project(session.book, path)
         item.update(
@@ -126,7 +174,10 @@ class Series:
             title=session.book["metadata"]["title"],
             page_count=len(session.book["pages"]),
             review_count=pending_review_count(session.book),
+            metadata={key: session.book["metadata"][key] for key in INFORMATION_FIELDS},
         )
+        if reviewed and preserve_review:
+            item["reviewed_revision"] = session.book["revision"]
         self.save()
         session.project_path = str(path)
         session.saved_revision = session.book["revision"]
@@ -138,12 +189,18 @@ class Series:
 
     def snapshot(self) -> dict:
         for item in self.state["items"]:
-            if "review_count" not in item:
+            if "review_count" not in item or "metadata" not in item:
                 try:
                     saved = self.load(item) if item["document_id"] else None
                     item["review_count"] = pending_review_count(saved.book) if saved else 0
+                    item["metadata"] = (
+                        {key: saved.book["metadata"][key] for key in INFORMATION_FIELDS}
+                        if saved
+                        else {"title": item["title"]} | item["settings"]
+                    )
                 except (OSError, ValueError, KeyError):
                     item["review_count"] = None
+                    item.setdefault("metadata", {"title": item["title"]} | item["settings"])
         result = copy.deepcopy(self.state)
         result.update(managed=self.managed, directory=str(self.directory), groups=[], removed=[])
         for item in result["items"]:
@@ -235,23 +292,30 @@ class FolderProject(Series):
         self.refresh()
 
     @classmethod
-    def create(cls, data: Path, parent: str, name: str, extensions=()):
+    def create(cls, data: Path, parent: str, name: str, extensions=(), paths=None, information=None):
         root = Path(parent).resolve(strict=True) / folder_name(name)
         root.mkdir()  # Never adopt or overwrite an existing directory implicitly.
-        atomic_json(
-            root / ".foluma/project.json",
-            {
-                "schema": 2,
-                "id": new_id(),
-                "name": name,
-                "roots": [],
-                "groups": [],
-                "current_id": None,
-                "output_directory": "",
-                "items": [],
-            },
-        )
-        return cls(data, str(root), extensions)
+        try:
+            atomic_json(
+                root / ".foluma/project.json",
+                {
+                    "schema": 2,
+                    "id": new_id(),
+                    "name": name,
+                    "roots": [],
+                    "groups": [],
+                    "current_id": None,
+                    "output_directory": "",
+                    "items": [],
+                },
+            )
+            project = cls(data, str(root), extensions)
+            if paths:
+                project.add(paths, information=information)
+            return project
+        except Exception:
+            shutil.rmtree(root)
+            raise
 
     def activate(self):
         atomic_json(self.data / "series/current.json", {"project": str(self.root)})
@@ -286,9 +350,9 @@ class FolderProject(Series):
             self.synchronize(item, session)
         return session
 
-    def remember(self, item: dict, session: Session):
+    def remember(self, item: dict, session: Session, preserve_review=False):
         self.synchronize(item, session)
-        super().remember(item, session)
+        super().remember(item, session, preserve_review)
         # Asset files saved by the existing project writer become project-local immediately.
         local = open_project(self.project(item))
         for book in [session.book, *session.undo_stack, *session.redo_stack]:
@@ -365,28 +429,18 @@ class FolderProject(Series):
         finally:
             staged.unlink(missing_ok=True)
 
-    def add(self, paths: list[str], group: str = ""):
+    def add(self, paths: list[str], group: str = "", information: dict[str, dict] | None = None):
         destination = self.group_path(group)
-        if not isinstance(paths, list) or not paths or not all(isinstance(path, str) for path in paths):
-            raise ValueError(t("Choose a folder or supported book files"))
-        inputs, folders_skipped, skipped = [], 0, 0
+        inputs, folders_skipped = project_inputs(paths, self.extensions)
+        information = information or {}
+        patches = {path: information_patch(value) for path, value in information.items()}
+        if set(patches) - {str(path) for path in inputs}:
+            raise ValueError(t("Book information does not match the selected files"))
+        skipped = 0
         before = len(self.state["items"])
-        for name in paths:
-            path = Path(name).resolve(strict=True)
-            if path.is_dir() and path.suffix != ".mteproj":
-                inputs.extend(
-                    sorted(
-                        (p for p in path.iterdir() if p.is_file() and p.suffix.lower() in self.extensions),
-                        key=lambda p: natural_key(p.name),
-                    )
-                )
-                folders_skipped += sum(p.is_dir() and not p.name.startswith(".") for p in path.iterdir())
-            else:
-                inputs.append(path)
-        if not inputs:
-            raise ValueError(t("No supported book files were found in this folder"))
         with self.change() as (_, copies, _directories):
             for source in inputs:
+                patch = patches.get(str(source), {})
                 book = open_project(source) if source.is_dir() and source.suffix == ".mteproj" else None
                 if book:
                     if any(item["document_id"] == book["id"] for item in self.state["items"]):
@@ -432,9 +486,17 @@ class FolderProject(Series):
                 self.copy_source(source, target)
                 copies.append(target)
                 item = self.new_item(target, fingerprint)
+                item["settings"].update(patch)
+                if "title" in patch:
+                    item["title"] = patch["title"]
+                item["metadata"] = {"title": item["title"]} | patch
                 item["imported_from"] = str(source)
                 self.state["items"].append(item)
                 if book:
+                    if patch:
+                        session = Session(book)
+                        session.apply(book["id"], book["revision"], {"metadata": patch})
+                        book = session.book
                     # Keep page/document identities and edits; make every referenced source portable.
                     for source_info in book["sources"].values():
                         original = Path(source_info["path"])
@@ -456,6 +518,7 @@ class FolderProject(Series):
                         title=book["metadata"]["title"],
                         page_count=len(book["pages"]),
                         review_count=pending_review_count(book),
+                        metadata={key: book["metadata"][key] for key in INFORMATION_FIELDS},
                     )
         return {"added": len(self.state["items"]) - before, "skipped": skipped, "folders_skipped": folders_skipped}
 

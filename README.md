@@ -12,7 +12,7 @@ Foluma uses Tauri and React/TypeScript for the desktop interface, with a separat
 
 The page editor, PDF import plugin and EPUB export plugin install from bundled packages on first launch, without a network connection. Each is independent: disabling or removing it takes effect after restarting, and the app will not automatically reinstall it. PDF import and EPUB export can be removed separately, just like the editor. Missing format actions lead to Plugins instead of falling back to hidden built-in codecs. Reinstall packages from **Plugins → Included packages** when needed.
 
-For an existing installation, update **Page editor** to **0.4.1** from **Plugins → Included packages**, or install `artifacts/org.foluma.editor-0.4.1.mte-plugin`, then restart. Update the Traditional Chinese pack to **0.4.4** for the new interface text.
+For an existing installation, update **Page editor** to **0.4.1** from **Plugins → Included packages**, or install `artifacts/org.foluma.editor-0.4.1.mte-plugin`, then restart. Update the Traditional Chinese pack to **0.4.5** for the new interface text.
 
 Plugin Management groups packages into **Import**, **Export**, **Editing and tools**, and **Language packs**. Category filters apply to installed, included and downloadable packages, with counts for unique plugins. The default **All plugins** view groups each list by capability; disabled and restart-pending plugins keep their category. Installed versions are not repeated under included packages, and identical included versions are not repeated in the official catalog. Available updates remain visible. Installation, removal, restart and safe-mode behavior are unchanged.
 
@@ -33,6 +33,10 @@ EPUB import uses the same archive and image limits, with at most 10000 reading p
 English is built in. Choose **Install and use 繁體中文** under **Preferences → Interface language** to install the included language pack and switch immediately. Language packs can be disabled or removed immediately. A book's language setting controls EPUB metadata independently of the interface language.
 
 ## Folder projects
+
+**New project** now guides you through location, book information, and a file/order preview. Enter a series title, optional author and reading direction, then add the first books. Keep existing volume numbers, number in the preview order, or omit the suffix; set the starting number, digit width and title style. Move rows, adjust individual volume numbers, use a custom title for side stories, or exclude a book before creating the folder. Blank author fields preserve imported author metadata. These choices apply to the selected first books; later imports keep their own information.
+
+Use **Batch book information…** in the project view to update selected books, books in the current view, or the entire project. Review each resulting title and author before applying. Titles, authors and language can change while retaining completed page review; exported books become **Needs re-export**. Reading-direction or cover-placement changes still require review. Project source filenames remain provenance; exports use each book's title.
 
 A project is a folder you choose. Imported source books are copied into it, groups correspond to subfolders, and saved edits and embedded images live in the hidden `.foluma` directory. Move the entire project folder to keep its books and edits together. Imported page images are saved independently of the source format: removing an import plugin or losing the original source does not stop an already imported book from opening, previewing or exporting through another installed plugin.
 

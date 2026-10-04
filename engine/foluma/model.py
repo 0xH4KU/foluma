@@ -38,6 +38,41 @@ def validate_crop(crop) -> None:
         raise ValueError(t("Crop extends outside the image"))
 
 
+INFORMATION_FIELDS = ("title", "author", "language", "direction", "cover_only")
+
+
+def validate_metadata(meta: dict) -> None:
+    if not isinstance(meta, dict):
+        raise ValueError(t("Invalid book metadata"))
+    for name in ("title", "author", "language"):
+        if not isinstance(meta.get(name), str) or len(meta[name]) > 4096:
+            raise ValueError(t("Invalid book metadata: {0}", name))
+    if not meta["title"].strip() or not re.fullmatch(r"[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*", meta["language"]):
+        raise ValueError(t("Enter a title and a valid language code, such as en or zh-Hant"))
+    if meta.get("direction") not in ("rtl", "ltr") or type(meta.get("cover_only")) is not bool:
+        raise ValueError(t("Invalid reading settings"))
+
+
+def information_patch(value, *, allow_empty=False) -> dict:
+    if not isinstance(value, dict) or set(value) - set(INFORMATION_FIELDS) or not value and not allow_empty:
+        raise ValueError(t("Choose valid book information to change"))
+    validate_metadata(
+        {"title": "Book", "author": "", "language": "en", "direction": "ltr", "cover_only": False} | value
+    )
+    return copy.deepcopy(value)
+
+
+def review_unchanged(before: dict, after: dict) -> bool:
+    def content(book):
+        return {key: value for key, value in book.items() if key not in ("revision", "metadata")} | {
+            "metadata": {
+                key: value for key, value in book["metadata"].items() if key not in ("title", "author", "language")
+            }
+        }
+
+    return content(before) == content(after)
+
+
 def validate(book: dict) -> None:
     def identifier(value):
         return isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,80}", value)
@@ -47,13 +82,7 @@ def validate(book: dict) -> None:
     if type(book.get("revision")) is not int or book["revision"] < 0:
         raise ValueError(t("Invalid document revision"))
     meta = book.get("metadata", {})
-    for name in ("title", "author", "language"):
-        if not isinstance(meta.get(name), str) or len(meta[name]) > 4096:
-            raise ValueError(t("Invalid book metadata: {0}", name))
-    if not meta["title"].strip() or not re.fullmatch(r"[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*", meta["language"]):
-        raise ValueError(t("Enter a title and a valid language code, such as en or zh-Hant"))
-    if meta.get("direction") not in ("rtl", "ltr") or type(meta.get("cover_only")) is not bool:
-        raise ValueError(t("Invalid reading settings"))
+    validate_metadata(meta)
     if not isinstance(book.get("assets"), dict) or not isinstance(book.get("sources"), dict):
         raise ValueError(t("Invalid asset table"))
     if not isinstance(book.get("extensions"), dict) or not isinstance(book.get("pages"), list):

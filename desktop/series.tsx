@@ -1,10 +1,11 @@
 import React, { useEffect, useImperativeHandle, useRef, useState } from "react";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import type { HostAPI, Metadata, RenderResolution, Series, SeriesItem } from "../sdk/types";
+import type { HostAPI, RenderResolution, Series, SeriesItem } from "../sdk/types";
 import { t } from "../sdk/i18n";
 import { batchSummary, runBatch, type BatchRow } from "../sdk/batch";
 import { moveBefore } from "../sdk/order";
 import { formatBytes } from "./storage";
+import { BookInformationDialog, type InformationChange } from "./book-information-dialog";
 
 export function ProjectCreator({
   host,
@@ -228,8 +229,9 @@ export function SeriesWorkspace({
   const [destination, setDestination] = useState("");
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
-  const [direction, setDirection] = useState("");
-  const [cover, setCover] = useState("");
+  const [information, setInformation] = useState<{ visible: string[]; selected: string[] } | null>(
+    null,
+  );
   const [render, setRender] = useState(false);
   const [running, setRunning] = useState(false);
   const [finished, setFinished] = useState(false);
@@ -389,50 +391,31 @@ export function SeriesWorkspace({
           : t("{0} books permanently deleted", result.summary.deleted),
       );
     });
-  const applySettings = () =>
-    run(async () => {
-      const metadata: Partial<Metadata> = {};
-      if (direction) metadata.direction = direction as "rtl" | "ltr";
-      if (cover) metadata.cover_only = cover === "shelf";
-      const changes = [
-        direction && t(direction === "rtl" ? "Right to left" : "Left to right"),
-        cover && t(cover === "shelf" ? "Bookshelf only" : "Bookshelf and book body"),
-      ]
-        .filter(Boolean)
-        .join(" · ");
-      if (
-        !(await host.confirm(
-          t(
-            "Apply {0} to {1} selected books?\n\n{2}",
-            changes,
-            chosen.length,
-            chosen.map((item) => item.title).join("\n"),
-          ),
-          t("Apply shared settings"),
-          t("Apply settings"),
-        ))
-      )
-        return;
+  const openInformation = () =>
+    setInformation({
+      visible: visible.map((item) => item.id),
+      selected: chosen.map((item) => item.id),
+    });
+  const applyInformation = async (books: InformationChange[]) => {
+    const applied = await run(async () => {
       const results = await host.rpc<{ id: string; error: string | null }[]>("series.configure", {
-        ids: chosen.map((item) => item.id),
-        metadata,
+        ids: books.map((book) => book.id),
+        books,
       });
       const errors = results.filter((result) => result.error);
       if (errors.length)
-        host.report(
-          new Error(
-            errors
-              .map(
-                (result) =>
-                  (series.items.find((item) => item.id === result.id)?.title || result.id) +
-                  ": " +
-                  result.error,
-              )
-              .join("\n"),
-          ),
+        throw new Error(
+          errors
+            .map(
+              (result) =>
+                `${series.items.find((item) => item.id === result.id)?.title || result.id}: ${result.error}`,
+            )
+            .join("\n"),
         );
-      else host.notify(t("Shared settings applied to {0} books", chosen.length));
-    });
+      host.notify(t("Book information updated for {0} books", books.length));
+    }, false);
+    if (!applied) throw new Error(t("Complete or cancel the current background task first"));
+  };
   const exportBooks = async (items = chosen, allowRendering = render, retrying = false) => {
     if (
       removed ||
@@ -530,6 +513,16 @@ export function SeriesWorkspace({
   };
   return (
     <section className="series-workspace" hidden={hidden}>
+      {information && (
+        <BookInformationDialog
+          name={series.name}
+          items={series.items}
+          visibleIds={information.visible}
+          selectedIds={information.selected}
+          apply={applyInformation}
+          close={() => setInformation(null)}
+        />
+      )}
       {groupDialog && (
         <GroupDialog
           initialName={groupDialog.previous || ""}
@@ -610,6 +603,9 @@ export function SeriesWorkspace({
             )}
           </p>
         </div>
+        <button disabled={busy || removed || !series.items.length} onClick={openInformation}>
+          {t("Batch book information…")}
+        </button>
         {series.managed ? (
           <div className="project-actions">
             <button disabled={busy} onClick={() => void refresh()}>
@@ -1052,37 +1048,6 @@ export function SeriesWorkspace({
       </div>
       {!removed && (
         <>
-          {!!chosen.length && (
-            <details className="shared-settings">
-              <summary>{t("Shared settings for {0} selected books", chosen.length)}</summary>
-              <fieldset disabled={busy}>
-                <label>
-                  {t("Reading direction")}
-                  <select value={direction} onChange={(event) => setDirection(event.target.value)}>
-                    <option value="">{t("Keep each book's setting")}</option>
-                    <option value="rtl">{t("Right to left")}</option>
-                    <option value="ltr">{t("Left to right")}</option>
-                  </select>
-                </label>
-                <label>
-                  {t("Cover placement")}
-                  <select value={cover} onChange={(event) => setCover(event.target.value)}>
-                    <option value="">{t("Keep each book's setting")}</option>
-                    <option value="both">{t("Bookshelf and book body")}</option>
-                    <option value="shelf">{t("Bookshelf only")}</option>
-                  </select>
-                </label>
-                <button disabled={!direction && !cover} onClick={() => void applySettings()}>
-                  {t("Apply to {0} books", chosen.length)}
-                </button>
-              </fieldset>
-              <p>
-                {t(
-                  "Only selected books are affected. Page order, blanks and crops remain individual to each volume.",
-                )}
-              </p>
-            </details>
-          )}
           {running && progress && (
             <p className="batch-summary" role="status">
               {t("Book {0} of {1}: {2}", progress.index, progress.total, progress.title)}

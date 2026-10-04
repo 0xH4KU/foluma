@@ -14,9 +14,9 @@ from zipfile import ZIP_DEFLATED, ZipFile
 from . import __version__
 from .cache import PreviewCache
 from .i18n import messages, t
-from .model import Session, new_id, validate
+from .model import Session, information_patch, new_id, review_unchanged, validate
 from .plugins import Plugins, platform_id, unpack
-from .series import FolderProject, Series, pending_review_count
+from .series import FolderProject, Series, pending_review_count, preview_inputs
 from .storage import atomic_json, contained, copy_asset, digest, open_project, parse_json, save_project
 from .worker import EngineError, job_info
 from .workers import Workers
@@ -111,12 +111,12 @@ class Engine:
                 if identifier in snapshot["assets"]:
                     snapshot["assets"][identifier] = copy.deepcopy(asset)
 
-    def changed(self, session: Session | None = None) -> dict:
+    def changed(self, session: Session | None = None, preserve_review=False) -> dict:
         session = session or self.session
         item = self.series.current(session) if self.series else None
         if item and session.saved_revision != session.book["revision"]:
             try:
-                self.series.remember(item, session)
+                self.series.remember(item, session, preserve_review)
                 self.series_changed()
             except Exception:
                 if session is self.session:
@@ -196,12 +196,14 @@ class Engine:
             return self.session.snapshot() if self.session else None
         if method == "document.apply":
             session = self.document(p, True)
+            before = session.book
             session.apply(p["document_id"], p["base_revision"], p["changes"])
-            return self.changed(session)
+            return self.changed(session, review_unchanged(before, session.book))
         if method in ("document.undo", "document.redo"):
             session = self.document(p)
+            before = session.book
             session.history(p["document_id"], method.endswith("redo"))
-            return self.changed(session)
+            return self.changed(session, review_unchanged(before, session.book))
         if method == "document.release":
             self.background_sessions.pop(p["document_id"], None)
             return True
@@ -273,6 +275,8 @@ class Engine:
             return self.series.snapshot() if self.series else None
         if any(job["state"] == "running" for job in self.jobs.values()):
             raise ValueError(t("Complete or cancel the current background task first"))
+        if method == "series.preview":
+            return preview_inputs(p["paths"], self.plugins.extensions("import"))
         if method == "series.close":
             if self.session and self.session.snapshot()["dirty"] and p.get("discard") is not True:
                 raise ValueError(t("Save your changes before continuing?"))
@@ -341,7 +345,33 @@ class Engine:
             previous = self.series if method == "series.migrate" else None
             if method == "series.migrate" and (not previous or previous.managed):
                 raise ValueError(t("Open a legacy series to migrate it"))
-            project = FolderProject.create(self.data, p["parent"], p["name"], self.plugins.extensions("import"))
+            paths, information = p.get("paths", []), {}
+            if method == "series.create" and (
+                not isinstance(paths, list)
+                or not all(isinstance(path, str) for path in paths)
+                or not isinstance(p.get("books", []), list)
+            ):
+                raise ValueError(t("Invalid initial book information"))
+            if method == "series.create" and paths:
+                preview = preview_inputs(paths, self.plugins.extensions("import"))
+                paths = [book["path"] for book in preview["books"]]
+                books = p.get("books", [])
+                if not isinstance(books, list):
+                    raise ValueError(t("Invalid initial book information"))
+                for book in books:
+                    if not isinstance(book, dict) or book.get("path") not in paths or book["path"] in information:
+                        raise ValueError(t("Book information does not match the selected files"))
+                    information[book["path"]] = information_patch(book.get("metadata"))
+            elif method == "series.create" and p.get("books"):
+                raise ValueError(t("Choose book files before applying information"))
+            project = FolderProject.create(
+                self.data,
+                p["parent"],
+                p["name"],
+                self.plugins.extensions("import"),
+                paths=paths if method == "series.create" else None,
+                information=information,
+            )
             if previous:
                 project.import_series(previous)
         current = project.state["current_id"]
@@ -393,32 +423,51 @@ class Engine:
         return state | {"summary": summary} if summary is not None else state
 
     def configure_series(self, p: dict):
-        changes = p.get("metadata")
-        if (
-            not isinstance(changes, dict)
-            or not changes
-            or set(changes) - {"direction", "cover_only"}
-            or "direction" in changes
-            and changes["direction"] not in ("rtl", "ltr")
-            or "cover_only" in changes
-            and type(changes["cover_only"]) is not bool
-        ):
-            raise ValueError(t("Invalid shared reading settings"))
+        changes = information_patch(p.get("metadata", {}), allow_empty=True)
         identifiers = p.get("ids")
         if not isinstance(identifiers, list) or not identifiers or not all(isinstance(i, str) for i in identifiers):
             raise ValueError(t("Select books first"))
         items = [self.series.item(i) for i in dict.fromkeys(identifiers)]
+        books = p.get("books", [])
+        if not isinstance(books, list):
+            raise ValueError(t("Invalid book information plan"))
+        planned = {}
+        for book in books:
+            if (
+                not isinstance(book, dict)
+                or book.get("id") not in identifiers
+                or book["id"] in planned
+                or "base_revision" in book
+                and book["base_revision"] is not None
+                and (type(book["base_revision"]) is not int or book["base_revision"] < 0)
+            ):
+                raise ValueError(t("Invalid book information plan"))
+            planned[book["id"]] = {"metadata": information_patch(book.get("metadata", {}), allow_empty=True)}
+            if "base_revision" in book:
+                planned[book["id"]]["base_revision"] = book["base_revision"]
+        patches = {
+            item["id"]: information_patch(changes | planned.get(item["id"], {}).get("metadata", {})) for item in items
+        }
         results = []
         for item in items:
             try:
+                patch = patches[item["id"]]
+                plan = planned.get(item["id"], {})
                 session = self.session if self.series.current(self.session) is item else self.series.load(item)
+                revision = session.book["revision"] if session else item["revision"]
+                if "base_revision" in plan and plan["base_revision"] != revision:
+                    raise ValueError(t("Document changed. Please retry with the latest revision."))
                 if session:
-                    session.apply(session.book["id"], session.book["revision"], {"metadata": changes})
-                    self.series.remember(item, session)
+                    before = session.book
+                    session.apply(session.book["id"], session.book["revision"], {"metadata": patch})
+                    self.series.remember(item, session, review_unchanged(before, session.book))
                     if session is self.session:
                         self.notify("document.changed", session.snapshot())
                 else:
-                    item["settings"].update(changes)
+                    item["settings"].update(patch)
+                    item.setdefault("metadata", {}).update(patch)
+                    if "title" in patch:
+                        item["title"] = patch["title"]
                     self.series.save()
                 results.append({"id": item["id"], "error": None})
             except Exception as error:
