@@ -12,7 +12,7 @@ Foluma uses Tauri and React/TypeScript for the desktop interface, with a separat
 
 The page editor, PDF import plugin and EPUB export plugin install from bundled packages on first launch, without a network connection. Each is independent: disabling or removing it takes effect after restarting, and the app will not automatically reinstall it. PDF import and EPUB export can be removed separately, just like the editor. Missing format actions lead to Plugins instead of falling back to hidden built-in codecs. Reinstall packages from **Plugins → Included packages** when needed.
 
-For an existing installation, update **Page editor** to **0.4.0** from **Plugins → Included packages**, or install `artifacts/org.foluma.editor-0.4.0.mte-plugin`, then restart. Update the Traditional Chinese pack to **0.4.4** for the new interface text.
+For an existing installation, update **Page editor** to **0.4.1** from **Plugins → Included packages**, or install `artifacts/org.foluma.editor-0.4.1.mte-plugin`, then restart. Update the Traditional Chinese pack to **0.4.4** for the new interface text.
 
 Plugin Management groups packages into **Import**, **Export**, **Editing and tools**, and **Language packs**. Category filters apply to installed, included and downloadable packages, with counts for unique plugins. The default **All plugins** view groups each list by capability; disabled and restart-pending plugins keep their category. Installed versions are not repeated under included packages, and identical included versions are not repeated in the official catalog. Available updates remain visible. Installation, removal, restart and safe-mode behavior are unchanged.
 

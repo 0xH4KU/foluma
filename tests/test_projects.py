@@ -149,21 +149,21 @@ class FolderProjectTests(unittest.TestCase):
                 self.call('storage.configure', limit=invalid)
         restarted = Engine(self.root / 'data')
         self.addCleanup(restarted.close)
-        self.assertEqual(restarted.cache_limit(), 10_000_000_000)
+        self.assertEqual(restarted.cache.limit, 10_000_000_000)
         directory = self.root / 'data/previews'
         directory.mkdir()
         old, newer, active = [directory / f'{name}.png' for name in ['old', 'newer', 'active']]
         for index, path in enumerate([old, newer, active]):
             path.write_bytes(b'12345678')
             os.utime(path, (index, index))
-        self.engine.previewing[active] = 1
-        with patch.object(self.engine, 'cache_limit', return_value=16):
+        self.engine.cache.active[active] = 1
+        with patch.object(self.engine.cache, 'limit', 16):
             result = self.call('storage.info')
         self.assertEqual(result['used'], 16)
         self.assertFalse(old.exists())
         self.assertTrue(newer.exists())
         os.utime(newer, None)
-        with patch.object(self.engine, 'cache_limit', return_value=1):
+        with patch.object(self.engine.cache, 'limit', 1):
             self.assertEqual(self.call('storage.info')['used'], 16)
         asset = self.root / 'data/assets/keep.png'
         asset.parent.mkdir(exist_ok=True)
@@ -172,7 +172,7 @@ class FolderProjectTests(unittest.TestCase):
         self.assertEqual(cleared['freed'], 8)
         self.assertTrue(active.exists())
         self.assertTrue(asset.exists())
-        del self.engine.previewing[active]
+        del self.engine.cache.active[active]
         self.call('storage.clear')
         item = self.create()['items'][0]
         book = self.task('series.open', entry_id=item['id'])
@@ -362,6 +362,39 @@ class FolderProjectTests(unittest.TestCase):
         state = self.call('project.open',path=str(self.project))
         self.assertFalse(next(i for i in state['items'] if i['id']==one)['missing'])
         self.assertTrue((self.project/'Vol.1.pdf').is_file())
+
+    def test_legacy_migration_preserves_saved_edits_with_sources_present(self):
+        state = self.call('series.scan', paths=[str(self.sources)])
+        identifier = state['items'][0]['id']
+        book = self.task('series.open', entry_id=identifier)
+        pages = copy.deepcopy(book['pages'])
+        pages[0]['crop'] = [0, 0, 0.5, 1]
+        pages.append({'id': new_id(), 'kind': 'blank', 'width': 40, 'height': 60})
+        book = self.call('document.apply', document_id=book['id'], base_revision=book['revision'], changes={
+            'pages': pages,
+            'metadata': {'title': 'Saved title', 'author': 'Saved author', 'language': 'ja'},
+            'extension': {'id': 'test.migration', 'data': {'notes': ['keep']}},
+        })
+        self.call('series.review', id=identifier, reviewed=True)
+        original_project = Path(book['project_path']) / 'project.json'
+        original = original_project.read_bytes()
+
+        migrated = self.call('series.migrate', parent=str(self.root), name='Existing sources')
+        restored = self.call('document.get')
+        self.assertIsNotNone(restored, 'the active edited book must reopen after migration')
+        self.assertEqual(restored['id'], book['id'])
+        self.assertEqual(restored['revision'], book['revision'])
+        self.assertEqual(restored['metadata'], book['metadata'])
+        self.assertEqual(restored['pages'], book['pages'])
+        self.assertEqual(restored['extensions'], book['extensions'])
+        active = next(item for item in migrated['items'] if item['id'] == migrated['current_id'])
+        self.assertEqual(active['document_id'], book['id'])
+        self.assertTrue(active['reviewed'])
+        self.assertEqual(original_project.read_bytes(), original)
+        self.assertTrue((self.sources / 'Vol.1.pdf').is_file())
+        reopened = self.call('project.open', path=migrated['directory'])
+        self.assertEqual(reopened['current_id'], migrated['current_id'])
+        self.assertEqual(self.call('document.get')['pages'], book['pages'])
 
     def test_legacy_migration_and_importing_an_edited_book(self):
         state = self.call('series.scan',paths=[str(self.sources)])

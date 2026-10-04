@@ -4,53 +4,22 @@ import copy
 import json
 import os
 import re
-import signal
-import subprocess
 import sys
 import tempfile
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from . import __version__
+from .cache import PreviewCache
 from .i18n import messages, t
 from .model import Session, new_id, validate
 from .plugins import Plugins, platform_id, unpack
 from .series import FolderProject, Series, pending_review_count
-from .storage import atomic_json, copy_asset, digest, open_project, owned_files, parse_json, preview_path, save_project
-
-
-class EngineError(ValueError):
-    def __init__(self, message: str, data=None):
-        super().__init__(message)
-        self.data = data
-
-
-def worker_command(request: Path, plugin: Path | None = None) -> list[str]:
-    if plugin is not None:
-        return [str(plugin)]
-    prefix = [sys.executable] if getattr(sys, "frozen", False) else [sys.executable, "-m", "foluma"]
-    return [*prefix, "--worker", str(request)]
-
-
-def terminate(process: subprocess.Popen | None) -> None:
-    if process is None or process.poll() is not None:
-        return
-    try:
-        if os.name == "posix":
-            os.killpg(process.pid, signal.SIGTERM)
-        else:
-            process.terminate()
-        process.wait(timeout=1)
-    except subprocess.TimeoutExpired:
-        if os.name == "posix":
-            os.killpg(process.pid, signal.SIGKILL)
-        else:
-            process.kill()
-    except ProcessLookupError:
-        pass
+from .storage import atomic_json, contained, copy_asset, digest, open_project, parse_json, save_project
+from .worker import EngineError, job_info
+from .workers import Workers
 
 
 def publish(staged: Path, target: Path, overwrite: bool) -> None:
@@ -74,13 +43,10 @@ class Engine:
         self.session: Session | None = None
         self.background_sessions: dict[str, Session] = {}
         self.lock = threading.RLock()
-        self.preview_slots = threading.Semaphore(2)
         self.jobs: dict[str, dict] = {}
-        self.processes: dict[int, subprocess.Popen] = {}
         self.closing = False
-        self.previewing: dict[Path, int] = {}
-        self.cache_timer: threading.Timer | None = None
-        self.cache_checked = 0.0
+        self.workers = Workers(data, notify)
+        self.cache = PreviewCache(data, self.plugins.config.get("preview_cache_limit"))
         self.notify = notify
         self.series: Series | None = None
         self.series_error = None
@@ -89,7 +55,11 @@ class Engine:
             try:
                 location = parse_json(current.read_text("utf-8"))
                 extensions = self.plugins.extensions("import")
-                self.series = FolderProject(data, location["project"], extensions) if "project" in location else Series(data, location["paths"], extensions)
+                self.series = (
+                    FolderProject(data, location["project"], extensions)
+                    if "project" in location
+                    else Series(data, location["paths"], extensions)
+                )
                 identifier = self.series.state["current_id"]
                 if identifier:
                     session = self.series.load(self.series.item(identifier))
@@ -98,46 +68,13 @@ class Engine:
                     self.session = session
             except (OSError, ValueError, KeyError, TypeError) as error:
                 self.series_error = str(error)
-        self.maintain_cache()
-
-    def cache_limit(self) -> int:
-        value = self.plugins.config.get("preview_cache_limit", 5_000_000_000)
-        return value if type(value) is int and 1_000_000_000 <= value <= 1_000_000_000_000 else 5_000_000_000
-
-    def cache_storage(self, clear=False) -> dict:
-        # ponytail: periodic scans hold the engine lock; index sizes if large caches make scans slow.
-        directory = self.data / "previews"
-        entries = [(path, path.stat()) for path in owned_files(self.data, directory) if path.suffix == ".png"]
-        used = sum(stat.st_size for _, stat in entries)
-        before, limit, now = used, self.cache_limit(), time.time()
-        for path, stat in sorted(entries, key=lambda entry: entry[1].st_mtime):
-            if not clear and used <= limit:
-                break
-            if path in self.previewing or not clear and now - stat.st_mtime < 60:
-                continue
-            path.unlink()
-            used -= stat.st_size
-        return {"used": used, "limit": limit, "freed": before - used}
-
-    def maintain_cache(self):
-        with self.lock:
-            if self.closing:
-                return
-            self.cache_checked = time.monotonic()
-            if self.cache_timer:
-                self.cache_timer.cancel()
-                self.cache_timer = None
-            try:
-                state = self.cache_storage()
-                if state["used"] > state["limit"]:
-                    self.cache_timer = threading.Timer(60, self.maintain_cache)
-                    self.cache_timer.daemon = True
-                    self.cache_timer.start()
-            except (OSError, ValueError):
-                pass
 
     def document(self, params: dict, revision: bool = False) -> Session:
-        session = self.session if self.session and self.session.book["id"] == params.get("document_id") else self.background_sessions.get(params.get("document_id"), self.session)
+        session = (
+            self.session
+            if self.session and self.session.book["id"] == params.get("document_id")
+            else self.background_sessions.get(params.get("document_id"), self.session)
+        )
         if not session:
             raise ValueError(t("Open a book first"))
         session.check(params["document_id"], params["base_revision"] if revision else None)
@@ -149,7 +86,9 @@ class Engine:
         if any(asset["kind"] != "file" for asset in book["assets"].values()):
             raise ValueError(t("Import plugins must save page images as project-independent files"))
         for asset in book["assets"].values():
-            asset["path"] = str(copy_asset(Path(asset["path"]).resolve(strict=True), self.data / "assets", asset["ext"]))
+            asset["path"] = str(
+                copy_asset(Path(asset["path"]).resolve(strict=True), self.data / "assets", asset["ext"])
+            )
         return book
 
     def prepare_session(self, session: Session, job: dict | None = None) -> None:
@@ -201,29 +140,14 @@ class Engine:
             raise ValueError(t("Parameters must be an object"))
         if method == "document.preview":
             with self.lock:
-                session = self.document(p)
-                book = copy.deepcopy(session.book)
-                output = preview_path(book, p["page_id"], p.get("size", 320), self.data / "previews")
-                if output.is_file():
-                    output.touch()
-                    if time.monotonic() - self.cache_checked >= 30:
-                        self.maintain_cache()
-                    return f"previews/{output.name}"
-                self.previewing[output] = self.previewing.get(output, 0) + 1
-            try:
-                with self.preview_slots:
-                    return self.run_worker("preview", {"book": book, "page_id": p["page_id"], "size": p.get("size", 320)})
-            finally:
-                with self.lock:
-                    self.previewing[output] -= 1
-                    if not self.previewing[output]:
-                        del self.previewing[output]
-                    if time.monotonic() - self.cache_checked >= 30:
-                        self.maintain_cache()
-                    elif self.cache_timer is None and not self.closing:
-                        self.cache_timer = threading.Timer(30, self.maintain_cache)
-                        self.cache_timer.daemon = True
-                        self.cache_timer.start()
+                book = copy.deepcopy(self.document(p).book)
+            size = p.get("size", 320)
+            return self.cache.preview(
+                book,
+                p["page_id"],
+                size,
+                lambda: self.run_worker("preview", {"book": book, "page_id": p["page_id"], "size": size}),
+            )
         if method == "plugins.catalog":
             return self.plugins.catalog()
         if method == "plugins.install_official":
@@ -243,93 +167,106 @@ class Engine:
             if method == "app.locale":
                 return self.plugins.set_locale(p["code"]) if "code" in p else self.plugins.locale()
             if method in ("storage.info", "storage.configure", "storage.clear"):
-                if method != "storage.info" and any(job["state"] == "running" for job in self.jobs.values()):
-                    raise ValueError(t("Complete or cancel the current background task first"))
-                if method == "storage.configure":
-                    limit = p.get("limit")
-                    if type(limit) is not int or not 1_000_000_000 <= limit <= 1_000_000_000_000:
-                        raise ValueError(t("Enter a cache limit between 1 and 1000 GB"))
-                    config = self.plugins.config | {"preview_cache_limit": limit}
-                    atomic_json(self.plugins.config_path, config)
-                    self.plugins.config = config
-                result = self.cache_storage(clear=method == "storage.clear")
-                self.maintain_cache()
-                return result
+                return self.storage_call(method, p)
             if method == "app.safe_mode":
                 self.plugins.config["safe_next_start"] = True
                 atomic_json(self.plugins.config_path, self.plugins.config)
                 return True
-            if method == "document.get":
-                return self.session.snapshot() if self.session else None
+            if method.startswith(("document.", "project.")):
+                return self.document_call(method, p)
             if method.startswith("series."):
                 return self.series_call(method, p)
-            if method == "document.apply":
-                session = self.document(p, True)
-                session.apply(p["document_id"], p["base_revision"], p["changes"])
-                return self.changed(session)
-            if method in ("document.undo", "document.redo"):
-                session = self.document(p)
-                session.history(p["document_id"], method.endswith("redo"))
-                return self.changed(session)
-            if method == "document.release":
-                self.background_sessions.pop(p["document_id"], None)
-                return True
-            if method == "project.open":
-                if (Path(p["path"]) / ".foluma/project.json").is_file():
-                    return self.series_call("series.open_project", p)
-                session = Session(open_project(Path(p["path"])), p["path"])
-                self.prepare_session(session)
-                self.session = session
-                return self.changed()
-            if method == "project.save":
-                session = self.document(p, True)
-                path = Path(p["path"]).resolve()
-                save_project(session.book, path)
-                session.project_path = str(path)
-                session.saved_revision = session.book["revision"]
-                return self.changed(session)
-            if method == "project.relink":
-                session = self.document(p, True)
-                item = self.series.current(session) if self.series else None
-                if item and self.series.managed:
-                    return self.series_call("series.relink", {"id": item["id"], "path": p["path"]})
-                source = session.book["sources"][p["source_id"]]
-                path = Path(p["path"]).resolve(strict=True)
-                if digest(path) != source["sha256"]:
-                    raise ValueError(t("The file differs from the original source and cannot be relinked"))
-                source["path"] = str(path)
-                # Source locations are identity-preserving maintenance, not an undoable edit.
-                for snapshot in session.undo_stack + session.redo_stack:
-                    snapshot["sources"][p["source_id"]]["path"] = str(path)
-                session.book["revision"] += 1
-                return self.changed(session)
             if method == "task.start":
                 return self.start(p)
             if method == "task.cancel":
                 job = self.jobs[p["id"]]
                 if job["state"] == "running":
-                    job["cancelled"] = True
-                    terminate(job.get("process"))
+                    self.workers.cancel(job)
                 return True
             if method == "task.get":
-                return self.job_info(self.jobs[p["id"]])
-            if method == "plugins.list":
-                return self.plugins.list()
-            if method == "plugins.bundled":
-                return self.plugins.bundled()
-            if method == "plugins.install_bundled":
-                return self.plugins.install_bundled(p["id"])
-            if method == "plugins.inspect":
-                return self.plugins.inspect(p["path"])
-            if method == "plugins.install":
-                return self.plugins.install(p["path"])
-            if method == "plugins.set_enabled":
-                return self.plugins.set_enabled(p["id"], p["enabled"])
-            if method == "plugins.remove":
-                return self.plugins.remove(p["id"])
+                return job_info(self.jobs[p["id"]])
+            if method.startswith("plugins."):
+                return self.plugin_call(method, p)
             if method in ("bundle.write", "bundle.read"):
                 return self.bundle(method, p)
             raise ValueError(t("Unsupported operation: {0}", method))
+
+    def document_call(self, method: str, p: dict):
+        if method == "document.get":
+            return self.session.snapshot() if self.session else None
+        if method == "document.apply":
+            session = self.document(p, True)
+            session.apply(p["document_id"], p["base_revision"], p["changes"])
+            return self.changed(session)
+        if method in ("document.undo", "document.redo"):
+            session = self.document(p)
+            session.history(p["document_id"], method.endswith("redo"))
+            return self.changed(session)
+        if method == "document.release":
+            self.background_sessions.pop(p["document_id"], None)
+            return True
+        if method == "project.open":
+            if (Path(p["path"]) / ".foluma/project.json").is_file():
+                return self.series_call("series.open_project", p)
+            session = Session(open_project(Path(p["path"])), p["path"])
+            self.prepare_session(session)
+            self.session = session
+            return self.changed()
+        if method == "project.save":
+            session = self.document(p, True)
+            path = Path(p["path"]).resolve()
+            save_project(session.book, path)
+            session.project_path = str(path)
+            session.saved_revision = session.book["revision"]
+            return self.changed(session)
+        if method == "project.relink":
+            session = self.document(p, True)
+            item = self.series.current(session) if self.series else None
+            if item and self.series.managed:
+                return self.series_call("series.relink", {"id": item["id"], "path": p["path"]})
+            source = session.book["sources"][p["source_id"]]
+            path = Path(p["path"]).resolve(strict=True)
+            if digest(path) != source["sha256"]:
+                raise ValueError(t("The file differs from the original source and cannot be relinked"))
+            source["path"] = str(path)
+            # Source locations are identity-preserving maintenance, not an undoable edit.
+            for snapshot in session.undo_stack + session.redo_stack:
+                snapshot["sources"][p["source_id"]]["path"] = str(path)
+            session.book["revision"] += 1
+            return self.changed(session)
+        raise ValueError(t("Unsupported operation: {0}", method))
+
+    def storage_call(self, method: str, p: dict) -> dict:
+        if method != "storage.info" and any(job["state"] == "running" for job in self.jobs.values()):
+            raise ValueError(t("Complete or cancel the current background task first"))
+        if method == "storage.configure":
+            limit = p.get("limit")
+            if type(limit) is not int or not 1_000_000_000 <= limit <= 1_000_000_000_000:
+                raise ValueError(t("Enter a cache limit between 1 and 1000 GB"))
+            config = self.plugins.config | {"preview_cache_limit": limit}
+            atomic_json(self.plugins.config_path, config)
+            self.plugins.config = config
+            self.cache.limit = limit
+        result = self.cache.info(clear=method == "storage.clear")
+        self.cache.maintain()
+        return result
+
+    def plugin_call(self, method: str, p: dict):
+        if method == "plugins.list":
+            return self.plugins.list()
+        if method == "plugins.bundled":
+            return self.plugins.bundled()
+        if method == "plugins.install_bundled":
+            return self.plugins.install_bundled(p["id"])
+        if method == "plugins.inspect":
+            return self.plugins.inspect(p["path"])
+        if method == "plugins.install":
+            return self.plugins.install(p["path"])
+        if method == "plugins.set_enabled":
+            return self.plugins.set_enabled(p["id"], p["enabled"])
+        if method == "plugins.remove":
+            return self.plugins.remove(p["id"])
+        raise ValueError(t("Unsupported operation: {0}", method))
 
     def series_call(self, method: str, p: dict):
         if method == "series.get":
@@ -345,38 +282,7 @@ class Engine:
             self.notify("document.changed", None)
             return self.series_changed()
         if method in ("series.create", "series.open_project", "series.migrate"):
-            if self.session:
-                self.changed()
-            if method == "series.open_project":
-                project = FolderProject(self.data, p["path"], self.plugins.extensions("import"))
-            else:
-                previous = self.series if method == "series.migrate" else None
-                if method == "series.migrate" and (not previous or previous.managed):
-                    raise ValueError(t("Open a legacy series to migrate it"))
-                project = FolderProject.create(self.data, p["parent"], p["name"], self.plugins.extensions("import"))
-                if previous:
-                    for item in previous.state["items"]:
-                        saved = previous.project(item)
-                        if not Path(item["path"]).is_file():
-                            project.import_missing(item, saved)
-                        else:
-                            project.add([str(saved) if (saved / "project.json").exists() else item["path"]])
-                        imported = project.state["items"][-1]
-                        for key in ("settings", "reviewed_revision", "exported_revision", "output"):
-                            imported[key] = copy.deepcopy(item[key])
-                        if item["id"] == previous.state["current_id"]:
-                            project.state["current_id"] = imported["id"]
-                    project.state["output_directory"] = previous.state["output_directory"]
-                    project.save()
-            current = project.state["current_id"]
-            session = project.load(project.item(current)) if current else None
-            if session:
-                self.prepare_session(session)
-            project.activate()
-            self.series, self.session, self.series_error = project, session, None
-            self.background_sessions.clear()
-            self.notify("document.changed", session.snapshot() if session else None)
-            return self.series_changed()
+            return self.open_series(method, p)
         if method == "series.scan":
             if self.session:
                 self.changed()
@@ -389,44 +295,19 @@ class Engine:
             if not self.series.managed:
                 raise ValueError(t("Save this series as a folder project first"))
             return self.series.delete_info(p["ids"])
-        if method in ("series.add", "series.move", "series.remove", "series.restore", "series.delete", "series.group",
-                      "series.delete_group", "series.refresh", "series.relink", "series.reorder"):
-            if not self.series.managed:
-                raise ValueError(t("Save this series as a folder project first"))
-            if self.session:
-                self.changed()
-            summary = None
-            if method == "series.add":
-                summary = self.series.add(p["paths"], p.get("group", ""))
-            elif method == "series.move":
-                self.series.move_books(p["ids"], p["group"])
-            elif method == "series.remove":
-                self.series.remove(p["ids"])
-            elif method == "series.restore":
-                self.series.restore(p["ids"])
-            elif method == "series.delete":
-                summary = self.series.delete(p["ids"])
-            elif method == "series.group":
-                self.series.group(p["name"], p.get("previous"), p.get("ids"))
-            elif method == "series.delete_group":
-                self.series.delete_group(p["name"])
-            elif method == "series.refresh":
-                summary = self.series.refresh()
-            elif method == "series.relink":
-                self.series.relink(p["id"], p["path"])
-            elif method == "series.reorder":
-                self.series.reorder(p["ids"])
-            self.background_sessions.clear()
-            if self.session:
-                item = self.series.current(self.session)
-                if item:
-                    if item.get("removed"):
-                        self.session = None
-                    else:
-                        self.series.synchronize(item, self.session)
-                    self.notify("document.changed", self.session.snapshot() if self.session else None)
-            state = self.series_changed()
-            return state | {"summary": summary} if summary is not None else state
+        if method in (
+            "series.add",
+            "series.move",
+            "series.remove",
+            "series.restore",
+            "series.delete",
+            "series.group",
+            "series.delete_group",
+            "series.refresh",
+            "series.relink",
+            "series.reorder",
+        ):
+            return self.modify_series(method, p)
         if method == "series.review":
             item = self.series.item(p["id"])
             if type(p.get("reviewed")) is not bool or item["revision"] is None:
@@ -434,8 +315,10 @@ class Engine:
             session = self.session if self.series.current(self.session) is item else self.series.load(item)
             marks = pending_review_count(session.book) if session else 0
             if p["reviewed"] and marks and p.get("allow_pending") is not True:
-                raise EngineError(t("{0} pages still need attention. Confirm before marking this book reviewed.",marks),
-                                  {"kind": "pending_review", "pages": marks})
+                raise EngineError(
+                    t("{0} pages still need attention. Confirm before marking this book reviewed.", marks),
+                    {"kind": "pending_review", "pages": marks},
+                )
             item["reviewed_revision"] = item["revision"] if p["reviewed"] else None
         elif method == "series.output":
             directory = Path(p["directory"]).resolve(strict=True)
@@ -443,38 +326,107 @@ class Engine:
                 raise ValueError(t("Choose an output folder"))
             self.series.state["output_directory"] = str(directory)
         elif method == "series.configure":
-            changes = p.get("metadata")
-            if (not isinstance(changes, dict) or not changes or set(changes) - {"direction", "cover_only"}
-                    or "direction" in changes and changes["direction"] not in ("rtl", "ltr")
-                    or "cover_only" in changes and type(changes["cover_only"]) is not bool):
-                raise ValueError(t("Invalid shared reading settings"))
-            identifiers = p.get("ids")
-            if not isinstance(identifiers, list) or not identifiers or not all(isinstance(i, str) for i in identifiers):
-                raise ValueError(t("Select books first"))
-            items = [self.series.item(i) for i in dict.fromkeys(identifiers)]
-            results = []
-            for item in items:
-                try:
-                    session = self.session if self.series.current(self.session) is item else self.series.load(item)
-                    if session:
-                        session.apply(session.book["id"], session.book["revision"], {"metadata": changes})
-                        self.series.remember(item, session)
-                        if session is self.session:
-                            self.notify("document.changed", session.snapshot())
-                    else:
-                        item["settings"].update(changes)
-                        self.series.save()
-                    results.append({"id": item["id"], "error": None})
-                except Exception as error:
-                    if self.session and self.series.current(self.session) is item:
-                        self.notify("document.changed", self.session.snapshot())
-                    results.append({"id": item["id"], "error": str(error)})
-            self.series_changed()
-            return results
+            return self.configure_series(p)
         else:
             raise ValueError(t("Unsupported operation: {0}", method))
         self.series.save()
         return self.series_changed()
+
+    def open_series(self, method: str, p: dict):
+        if self.session:
+            self.changed()
+        if method == "series.open_project":
+            project = FolderProject(self.data, p["path"], self.plugins.extensions("import"))
+        else:
+            previous = self.series if method == "series.migrate" else None
+            if method == "series.migrate" and (not previous or previous.managed):
+                raise ValueError(t("Open a legacy series to migrate it"))
+            project = FolderProject.create(self.data, p["parent"], p["name"], self.plugins.extensions("import"))
+            if previous:
+                project.import_series(previous)
+        current = project.state["current_id"]
+        session = project.load(project.item(current)) if current else None
+        if session:
+            self.prepare_session(session)
+        project.activate()
+        self.series, self.session, self.series_error = project, session, None
+        self.background_sessions.clear()
+        self.notify("document.changed", session.snapshot() if session else None)
+        return self.series_changed()
+
+    def modify_series(self, method: str, p: dict):
+        if not self.series.managed:
+            raise ValueError(t("Save this series as a folder project first"))
+        if self.session:
+            self.changed()
+        summary = None
+        if method == "series.add":
+            summary = self.series.add(p["paths"], p.get("group", ""))
+        elif method == "series.move":
+            self.series.move_books(p["ids"], p["group"])
+        elif method == "series.remove":
+            self.series.remove(p["ids"])
+        elif method == "series.restore":
+            self.series.restore(p["ids"])
+        elif method == "series.delete":
+            summary = self.series.delete(p["ids"])
+        elif method == "series.group":
+            self.series.group(p["name"], p.get("previous"), p.get("ids"))
+        elif method == "series.delete_group":
+            self.series.delete_group(p["name"])
+        elif method == "series.refresh":
+            summary = self.series.refresh()
+        elif method == "series.relink":
+            self.series.relink(p["id"], p["path"])
+        elif method == "series.reorder":
+            self.series.reorder(p["ids"])
+        self.background_sessions.clear()
+        if self.session:
+            item = self.series.current(self.session)
+            if item:
+                if item.get("removed"):
+                    self.session = None
+                else:
+                    self.series.synchronize(item, self.session)
+                self.notify("document.changed", self.session.snapshot() if self.session else None)
+        state = self.series_changed()
+        return state | {"summary": summary} if summary is not None else state
+
+    def configure_series(self, p: dict):
+        changes = p.get("metadata")
+        if (
+            not isinstance(changes, dict)
+            or not changes
+            or set(changes) - {"direction", "cover_only"}
+            or "direction" in changes
+            and changes["direction"] not in ("rtl", "ltr")
+            or "cover_only" in changes
+            and type(changes["cover_only"]) is not bool
+        ):
+            raise ValueError(t("Invalid shared reading settings"))
+        identifiers = p.get("ids")
+        if not isinstance(identifiers, list) or not identifiers or not all(isinstance(i, str) for i in identifiers):
+            raise ValueError(t("Select books first"))
+        items = [self.series.item(i) for i in dict.fromkeys(identifiers)]
+        results = []
+        for item in items:
+            try:
+                session = self.session if self.series.current(self.session) is item else self.series.load(item)
+                if session:
+                    session.apply(session.book["id"], session.book["revision"], {"metadata": changes})
+                    self.series.remember(item, session)
+                    if session is self.session:
+                        self.notify("document.changed", session.snapshot())
+                else:
+                    item["settings"].update(changes)
+                    self.series.save()
+                results.append({"id": item["id"], "error": None})
+            except Exception as error:
+                if self.session and self.series.current(self.session) is item:
+                    self.notify("document.changed", self.session.snapshot())
+                results.append({"id": item["id"], "error": str(error)})
+        self.series_changed()
+        return results
 
     def bundle(self, method: str, p: dict) -> dict:
         """Opaque plugin JSON plus embedded file assets; interpretation belongs to the plugin."""
@@ -509,8 +461,6 @@ class Engine:
             value = parse_json((root / "bundle.json").read_text("utf-8"))
             if value.get("schema") != 1 or value.get("plugin") != p["plugin"]:
                 raise ValueError(t("Preset belongs to another plugin or has an incompatible version"))
-            from .storage import contained
-
             paths, keys = [], []
             for key, asset in value.get("assets", {}).items():
                 if asset["kind"] != "file":
@@ -567,154 +517,104 @@ class Engine:
         self.jobs = {key: value for key, value in list(self.jobs.items())[-19:]}
         self.jobs[job["id"]] = job
         threading.Thread(target=self.execute, args=(job, p, book), daemon=True).start()
-        return self.job_info(job)
-
-    @staticmethod
-    def job_info(job: dict) -> dict:
-        return {key: value for key, value in job.items() if key not in ("process", "cancelled", "opening_over")}
+        return job_info(job)
 
     def run_worker(self, operation: str, params: dict, job: dict | None = None):
         if operation in ("import", "export", "materialize"):
-            plugin = self.plugins.format("export" if operation == "export" else "import", params.get("path"), params.get("plugin_id"))
+            plugin = self.plugins.format(
+                "export" if operation == "export" else "import", params.get("path"), params.get("plugin_id")
+            )
             options = params.get("options", {})
             if not isinstance(options, dict):
                 raise ValueError(t("Format options must be an object"))
             options = options | {key: params[key] for key in ("render", "dpi") if key in params}
-            params = {"plugin_id": plugin["id"], "operation": operation,
-                      "input": {"path": params.get("path"), "asset_directory": str(self.data / "assets"), "options": options},
-                      "book": params.get("book"), "messages": self.plugins.locale()["messages"]}
+            params = {
+                "plugin_id": plugin["id"],
+                "operation": operation,
+                "input": {"path": params.get("path"), "asset_directory": str(self.data / "assets"), "options": options},
+                "book": params.get("book"),
+                "messages": self.plugins.locale()["messages"],
+            }
             operation = "plugin"
-        with tempfile.TemporaryDirectory(dir=self.data) as temp:
-            request = Path(temp) / "request.json"
-            atomic_json(
-                request,
-                {
-                    "operation": operation,
-                    "params": params,
-                    "data": str(self.data),
-                    "messages": self.plugins.locale()["messages"],
-                },
-            )
-            command = worker_command(request)
-            worker_input = None
-            if operation == "plugin":
-                manifest = self.plugins.active.get(params["plugin_id"])
-                if not manifest:
-                    raise ValueError(t("Plugin is not active. Please restart."))
-                from .storage import contained
+        executable = None
+        if operation == "plugin":
+            manifest = self.plugins.active.get(params["plugin_id"])
+            if not manifest:
+                raise ValueError(t("Plugin is not active. Please restart."))
+            worker = manifest.get("workers", {}).get(platform_id())
+            if not worker:
+                raise ValueError(t("Plugin has no worker for this platform"))
+            executable = contained(self.plugins.directory(manifest["id"], manifest["version"]), worker)
+        return self.workers.run(operation, params, self.plugins.locale()["messages"], job, executable)
 
-                worker = manifest.get("workers", {}).get(platform_id())
-                if not worker:
-                    raise ValueError(t("Plugin has no worker for this platform"))
-                command = worker_command(request, contained(self.plugins.directory(manifest["id"], manifest["version"]), worker))
-                worker_input = json.dumps(params, ensure_ascii=False) + "\n"
-            with (Path(temp) / "stderr.log").open("w+") as error_log:
-                with self.lock:
-                    if job and job["cancelled"]:
-                        raise EngineError(t("Task cancelled"))
-                    if self.closing:
-                        raise EngineError(t("Foluma is closing"))
-                    process = subprocess.Popen(
-                        command,
-                        stdin=subprocess.PIPE,
-                        stdout=subprocess.PIPE,
-                        stderr=error_log,
-                        text=True,
-                        encoding="utf-8",
-                        start_new_session=os.name == "posix",
+    def export_job(self, job: dict, p: dict, book: dict) -> dict:
+        operation = job["operation"]
+        overwrite = bool(p.get("overwrite")) and "directory" not in p
+        provider = self.plugins.format("export", p.get("path"), p.get("plugin_id")) if operation == "export" else None
+        expected = (
+            (Path(p["path"]).suffix.lower() if p.get("path") else f".{provider['format']['extensions'][0]}")
+            if provider
+            else ".zip"
+        )
+        if "directory" in p:
+            directory = Path(p["directory"]).resolve(strict=True)
+            if not directory.is_dir():
+                raise ValueError(t("Choose an output folder"))
+            stem = re.sub(r'[\x00-\x1f<>:"/\\|?*]', "_", book["metadata"]["title"]).strip().rstrip(". ")[:120] or "book"
+            if stem.upper().split(".")[0] in {
+                "CON",
+                "PRN",
+                "AUX",
+                "NUL",
+                *[f"COM{i}" for i in range(1, 10)],
+                *[f"LPT{i}" for i in range(1, 10)],
+            }:
+                stem = f"book-{stem}"
+            target = directory / f"{stem}{expected}"
+            number = 2
+            while target.exists():
+                target = directory / f"{stem} ({number}){expected}"
+                number += 1
+        else:
+            target = Path(p["path"]).resolve()
+        if target.suffix.lower() != expected:
+            raise ValueError(t("Output file must use the {0} extension", expected))
+        protected = {Path(s["path"]).resolve() for s in book["sources"].values()}
+        protected.update(Path(a["path"]).resolve() for a in book["assets"].values() if a["kind"] == "file")
+        if target in protected:
+            raise ValueError(t("Source files cannot be overwritten"))
+        if target.exists() and not overwrite:
+            raise ValueError(t("Destination exists. Choose another name or confirm overwriting."))
+        with tempfile.TemporaryDirectory(prefix=".foluma-", dir=target.parent) as temp:
+            staged = Path(temp) / target.name
+            args = {"book": book, "path": str(staged)}
+            if provider:
+                args.update(plugin_id=provider["id"], options=p.get("options", {}))
+            if operation == "images.export":
+                args["page_ids"] = p["page_ids"]
+            result = self.run_worker(operation, args, job)
+            with self.lock:
+                if job["cancelled"]:
+                    raise EngineError(t("Task cancelled"))
+                publish(staged, target, overwrite)
+                result["path"] = str(target)
+                if operation == "export" and self.series:
+                    item = next(
+                        (item for item in self.series.state["items"] if item["document_id"] == book["id"]), None
                     )
-                    if job is not None:
-                        job["process"] = process
-                    self.processes[process.pid] = process
-                if worker_input:
-                    process.stdin.write(worker_input)
-                process.stdin.close()
-                result, found = None, False
-                try:
-                    for line in process.stdout:
-                        message = parse_json(line)
-                        if "timing" in message:
-                            print("[timing] " + json.dumps(message["timing"], ensure_ascii=False), file=sys.stderr, flush=True)
-                        if "progress" in message and job:
-                            job["progress"] = message["progress"]
-                            self.notify("task.changed", self.job_info(job))
-                        if "error" in message:
-                            raise EngineError(message["error"]["message"], message["error"].get("data"))
-                        if "result" in message:
-                            result, found = message["result"], True
-                    process.wait()
-                    if process.returncode or not found:
-                        error_log.seek(0)
-                        raise EngineError(
-                            t("Background task ended without a valid result: {0}", error_log.read()[-1500:])
-                        )
-                    return result
-                finally:
-                    terminate(process)
-                    process.stdout.close()
-                    with self.lock:
-                        self.processes.pop(process.pid, None)
+                    if item:
+                        item.update(exported_revision=book["revision"], output=str(target))
+                        self.series.save()
+                        self.series_changed()
+                job.update(state="completed", result=result)
+        return result
 
     def execute(self, job: dict, p: dict, book: dict | None) -> None:
         messages.set(self.plugins.locale()["messages"])
         try:
             operation = job["operation"]
             if operation in ("export", "images.export"):
-                overwrite = bool(p.get("overwrite")) and "directory" not in p
-                provider = self.plugins.format("export", p.get("path"), p.get("plugin_id")) if operation == "export" else None
-                expected = (Path(p["path"]).suffix.lower() if p.get("path") else f".{provider['format']['extensions'][0]}") if provider else ".zip"
-                if "directory" in p:
-                    directory = Path(p["directory"]).resolve(strict=True)
-                    if not directory.is_dir():
-                        raise ValueError(t("Choose an output folder"))
-                    stem = (
-                        re.sub(r'[\x00-\x1f<>:"/\\|?*]', "_", book["metadata"]["title"]).strip().rstrip(". ")[:120]
-                        or "book"
-                    )
-                    if stem.upper().split(".")[0] in {
-                        "CON",
-                        "PRN",
-                        "AUX",
-                        "NUL",
-                        *[f"COM{i}" for i in range(1, 10)],
-                        *[f"LPT{i}" for i in range(1, 10)],
-                    }:
-                        stem = f"book-{stem}"
-                    target = directory / f"{stem}{expected}"
-                    number = 2
-                    while target.exists():
-                        target = directory / f"{stem} ({number}){expected}"
-                        number += 1
-                else:
-                    target = Path(p["path"]).resolve()
-                if target.suffix.lower() != expected:
-                    raise ValueError(t("Output file must use the {0} extension", expected))
-                protected = {Path(s["path"]).resolve() for s in book["sources"].values()}
-                protected.update(Path(a["path"]).resolve() for a in book["assets"].values() if a["kind"] == "file")
-                if target in protected:
-                    raise ValueError(t("Source files cannot be overwritten"))
-                if target.exists() and not overwrite:
-                    raise ValueError(t("Destination exists. Choose another name or confirm overwriting."))
-                with tempfile.TemporaryDirectory(prefix=".foluma-", dir=target.parent) as temp:
-                    staged = Path(temp) / target.name
-                    args = {"book": book, "path": str(staged)}
-                    if provider:
-                        args.update(plugin_id=provider["id"], options=p.get("options", {}))
-                    if operation == "images.export":
-                        args["page_ids"] = p["page_ids"]
-                    result = self.run_worker(operation, args, job)
-                    with self.lock:
-                        if job["cancelled"]:
-                            raise EngineError(t("Task cancelled"))
-                        publish(staged, target, overwrite)
-                        result["path"] = str(target)
-                        if operation == "export" and self.series:
-                            item = next((item for item in self.series.state["items"] if item["document_id"] == book["id"]), None)
-                            if item:
-                                item.update(exported_revision=book["revision"], output=str(target))
-                                self.series.save()
-                                self.series_changed()
-                        job.update(state="completed", result=result)
+                result = self.export_job(job, p, book)
             else:
                 saved = None
                 entry = None
@@ -724,8 +624,13 @@ class Engine:
                     if saved:
                         self.prepare_session(saved, job)
                 args = (
-                    {"path": entry["path"] if entry else p["path"], "plugin_id": p.get("plugin_id"),
-                     "options": p.get("options", {}), "render": p.get("render", False), "dpi": p.get("dpi", "auto")}
+                    {
+                        "path": entry["path"] if entry else p["path"],
+                        "plugin_id": p.get("plugin_id"),
+                        "options": p.get("options", {}),
+                        "render": p.get("render", False),
+                        "dpi": p.get("dpi", "auto"),
+                    }
                     if operation in ("import", "series.open")
                     else (
                         {"paths": p["paths"]}
@@ -752,7 +657,9 @@ class Engine:
                             if p.get("background") and self.series.current(self.session) is entry:
                                 session = self.session
                             if not saved and entry["settings"]:
-                                session.apply(session.book["id"], session.book["revision"], {"metadata": entry["settings"]})
+                                session.apply(
+                                    session.book["id"], session.book["revision"], {"metadata": entry["settings"]}
+                                )
                             if not p.get("background"):
                                 self.series.state["current_id"] = entry["id"]
                             self.series.remember(entry, session)
@@ -789,17 +696,13 @@ class Engine:
         finally:
             with self.lock:
                 job.pop("process", None)
-                self.notify("task.changed", self.job_info(job))
+                self.notify("task.changed", job_info(job))
 
     def close(self) -> None:
         with self.lock:
             self.closing = True
-            if self.cache_timer:
-                self.cache_timer.cancel()
-            for job in self.jobs.values():
-                job["cancelled"] = True
-            for process in list(self.processes.values()):
-                terminate(process)
+            self.cache.close()
+            self.workers.close(self.jobs.values())
 
 
 def serve(data: Path, safe: bool) -> None:

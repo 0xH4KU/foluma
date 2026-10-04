@@ -25,7 +25,9 @@ The source of truth is [`sdk/types.ts`](../sdk/types.ts). The host optionally pr
 
 `host.preview(book, page, size, signal?)` accepts an optional `AbortSignal`. Abort on unmount or when the requested page changes. The host shares matching requests, drops queued work when all consumers cancel, runs at most two previews and prioritizes larger previews over thumbnails. Already running previews finish and populate the cache. Older hosts ignore the optional signal, so views should also ignore results after cancellation.
 
-Every edit uses `document_id` and `base_revision`. Stale edits fail without partial changes. Keep page IDs when moving pages; create UUIDs for inserted or split pages. Assets are immutable and shared between page crops. Crops are normalized `[x, y, width, height]`. The host owns history, retaining up to 100 metadata snapshots. Unknown `extensions[plugin_id]` JSON survives save/open even when its plugin is absent.
+Every edit uses `document_id` and `base_revision`. Stale edits fail without partial changes. Keep page IDs when moving pages; create UUIDs for inserted or split pages. Assets are immutable and shared between page crops. Crops are normalized `[x, y, width, height]`. The host owns history, retaining up to 100 metadata snapshots. Unknown `extensions[plugin_id]` JSON survives save/open even when its plugin is absent. To change reading direction, apply a metadata-only change; the engine reorders adjacent matching split pairs while preserving page IDs and cover selection.
+
+Shared frontend helpers live in `sdk/order.ts` (stable item moves) and `sdk/batch.ts` (background book opening, export, cancellation and session release). The batch coordinator accepts an optional `prepare(book)` callback before export. Preset parsing and application stay in the editor and use this callback; the SDK and base application do not import editor internals.
 
 | RPC | Parameters / result |
 | --- | --- |

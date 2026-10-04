@@ -9,6 +9,16 @@ from .i18n import messages, t
 from .storage import parse_json
 
 
+class EngineError(ValueError):
+    def __init__(self, message: str, data=None):
+        super().__init__(message)
+        self.data = data
+
+
+def job_info(job: dict) -> dict:
+    return {key: value for key, value in job.items() if key not in ("process", "cancelled", "opening_over")}
+
+
 def emit(value: dict) -> None:
     print(json.dumps(value, ensure_ascii=False, allow_nan=False), flush=True)
 
@@ -30,8 +40,15 @@ def execute(operation: str, handler, translations: dict) -> None:
         now = time.perf_counter()
         timings[phase] = timings.get(phase, 0) + now - phase_started
         if operation != "preview" or now - started >= 0.25:
-            emit({"timing": {"operation": operation, "seconds": round(now - started, 3),
-                             "phases": {key: round(value, 3) for key, value in timings.items()}}})
+            emit(
+                {
+                    "timing": {
+                        "operation": operation,
+                        "seconds": round(now - started, 3),
+                        "phases": {key: round(value, 3) for key, value in timings.items()},
+                    }
+                }
+            )
 
     try:
         result = handler(progress)
@@ -65,5 +82,8 @@ def run(path: str) -> None:
 def run_plugin(handler) -> None:
     request = parse_json(sys.stdin.readline())
     operation = request["operation"]
-    execute(operation, lambda progress: handler(operation, request.get("input", {}), request.get("book"), progress),
-            request.get("messages", {}))
+    execute(
+        operation,
+        lambda progress: handler(operation, request.get("input", {}), request.get("book"), progress),
+        request.get("messages", {}),
+    )

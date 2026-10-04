@@ -210,6 +210,30 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual([p["id"] for p in session.book["pages"]], [left["id"], right["id"]])
         self.assertRaises(ValueError, parse_json, '{"extension": NaN}')
 
+    def test_direction_changes_only_reorder_matching_original_split_pages(self):
+        engine = Engine(self.root / "direction")
+        self.addCleanup(engine.close)
+        original = copy.deepcopy(self.book["pages"][0])
+        for crop, expected in (([0, 0, 1, 1], ["right", "left"]), ([0, 0, 0.9, 1], ["left", "right"])):
+            with self.subTest(original_crop=crop):
+                book = copy.deepcopy(self.book)
+                book["metadata"].update(direction="ltr", cover_id="left")
+                book["pages"] = [
+                    original | {"id": "left", "crop": [0, 0, 0.5, 1],
+                                "split": {"group": "pair", "side": "left", "original": original}},
+                    original | {"id": "right", "crop": [0.5, 0, 0.5, 1],
+                                "split": {"group": "pair", "side": "right", "original": original | {"crop": crop}}},
+                ]
+                engine.session = Session(book)
+                result = engine.call("document.apply", {
+                    "document_id": book["id"], "base_revision": 0, "changes": {"metadata": {"direction": "rtl"}},
+                })
+                self.assertEqual([page["id"] for page in result["pages"]], expected)
+                self.assertEqual(result["metadata"]["cover_id"], "left")
+                restored = engine.call("document.undo", {"document_id": book["id"]})
+                self.assertEqual([page["id"] for page in restored["pages"]], ["left", "right"])
+                self.assertEqual(restored["metadata"]["direction"], "ltr")
+
     def test_indexed_flate_import_saves_lossless_images_and_export_preserves_them(self):
         path = self.root / "indexed.pdf"
         raw = bytes(range(256)) * 150  # 240 x 320 pixels, packed two 4-bit indices per byte.
@@ -508,7 +532,7 @@ class IntegrationTests(unittest.TestCase):
         engine.session = Session(self.book)
         target = self.root / "existing.epub"
         target.write_bytes(b"keep me")
-        with patch("foluma.service.worker_command", return_value=[sys.executable, "-c", "import time;time.sleep(10)"]):
+        with patch("foluma.workers.worker_command", return_value=[sys.executable, "-c", "import time;time.sleep(10)"]):
             job = engine.call(
                 "task.start",
                 {
@@ -520,7 +544,7 @@ class IntegrationTests(unittest.TestCase):
                 },
             )
             deadline = time.monotonic() + 5
-            while not engine.processes and time.monotonic() < deadline:
+            while not engine.workers.processes and time.monotonic() < deadline:
                 time.sleep(0.01)
             engine.call("task.cancel", {"id": job["id"]})
             self.assertEqual(self.wait_job(engine, job["id"])["state"], "cancelled")

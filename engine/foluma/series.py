@@ -53,19 +53,41 @@ class Series:
                     files.add(str(item.resolve()))
         if not files and not self.path.exists():
             raise ValueError(t("No supported book files were found in this folder"))
-        self.state = parse_json(self.path.read_text("utf-8")) if self.path.exists() else {
-            "schema": 1, "id": self.directory.name, "roots": roots,
-            "name": Path(roots[0]).name if len(roots) == 1 and Path(roots[0]).is_dir() else Path(roots[0]).parent.name,
-            "current_id": None, "output_directory": "", "items": [],
-        }
+        self.state = (
+            parse_json(self.path.read_text("utf-8"))
+            if self.path.exists()
+            else {
+                "schema": 1,
+                "id": self.directory.name,
+                "roots": roots,
+                "name": Path(roots[0]).name
+                if len(roots) == 1 and Path(roots[0]).is_dir()
+                else Path(roots[0]).parent.name,
+                "current_id": None,
+                "output_directory": "",
+                "items": [],
+            }
+        )
         if self.state.get("schema") != 1 or not isinstance(self.state.get("items"), list):
             raise ValueError(t("Unsupported series format"))
         known = {item["path"]: item for item in self.state["items"]}
         # Keep missing sources in the list so saved edits remain reachable for relinking.
         for name in files:
-            known.setdefault(name, {"id": path_id(name), "path": name, "title": Path(name).stem,
-                                    "revision": None, "reviewed_revision": None, "exported_revision": None,
-                                    "document_id": None, "page_count": None, "output": None, "settings": {}})
+            known.setdefault(
+                name,
+                {
+                    "id": path_id(name),
+                    "path": name,
+                    "title": Path(name).stem,
+                    "revision": None,
+                    "reviewed_revision": None,
+                    "exported_revision": None,
+                    "document_id": None,
+                    "page_count": None,
+                    "output": None,
+                    "settings": {},
+                },
+            )
         self.state["items"] = sorted(known.values(), key=lambda item: natural_key(item["path"]))
         self.save()
         atomic_json(data / "series" / "current.json", {"paths": roots})
@@ -75,7 +97,11 @@ class Series:
 
     def item(self, identifier: str) -> dict:
         for item in self.state["items"]:
-            if item["id"] == identifier and isinstance(identifier, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,80}", identifier):
+            if (
+                item["id"] == identifier
+                and isinstance(identifier, str)
+                and re.fullmatch(r"[A-Za-z0-9_-]{1,80}", identifier)
+            ):
                 return item
         raise ValueError(t("This book is not in the current series"))
 
@@ -94,9 +120,13 @@ class Series:
         path = self.project(item)
         # ponytail: checkpoint one ordinary project per edit; coalesce writes if large books make this slow.
         save_project(session.book, path)
-        item.update(document_id=session.book["id"], revision=session.book["revision"],
-                    title=session.book["metadata"]["title"], page_count=len(session.book["pages"]),
-                    review_count=pending_review_count(session.book))
+        item.update(
+            document_id=session.book["id"],
+            revision=session.book["revision"],
+            title=session.book["metadata"]["title"],
+            page_count=len(session.book["pages"]),
+            review_count=pending_review_count(session.book),
+        )
         self.save()
         session.project_path = str(path)
         session.saved_revision = session.book["revision"]
@@ -118,8 +148,11 @@ class Series:
         result.update(managed=self.managed, directory=str(self.directory), groups=[], removed=[])
         for item in result["items"]:
             item["reviewed"] = item["revision"] is not None and item["reviewed_revision"] == item["revision"]
-            item["exported"] = (item["revision"] is not None and item["exported_revision"] == item["revision"]
-                                and bool(item["output"] and Path(item["output"]).is_file()))
+            item["exported"] = (
+                item["revision"] is not None
+                and item["exported_revision"] == item["revision"]
+                and bool(item["output"] and Path(item["output"]).is_file())
+            )
             item["needs_export"] = item["exported_revision"] is not None and not item["exported"]
             item["missing"] = not Path(item["path"]).is_file()
             item.setdefault("group", "")
@@ -128,10 +161,18 @@ class Series:
 
 
 def folder_name(value: str) -> str:
-    if (not isinstance(value, str) or not value.strip() or value != value.strip() or value.startswith(".")
-            or len(value) > 120 or re.search(r'[\x00-\x1f<>:"/\\|?*]', value) or value.endswith(".")
-            or value.lower().endswith(".mteproj")
-            or value.upper().split(".")[0] in {"CON", "PRN", "AUX", "NUL", *[f"COM{i}" for i in range(1, 10)], *[f"LPT{i}" for i in range(1, 10)]}):
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or value != value.strip()
+        or value.startswith(".")
+        or len(value) > 120
+        or re.search(r'[\x00-\x1f<>:"/\\|?*]', value)
+        or value.endswith(".")
+        or value.lower().endswith(".mteproj")
+        or value.upper().split(".")[0]
+        in {"CON", "PRN", "AUX", "NUL", *[f"COM{i}" for i in range(1, 10)], *[f"LPT{i}" for i in range(1, 10)]}
+    ):
         raise ValueError(t("Enter a folder name without path separators or reserved characters"))
     return value
 
@@ -151,15 +192,30 @@ class FolderProject(Series):
             raise ValueError(t("Unsupported project format"))
         identifiers = set()
         for item in self.state["items"]:
-            if (not isinstance(item.get("id"), str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", item["id"])
-                    or item["id"] in identifiers or not (isinstance(item.get("sha256"), str) and re.fullmatch(r"[a-f0-9]{64}", item["sha256"])
-                    or item.get("sha256") is None and item.get("document_id") is None and item.get("revision") is None)):
+            if (
+                not isinstance(item.get("id"), str)
+                or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", item["id"])
+                or item["id"] in identifiers
+                or not (
+                    isinstance(item.get("sha256"), str)
+                    and re.fullmatch(r"[a-f0-9]{64}", item["sha256"])
+                    or item.get("sha256") is None
+                    and item.get("document_id") is None
+                    and item.get("revision") is None
+                )
+            ):
                 raise ValueError(t("Invalid project book identity"))
             identifiers.add(item["id"])
             relative = Path(item["path"])
-            if (not re.fullmatch(r"\.[a-zA-Z0-9]{1,16}", relative.suffix) or ".." in relative.parts
-                    or (item.get("removed") and relative.parts[:3] != (".foluma", "removed", item["id"]))
-                    or (not item.get("removed") and (len(relative.parts) not in (1, 2) or any(p.startswith(".") for p in relative.parts)))):
+            if (
+                not re.fullmatch(r"\.[a-zA-Z0-9]{1,16}", relative.suffix)
+                or ".." in relative.parts
+                or (item.get("removed") and relative.parts[:3] != (".foluma", "removed", item["id"]))
+                or (
+                    not item.get("removed")
+                    and (len(relative.parts) not in (1, 2) or any(p.startswith(".") for p in relative.parts))
+                )
+            ):
                 raise ValueError(t("Invalid project source path"))
             item["path"] = str(contained(self.root, item["path"]))
             if item.get("restore_path"):
@@ -182,10 +238,19 @@ class FolderProject(Series):
     def create(cls, data: Path, parent: str, name: str, extensions=()):
         root = Path(parent).resolve(strict=True) / folder_name(name)
         root.mkdir()  # Never adopt or overwrite an existing directory implicitly.
-        atomic_json(root / ".foluma/project.json", {
-            "schema": 2, "id": new_id(), "name": name, "roots": [], "groups": [],
-            "current_id": None, "output_directory": "", "items": [],
-        })
+        atomic_json(
+            root / ".foluma/project.json",
+            {
+                "schema": 2,
+                "id": new_id(),
+                "name": name,
+                "roots": [],
+                "groups": [],
+                "current_id": None,
+                "output_directory": "",
+                "items": [],
+            },
+        )
         return cls(data, str(root), extensions)
 
     def activate(self):
@@ -309,7 +374,12 @@ class FolderProject(Series):
         for name in paths:
             path = Path(name).resolve(strict=True)
             if path.is_dir() and path.suffix != ".mteproj":
-                inputs.extend(sorted((p for p in path.iterdir() if p.is_file() and p.suffix.lower() in self.extensions), key=lambda p: natural_key(p.name)))
+                inputs.extend(
+                    sorted(
+                        (p for p in path.iterdir() if p.is_file() and p.suffix.lower() in self.extensions),
+                        key=lambda p: natural_key(p.name),
+                    )
+                )
                 folders_skipped += sum(p.is_dir() and not p.name.startswith(".") for p in path.iterdir())
             else:
                 inputs.append(path)
@@ -325,18 +395,34 @@ class FolderProject(Series):
                         raise ValueError(t("This book project has no source file"))
                     primary = next(iter(book["sources"].values()))
                     source = Path(primary["path"]).resolve(strict=True)
-                if not source.is_file() or not book and source.suffix.lower() not in self.extensions or source.name.startswith("."):
+                if (
+                    not source.is_file()
+                    or not book
+                    and source.suffix.lower() not in self.extensions
+                    or source.name.startswith(".")
+                ):
                     raise ValueError(t("Choose supported book files or a .mteproj book folder"))
                 fingerprint = digest(source)
                 if book and fingerprint != primary["sha256"]:
                     raise ValueError(t("The file differs from the original source and cannot be relinked"))
                 target = destination / source.name
-                known = next((item for item in self.state["items"] if not item.get("removed")
-                              and item.get("imported_from") == str(source) and item["sha256"] == fingerprint), None)
+                known = next(
+                    (
+                        item
+                        for item in self.state["items"]
+                        if not item.get("removed")
+                        and item.get("imported_from") == str(source)
+                        and item["sha256"] == fingerprint
+                    ),
+                    None,
+                )
                 if known and not book:
                     skipped += 1
                     continue
-                if any(item["path"] == str(source) and not item.get("removed") for item in self.state["items"]) and not book:
+                if (
+                    any(item["path"] == str(source) and not item.get("removed") for item in self.state["items"])
+                    and not book
+                ):
                     skipped += 1
                     continue
                 number = 2
@@ -354,14 +440,40 @@ class FolderProject(Series):
                         original = Path(source_info["path"])
                         if digest(original) != source_info["sha256"]:
                             raise ValueError(t("The file differs from the original source and cannot be relinked"))
-                        local = target if source_info["sha256"] == fingerprint else self.directory / item["id"] / f"{source_info['sha256']}{original.suffix}"
+                        local = (
+                            target
+                            if source_info["sha256"] == fingerprint
+                            else self.directory / item["id"] / f"{source_info['sha256']}{original.suffix}"
+                        )
                         if local != target:
                             self.copy_source(original, local)
                             copies.append(local)
                         source_info["path"] = str(local)
                     save_project(book, self.project(item))
-                    item.update(document_id=book["id"], revision=book["revision"], title=book["metadata"]["title"], page_count=len(book["pages"]),review_count=pending_review_count(book))
-        return {"added": len(self.state["items"])-before,"skipped": skipped,"folders_skipped": folders_skipped}
+                    item.update(
+                        document_id=book["id"],
+                        revision=book["revision"],
+                        title=book["metadata"]["title"],
+                        page_count=len(book["pages"]),
+                        review_count=pending_review_count(book),
+                    )
+        return {"added": len(self.state["items"]) - before, "skipped": skipped, "folders_skipped": folders_skipped}
+
+    def import_series(self, previous: Series):
+        """Migrate legacy book layouts and review/export state into this folder project."""
+        for item in previous.state["items"]:
+            saved = previous.project(item)
+            if not Path(item["path"]).is_file():
+                self.import_missing(item, saved)
+            else:
+                self.add([str(saved) if (saved / "project.json").exists() else item["path"]])
+            imported = self.state["items"][-1]
+            for key in ("settings", "reviewed_revision", "exported_revision", "output"):
+                imported[key] = copy.deepcopy(item[key])
+            if item["id"] == previous.state["current_id"]:
+                self.state["current_id"] = imported["id"]
+        self.state["output_directory"] = previous.state["output_directory"]
+        self.save()
 
     def import_missing(self, entry: dict, saved: Path):
         """Keep legacy edits reachable even when their original source is already missing."""
@@ -381,10 +493,21 @@ class FolderProject(Series):
                 save_project(book, self.project(item))
 
     def new_item(self, path: Path, fingerprint: str | None) -> dict:
-        return {"id": new_id(), "path": str(path), "title": path.stem, "sha256": fingerprint,
-                "group": path.parent.name if path.parent != self.root else "", "removed": False,
-                "revision": None, "reviewed_revision": None, "exported_revision": None,
-                "document_id": None, "page_count": None, "output": None, "settings": {}}
+        return {
+            "id": new_id(),
+            "path": str(path),
+            "title": path.stem,
+            "sha256": fingerprint,
+            "group": path.parent.name if path.parent != self.root else "",
+            "removed": False,
+            "revision": None,
+            "reviewed_revision": None,
+            "exported_revision": None,
+            "document_id": None,
+            "page_count": None,
+            "output": None,
+            "settings": {},
+        }
 
     def selected(self, ids: list[str], removed=False) -> list[dict]:
         if not isinstance(ids, list) or not ids or not all(isinstance(i, str) for i in ids):
@@ -432,7 +555,9 @@ class FolderProject(Series):
                 group = item["group"] if item["group"] in self.state["groups"] else ""
                 target = self.group_path(group) / Path(item["restore_path"]).name
                 number = 2
-                while target.exists() or any(other["path"] == str(target) and other is not item for other in self.state["items"]):
+                while target.exists() or any(
+                    other["path"] == str(target) and other is not item for other in self.state["items"]
+                ):
                     target = self.group_path(group) / f"{old.stem} ({number}){old.suffix}"
                     number += 1
                 if old.exists():
@@ -449,8 +574,10 @@ class FolderProject(Series):
         for item in items:
             for path in self.deletion_paths(item["id"]):
                 files.extend(owned_files(self.root, path))
-                if any(other.get("output") and Path(other["output"]).resolve().is_relative_to(path.resolve())
-                       for other in self.state["items"]):
+                if any(
+                    other.get("output") and Path(other["output"]).resolve().is_relative_to(path.resolve())
+                    for other in self.state["items"]
+                ):
                     raise ValueError(t("Move exported files out of this book's data folder before deleting it"))
         return {"count": len(items), "bytes": sum(path.stat().st_size for path in files)}
 
@@ -499,7 +626,7 @@ class FolderProject(Series):
         if ids is not None:
             if previous is not None:
                 raise ValueError(t("Only a new group can move selected books"))
-            return self.move_books(ids,name,create=True)
+            return self.move_books(ids, name, create=True)
         if previous is not None:
             source = self.group_path(previous)
             if not previous:
@@ -534,7 +661,9 @@ class FolderProject(Series):
         with self.change() as (move, _, _directories):
             for item in items:
                 old, target = Path(item["path"]), self.root / Path(item["path"]).name
-                if target.exists() or any(other is not item and other["path"] == str(target) for other in self.state["items"]):
+                if target.exists() or any(
+                    other is not item and other["path"] == str(target) for other in self.state["items"]
+                ):
                     raise ValueError(t("Destination already exists: {0}", target.name))
                 if old.exists():
                     self.ensure_source(item)
@@ -563,16 +692,30 @@ class FolderProject(Series):
 
     def reorder(self, ids: list[str]):
         active = [item for item in self.state["items"] if not item.get("removed")]
-        if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids) or len(ids) != len(active) or set(ids) != {item["id"] for item in active}:
+        if (
+            not isinstance(ids, list)
+            or not all(isinstance(i, str) for i in ids)
+            or len(ids) != len(active)
+            or set(ids) != {item["id"] for item in active}
+        ):
             raise ValueError(t("Order must include every active book exactly once"))
         with self.change():
-            self.state["items"] = [self.item(identifier) for identifier in ids] + [item for item in self.state["items"] if item.get("removed")]
+            self.state["items"] = [self.item(identifier) for identifier in ids] + [
+                item for item in self.state["items"] if item.get("removed")
+            ]
 
     def refresh(self):
         previous = {item["id"]: item["path"] for item in self.state["items"] if not item.get("removed")}
         if self.state["output_directory"] and not Path(self.state["output_directory"]).is_absolute():
             self.state["output_directory"] = str(contained(self.root, self.state["output_directory"]))
-        groups = sorted((p.name for p in self.root.iterdir() if p.is_dir() and not p.is_symlink() and not p.name.startswith(".") and p.suffix != ".mteproj"), key=natural_key)
+        groups = sorted(
+            (
+                p.name
+                for p in self.root.iterdir()
+                if p.is_dir() and not p.is_symlink() and not p.name.startswith(".") and p.suffix != ".mteproj"
+            ),
+            key=natural_key,
+        )
         files = {}
         tracked = self.extensions | {Path(item["path"]).suffix.lower() for item in self.state["items"]}
         for directory in [self.root, *(self.root / group for group in groups)]:
@@ -588,7 +731,9 @@ class FolderProject(Series):
             for item in active:
                 if item["path"] not in claimed:
                     matches = [path for path, sha in files.items() if sha == item["sha256"] and path not in claimed]
-                    missing_twins = [other for other in active if other["sha256"] == item["sha256"] and other["path"] not in claimed]
+                    missing_twins = [
+                        other for other in active if other["sha256"] == item["sha256"] and other["path"] not in claimed
+                    ]
                     if len(matches) == 1 and len(missing_twins) == 1:
                         item["path"] = matches[0]
                         claimed.add(matches[0])
@@ -601,15 +746,19 @@ class FolderProject(Series):
                 else:
                     item.pop("stamp", None)
             known = {item["path"] for item in active}
-            for path in sorted((path for path in files.keys() - known if Path(path).suffix.lower() in self.extensions), key=natural_key):
+            for path in sorted(
+                (path for path in files.keys() - known if Path(path).suffix.lower() in self.extensions), key=natural_key
+            ):
                 self.state["items"].append(self.new_item(Path(path), files[path]))
             self.state["groups"] = list(dict.fromkeys([*groups, *(item["group"] for item in active if item["group"])]))
             self.state["refreshed_at"] = datetime.now(UTC).isoformat()
         items = [item for item in self.state["items"] if not item.get("removed")]
-        return {"added": sum(item["id"] not in previous for item in items),
-                "renamed": sum(item["id"] in previous and item["path"] != previous[item["id"]] for item in items),
-                "missing": sum(not Path(item["path"]).is_file() for item in items),
-                "changed": sum(bool(item.get("changed")) for item in items)}
+        return {
+            "added": sum(item["id"] not in previous for item in items),
+            "renamed": sum(item["id"] in previous and item["path"] != previous[item["id"]] for item in items),
+            "missing": sum(not Path(item["path"]).is_file() for item in items),
+            "changed": sum(bool(item.get("changed")) for item in items),
+        }
 
     def snapshot(self) -> dict:
         result = super().snapshot()
