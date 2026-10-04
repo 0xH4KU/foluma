@@ -7,20 +7,27 @@ import tempfile
 import time
 import unittest
 import zlib
+from importlib import import_module
 from pathlib import Path
 from unittest.mock import patch
 from zipfile import ZipFile, ZipInfo
 
 import pymupdf as fitz
-from foluma.media import RenderRequired, export_epub, import_pdf, load_asset, preview
+from foluma.media import load_asset, preview
 from foluma.model import Session, new_id
-from foluma.pdf.image_extraction import _image_from_xref
-from foluma.pdf.image_types import PdfImageError
-from foluma.pdf.png import image_to_epub_member
 from foluma.plugins import Plugins, platform_id
 from foluma.service import Engine
 from foluma.storage import open_project, parse_json, save_project
 from PIL import Image
+
+pdf_importer = import_module("plugins.pdf-import.foluma_pdf.importer")
+pdf_images = import_module("plugins.pdf-import.foluma_pdf.png")
+RenderRequired = pdf_importer.RenderRequired
+import_pdf = pdf_importer.import_pdf
+export_epub = import_module("plugins.epub-export.foluma_epub.exporter").export_epub
+_image_from_xref = pdf_importer._image_from_xref
+PdfImageError = import_module("plugins.pdf-import.foluma_pdf.image_types").PdfImageError
+image_to_epub_member = pdf_images.image_to_epub_member
 
 
 class IntegrationTests(unittest.TestCase):
@@ -79,7 +86,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(error.exception.data["pages"], [1, 2])
         book = import_pdf(str(complex_pdf), self.root / "assets", render=True, dpi=72)
         self.assertEqual(len(book["pages"]), 4)
-        self.assertEqual([a["kind"] for a in book["assets"].values()], ["file", "file", "pdf"])
+        self.assertTrue(all(asset["kind"] == "file" for asset in book["assets"].values()))
         self.assertEqual(book["pages"][-1]["kind"], "blank")
 
     def test_auto_rendering_tracks_visible_source_pixels_and_caps_large_pages(self):
@@ -112,7 +119,7 @@ class IntegrationTests(unittest.TestCase):
         for asset in book["assets"].values():
             with Image.open(asset["path"]) as image:
                 self.assertEqual(image.size, (asset["width"], asset["height"]))
-        with patch("foluma.media.fitz.Page.get_pixmap", side_effect=AssertionError("Allocate only after size check")):
+        with patch.object(fitz.Page, "get_pixmap", side_effect=AssertionError("Allocate only after size check")):
             with self.assertRaisesRegex(ValueError, "too large to render"):
                 import_pdf(str(path), self.root / "assets", render=True, dpi=300)
         for dpi in (None, True, 0, 601, 150.5, "300", "invalid"):
@@ -164,7 +171,7 @@ class IntegrationTests(unittest.TestCase):
                 doc.update_stream(content, f"% /Unused Do\nq 240 0 0 320 0 0 cm /{name} Do Q".encode())
                 page.set_contents(content)
             doc.save(path)
-        with patch("foluma.media.fitz.Pixmap", side_effect=AssertionError("Inspection must not hash image pixels")):
+        with patch.object(fitz, "Pixmap", side_effect=AssertionError("Inspection must not hash image pixels")):
             book = import_pdf(str(path), self.root / "assets")
         self.assertEqual(len(book["pages"]), 4)
         for asset_id, asset in book["assets"].items():
@@ -203,7 +210,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual([p["id"] for p in session.book["pages"]], [left["id"], right["id"]])
         self.assertRaises(ValueError, parse_json, '{"extension": NaN}')
 
-    def test_indexed_flate_inspection_and_preview_compress_only_on_export(self):
+    def test_indexed_flate_import_saves_lossless_images_and_export_preserves_them(self):
         path = self.root / "indexed.pdf"
         raw = bytes(range(256)) * 150  # 240 x 320 pixels, packed two 4-bit indices per byte.
         palette = bytes(value * 17 for value in range(16) for _ in range(3))
@@ -217,17 +224,17 @@ class IntegrationTests(unittest.TestCase):
             )
             doc.update_stream(xref, raw, compress=True)
             doc.save(path)
-        with patch("foluma.pdf.png.zlib.compress", wraps=zlib.compress) as compress:
+        with patch.object(pdf_images.zlib, "compress", wraps=zlib.compress) as compress:
             book = import_pdf(str(path), self.root / "assets")
             page = book["pages"][0]
             rendered = self.root / preview(book, page["id"], 320, self.root / "previews")
-            self.assertEqual({call.kwargs["level"] for call in compress.call_args_list}, {0})
+            self.assertEqual({call.kwargs["level"] for call in compress.call_args_list}, {0, 3})
             with Image.open(rendered) as image:
                 self.assertEqual(image.convert("RGB").tobytes(), expected)
             compress.reset_mock()
             output = self.root / "indexed.epub"
             export_epub(book, str(output))
-            self.assertEqual({call.kwargs["level"] for call in compress.call_args_list}, {6})
+            compress.assert_not_called()
         with ZipFile(output) as archive:
             with Image.open(io.BytesIO(archive.read(f"EPUB/images/{page['asset_id']}.png"))) as image:
                 self.assertEqual(image.convert("RGB").tobytes(), expected)
@@ -304,7 +311,9 @@ class IntegrationTests(unittest.TestCase):
         bundle = self.root / "test.mteproj"
         save_project(session.book, bundle)
         restored = open_project(bundle)
-        self.assertEqual(restored, session.book)
+        self.assertEqual(restored | {"assets": session.book["assets"]}, session.book)
+        for asset_id in restored["assets"]:
+            self.assertEqual(load_asset(restored, asset_id), load_asset(session.book, asset_id))
         self.pdf.rename(self.root / "moved.pdf")
         engine = Engine(self.root / "data")
         self.addCleanup(engine.close)
@@ -368,7 +377,7 @@ class IntegrationTests(unittest.TestCase):
         active_plugins = Plugins(directory)
         active_plugins.remove("test.worker")
         self.assertTrue(active_plugins.list()["restart_required"])
-        self.assertFalse(Plugins(directory).active)
+        self.assertNotIn("test.worker", Plugins(directory).active)
         self.assertTrue(Plugins(directory).install(str(package))["restart_required"])
 
     def test_bundled_editor_installs_once_and_respects_user_choices(self):
@@ -535,10 +544,10 @@ class IntegrationTests(unittest.TestCase):
         engine.session.history(self.book["id"], True)
         project = self.root / "embedded.mteproj"
         save_project(engine.session.book, project)
-        self.assertEqual(len(list((project / "assets").iterdir())), 1)
+        self.assertEqual(len(list((project / "assets").iterdir())), 2)
         source.unlink()
         export_epub(open_project(project), str(self.root / "embedded.epub"))
-        asset_id = next(key for key, asset in engine.session.book["assets"].items() if asset["kind"] == "file")
+        asset_id = next(key for key, asset in engine.session.book["assets"].items() if not asset.get("source_page"))
         preset = self.root / "portable.mtepreset"
         reference = {"document_id": self.book["id"], "base_revision": engine.session.book["revision"]}
         engine.call(

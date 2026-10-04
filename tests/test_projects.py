@@ -303,8 +303,8 @@ class FolderProjectTests(unittest.TestCase):
         source.write_bytes(originals['Vol.2.pdf'])
         state = self.call('series.refresh')
         self.assertTrue(next(i for i in state['items'] if i['id']==one)['changed'])
-        with self.assertRaisesRegex(ValueError,'Source changed'):
-            self.call('task.start',operation='series.open',entry_id=one)
+        unchanged = self.task('series.open',entry_id=one)
+        self.assertEqual(unchanged['pages'], saved['pages'])
         source.unlink()
         self.call('series.refresh')
         with self.assertRaisesRegex(ValueError,'differs'):

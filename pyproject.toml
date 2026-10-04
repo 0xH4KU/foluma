@@ -3,10 +3,10 @@ name = "foluma-engine"
 version = "0.1.0"
 description = "Foluma's local document engine"
 requires-python = ">=3.11"
-dependencies = ["PyMuPDF>=1.24,<2", "Pillow>=10,<13"]
+dependencies = ["Pillow>=10,<13"]
 
 [project.optional-dependencies]
-dev = ["ruff>=0.11", "pyinstaller>=6.15"]
+dev = ["ruff>=0.11", "pyinstaller>=6.15", "PyMuPDF>=1.24,<2"]
 
 [project.scripts]
 foluma-engine = "foluma.__main__:main"

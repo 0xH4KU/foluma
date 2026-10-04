@@ -20,7 +20,7 @@ jobs:
           rustup update stable --no-self-update
       - name: Check
         run: |
-          .venv/bin/ruff check engine tests scripts
+          .venv/bin/ruff check engine plugins tests scripts
           npm run test:engine
           npm test
           npm run build

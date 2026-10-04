@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "io.github.0xh4ku.foluma",
   "build": {
-    "beforeDevCommand": "npm run package:editor && npm run dev",
+    "beforeDevCommand": "npm run package:plugins:dev && npm run dev",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "npm run package:editor && npm run build:engine && npm run build",
     "frontendDist": "../dist"

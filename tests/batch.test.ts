@@ -70,7 +70,7 @@ Image.new('RGB',(120,160),'red').save(root/'insert.png')
     await runBatch(host,{paths,preset,directory,render:true,dpi:"auto"},new AbortController().signal,(index,row)=>rows[index]=row);
     assert.deepEqual(rows.map(row=>row.state),["completed","failed","completed"],JSON.stringify(rows));
     assert.equal(batchSummary(rows),"2 exported · 1 failed · 0 cancelled or skipped");
-    assert.match(rows[1].error!,/Missing preset asset or PDF page/);
+    assert.match(rows[1].error!,/Missing preset asset or source page/);
     assert.equal(readFileSync(join(directory,"volume.epub"),"utf8"),"keep me");
     assert.equal(rows[0].output,realpathSync(join(directory,"volume (2).epub")));assert.equal(rows[2].output,realpathSync(join(directory,"volume (3).epub")));
     const spineCounts=JSON.parse(execFileSync(python,["-c",`

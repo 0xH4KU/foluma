@@ -19,7 +19,7 @@ from .i18n import messages, t
 from .model import Session, new_id, validate
 from .plugins import Plugins, platform_id, unpack
 from .series import FolderProject, Series, pending_review_count
-from .storage import atomic_json, digest, open_project, owned_files, parse_json, preview_path, save_project
+from .storage import atomic_json, copy_asset, digest, open_project, owned_files, parse_json, preview_path, save_project
 
 
 class EngineError(ValueError):
@@ -28,7 +28,9 @@ class EngineError(ValueError):
         self.data = data
 
 
-def worker_command(request: Path) -> list[str]:
+def worker_command(request: Path, plugin: Path | None = None) -> list[str]:
+    if plugin is not None:
+        return [str(plugin)]
     prefix = [sys.executable] if getattr(sys, "frozen", False) else [sys.executable, "-m", "foluma"]
     return [*prefix, "--worker", str(request)]
 
@@ -86,10 +88,14 @@ class Engine:
         if current.exists():
             try:
                 location = parse_json(current.read_text("utf-8"))
-                self.series = FolderProject(data, location["project"]) if "project" in location else Series(data, location["paths"])
+                extensions = self.plugins.extensions("import")
+                self.series = FolderProject(data, location["project"], extensions) if "project" in location else Series(data, location["paths"], extensions)
                 identifier = self.series.state["current_id"]
                 if identifier:
-                    self.session = self.series.load(self.series.item(identifier))
+                    session = self.series.load(self.series.item(identifier))
+                    if session:
+                        self.prepare_session(session)
+                    self.session = session
             except (OSError, ValueError, KeyError, TypeError) as error:
                 self.series_error = str(error)
         self.maintain_cache()
@@ -135,7 +141,36 @@ class Engine:
         if not session:
             raise ValueError(t("Open a book first"))
         session.check(params["document_id"], params["base_revision"] if revision else None)
+        self.prepare_session(session)
         return session
+
+    def adopt_import(self, book: dict) -> dict:
+        validate(book)
+        if any(asset["kind"] != "file" for asset in book["assets"].values()):
+            raise ValueError(t("Import plugins must save page images as project-independent files"))
+        for asset in book["assets"].values():
+            asset["path"] = str(copy_asset(Path(asset["path"]).resolve(strict=True), self.data / "assets", asset["ext"]))
+        return book
+
+    def prepare_session(self, session: Session, job: dict | None = None) -> None:
+        legacy = next((asset for asset in session.book["assets"].values() if asset["kind"] != "file"), None)
+        if legacy is None:
+            return
+        source = session.book["sources"][legacy["source_id"]]
+        candidate = self.run_worker("materialize", {"path": source["path"], "book": session.book}, job)
+        if candidate | {"assets": session.book["assets"]} != session.book:
+            raise ValueError(t("Project migration must preserve pages, metadata and document identity"))
+        candidate = self.adopt_import(candidate)
+        if job and job["cancelled"]:
+            raise EngineError(t("Task cancelled"))
+        if session.project_path:
+            save_project(candidate, Path(session.project_path))
+            candidate = open_project(Path(session.project_path))
+        session.book = candidate
+        for snapshot in session.undo_stack + session.redo_stack:
+            for identifier, asset in candidate["assets"].items():
+                if identifier in snapshot["assets"]:
+                    snapshot["assets"][identifier] = copy.deepcopy(asset)
 
     def changed(self, session: Session | None = None) -> dict:
         session = session or self.session
@@ -167,9 +202,6 @@ class Engine:
         if method == "document.preview":
             with self.lock:
                 session = self.document(p)
-                item = self.series.current(session) if self.series else None
-                if item and self.series.managed:
-                    self.series.ensure_source(item)
                 book = copy.deepcopy(session.book)
                 output = preview_path(book, p["page_id"], p.get("size", 320), self.data / "previews")
                 if output.is_file():
@@ -245,7 +277,9 @@ class Engine:
             if method == "project.open":
                 if (Path(p["path"]) / ".foluma/project.json").is_file():
                     return self.series_call("series.open_project", p)
-                self.session = Session(open_project(Path(p["path"])), p["path"])
+                session = Session(open_project(Path(p["path"])), p["path"])
+                self.prepare_session(session)
+                self.session = session
                 return self.changed()
             if method == "project.save":
                 session = self.document(p, True)
@@ -262,7 +296,7 @@ class Engine:
                 source = session.book["sources"][p["source_id"]]
                 path = Path(p["path"]).resolve(strict=True)
                 if digest(path) != source["sha256"]:
-                    raise ValueError(t("The file differs from the original PDF and cannot be relinked"))
+                    raise ValueError(t("The file differs from the original source and cannot be relinked"))
                 source["path"] = str(path)
                 # Source locations are identity-preserving maintenance, not an undoable edit.
                 for snapshot in session.undo_stack + session.redo_stack:
@@ -314,12 +348,12 @@ class Engine:
             if self.session:
                 self.changed()
             if method == "series.open_project":
-                project = FolderProject(self.data, p["path"])
+                project = FolderProject(self.data, p["path"], self.plugins.extensions("import"))
             else:
                 previous = self.series if method == "series.migrate" else None
                 if method == "series.migrate" and (not previous or previous.managed):
                     raise ValueError(t("Open a legacy series to migrate it"))
-                project = FolderProject.create(self.data, p["parent"], p["name"])
+                project = FolderProject.create(self.data, p["parent"], p["name"], self.plugins.extensions("import"))
                 if previous:
                     for item in previous.state["items"]:
                         saved = previous.project(item)
@@ -336,6 +370,8 @@ class Engine:
                     project.save()
             current = project.state["current_id"]
             session = project.load(project.item(current)) if current else None
+            if session:
+                self.prepare_session(session)
             project.activate()
             self.series, self.session, self.series_error = project, session, None
             self.background_sessions.clear()
@@ -344,7 +380,7 @@ class Engine:
         if method == "series.scan":
             if self.session:
                 self.changed()
-            self.series = Series(self.data, p["paths"])
+            self.series = Series(self.data, p["paths"], self.plugins.extensions("import"))
             self.series_error = None
             return self.series_changed()
         if not self.series:
@@ -500,11 +536,17 @@ class Engine:
         if operation not in ("import", "series.open", "export", "images.import", "images.export", "plugin"):
             raise ValueError(t("Unsupported background task"))
         book = None
+        if operation == "import":
+            self.plugins.format("import", p["path"], p.get("plugin_id"))
+        elif operation == "export":
+            self.plugins.format("export", p.get("path"), p.get("plugin_id"))
         if operation == "series.open":
             if not self.series:
                 raise ValueError(t("Open a series folder first"))
             item = self.series.item(p["entry_id"])
-            if self.series.managed:
+            if not (self.series.project(item) / "project.json").is_file():
+                self.plugins.format("import", item["path"], p.get("plugin_id"))
+            if self.series.managed and not (self.series.project(item) / "project.json").is_file():
                 self.series.ensure_source(item)
             if self.session:
                 self.changed()
@@ -532,6 +574,16 @@ class Engine:
         return {key: value for key, value in job.items() if key not in ("process", "cancelled", "opening_over")}
 
     def run_worker(self, operation: str, params: dict, job: dict | None = None):
+        if operation in ("import", "export", "materialize"):
+            plugin = self.plugins.format("export" if operation == "export" else "import", params.get("path"), params.get("plugin_id"))
+            options = params.get("options", {})
+            if not isinstance(options, dict):
+                raise ValueError(t("Format options must be an object"))
+            options = options | {key: params[key] for key in ("render", "dpi") if key in params}
+            params = {"plugin_id": plugin["id"], "operation": operation,
+                      "input": {"path": params.get("path"), "asset_directory": str(self.data / "assets"), "options": options},
+                      "book": params.get("book"), "messages": self.plugins.locale()["messages"]}
+            operation = "plugin"
         with tempfile.TemporaryDirectory(dir=self.data) as temp:
             request = Path(temp) / "request.json"
             atomic_json(
@@ -554,7 +606,7 @@ class Engine:
                 worker = manifest.get("workers", {}).get(platform_id())
                 if not worker:
                     raise ValueError(t("Plugin has no worker for this platform"))
-                command = [str(contained(self.plugins.directory(manifest["id"], manifest["version"]), worker))]
+                command = worker_command(request, contained(self.plugins.directory(manifest["id"], manifest["version"]), worker))
                 worker_input = json.dumps(params, ensure_ascii=False) + "\n"
             with (Path(temp) / "stderr.log").open("w+") as error_log:
                 with self.lock:
@@ -609,7 +661,8 @@ class Engine:
             operation = job["operation"]
             if operation in ("export", "images.export"):
                 overwrite = bool(p.get("overwrite")) and "directory" not in p
-                expected = ".epub" if operation == "export" else ".zip"
+                provider = self.plugins.format("export", p.get("path"), p.get("plugin_id")) if operation == "export" else None
+                expected = (Path(p["path"]).suffix.lower() if p.get("path") else f".{provider['format']['extensions'][0]}") if provider else ".zip"
                 if "directory" in p:
                     directory = Path(p["directory"]).resolve(strict=True)
                     if not directory.is_dir():
@@ -645,6 +698,8 @@ class Engine:
                 with tempfile.TemporaryDirectory(prefix=".foluma-", dir=target.parent) as temp:
                     staged = Path(temp) / target.name
                     args = {"book": book, "path": str(staged)}
+                    if provider:
+                        args.update(plugin_id=provider["id"], options=p.get("options", {}))
                     if operation == "images.export":
                         args["page_ids"] = p["page_ids"]
                     result = self.run_worker(operation, args, job)
@@ -666,8 +721,11 @@ class Engine:
                 if operation == "series.open":
                     entry = self.series.item(p["entry_id"])
                     saved = self.series.load(entry)
+                    if saved:
+                        self.prepare_session(saved, job)
                 args = (
-                    {"path": entry["path"] if entry else p["path"], "render": p.get("render", False), "dpi": p.get("dpi", "auto")}
+                    {"path": entry["path"] if entry else p["path"], "plugin_id": p.get("plugin_id"),
+                     "options": p.get("options", {}), "render": p.get("render", False), "dpi": p.get("dpi", "auto")}
                     if operation in ("import", "series.open")
                     else (
                         {"paths": p["paths"]}
@@ -689,7 +747,7 @@ class Engine:
                             raise ValueError(
                                 t("Document changed during import. Please try again; your current work was preserved.")
                             )
-                        session = saved or Session(result)
+                        session = saved or Session(self.adopt_import(result))
                         if entry:
                             if p.get("background") and self.series.current(self.session) is entry:
                                 session = self.session

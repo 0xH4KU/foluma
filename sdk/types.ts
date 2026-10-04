@@ -30,6 +30,7 @@ export type Plugin = {
   id: string; name: string; version: string; description?: string; api_version: number;
   platforms: string[]; ui?: {entry: string; style?: string; title: string}; workers?: Record<string, string>;
   language?: {locale: string; name: string; messages: string};
+  format?: {direction: "import" | "export"; name: string; extensions: string[]; rendering?: boolean};
   enabled?: boolean; active?: boolean; active_version?: string; pending?: boolean;
 };
 export type PluginList = {items: Plugin[]; active: Plugin[]; safe_mode: boolean; errors: string[]; restart_required: boolean};
@@ -51,6 +52,7 @@ export interface HostAPI {
   cancelTask?(): Promise<void>;
   onFileDrop?(listener: (paths: string[]) => void): () => void;
   getExportPreferences?(): {directory: string; dpi: RenderResolution};
+  getFormats?(): Plugin[];
   setOutputDirectory?(directory: string): void;
   getDocument(): Book | null;
   subscribe(listener: (book: Book | null) => void): () => void;

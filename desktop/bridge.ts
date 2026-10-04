@@ -4,12 +4,13 @@ import {LogicalPosition} from "@tauri-apps/api/dpi";
 import {convertFileSrc, invoke} from "@tauri-apps/api/core";
 import {listen} from "@tauri-apps/api/event";
 import {ask, open, save} from "@tauri-apps/plugin-dialog";
-import type {Book, FileOptions, HostAPI, Series, Task} from "../sdk/types";
+import type {Book, FileOptions, HostAPI, Plugin, PluginList, Series, Task} from "../sdk/types";
 import {documentRef} from "../sdk/types.ts";
 import {createPreviewLoader} from "./previews.ts";
 
 let book: Book | null = null;
 let project: Series | null = null;
+let formats: Plugin[] = [];
 const listeners = new Set<(book: Book | null) => void>();
 const taskListeners = new Set<(task: Task) => void>();
 const seriesListeners = new Set<(series: Series | null) => void>();
@@ -39,6 +40,10 @@ function asError(value: unknown): Error & {data?: unknown} {
 export async function rpc<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
   try {
     const result = await invoke<T>("engine_call", {method, params});
+    if (method === "plugins.list" || method === "app.info") {
+      const plugins = method === "plugins.list" ? result as PluginList : (result as {plugins: PluginList}).plugins;
+      formats = plugins.active.filter(plugin => plugin.format);
+    }
     if (["document.apply","document.undo","document.redo","project.save","project.relink","project.open"].includes(method)) {
       const snapshot = result as Book | null;
       if (snapshot?.schema === 1 && Array.isArray(snapshot.pages) && (method === "project.open" || snapshot.id === book?.id))
@@ -94,7 +99,7 @@ export function createHost(report: HostAPI["report"], notify: HostAPI["notify"])
   let activities = 0;
   return {
     version: 1, getDocument: () => book,
-    getLocale, subscribeLocale,
+    getLocale, subscribeLocale, getFormats: () => formats,
     getExportPreferences: () => {
       const value = Number(localStorage.getItem("render-resolution"));
       return {directory: localStorage.getItem("output-directory") || project?.output_directory || "",dpi: [72,150,200,300,400,600].includes(value) ? value : "auto"};

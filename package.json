@@ -8,9 +8,10 @@
     "build": "tsc --noEmit && vite build",
     "build:editor": "vite build --config plugins/editor/vite.config.ts",
     "package:editor": "npm run build:editor && .venv/bin/python scripts/package_plugin.py",
+    "package:plugins:dev": "npm run build:editor && .venv/bin/python scripts/package_plugin.py --development",
     "tauri": "tauri",
-    "test": "node --experimental-strip-types --test tests/*.test.ts",
-    "test:engine": ".venv/bin/python -m unittest discover -s tests -p 'test_*.py'",
+    "test": ".venv/bin/python scripts/package_plugin.py --development --formats-only && node --experimental-strip-types --test tests/*.test.ts",
+    "test:engine": ".venv/bin/python scripts/package_plugin.py --development --formats-only && .venv/bin/python -m unittest discover -s tests -p 'test_*.py'",
     "build:engine": ".venv/bin/python scripts/build_engine.py"
   },
   "dependencies": {

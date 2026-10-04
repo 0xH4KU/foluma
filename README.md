@@ -1,39 +1,52 @@
 # Foluma
 
-A local workspace for turning PDFs into fixed-layout EPUB books. Organize a series in a project folder, edit each book's pages, and export books individually or in batches.
+A local workspace for organizing and editing page-based books, with independently installable import and export plugins. Organize a series in a project folder, edit each book's pages, and export books individually or in batches.
 
 Foluma uses Tauri and React/TypeScript for the desktop interface, with a separate Python engine for documents, undo history, and background tasks. The engine is bundled with the app; end users do not need to install Python, Node.js, or Rust.
 
 ## Getting started
 
 1. Open `src-tauri/target/release/bundle/macos/Foluma.app` after building the app.
-2. Choose **Open PDF** to work on one book, or **New project** to choose a location for a collection.
-3. Use **Edit pages** to arrange the book, then choose **Export EPUB**.
+2. Choose **Import book** to work on one book, or **New project** to choose a location for a collection.
+3. Use **Edit pages** to arrange the book, then choose **Export current book** and an enabled output format.
 
-The page editor installs from the bundled package on first launch, without a network connection. It is an independent plugin: disabling or removing it takes effect after restarting, and the app will not automatically reinstall it. Basic conversion remains available without the editor.
+The page editor, PDF import plugin and EPUB export plugin install from bundled packages on first launch, without a network connection. Each is independent: disabling or removing it takes effect after restarting, and the app will not automatically reinstall it. PDF import and EPUB export can be removed separately, just like the editor. Missing format actions lead to Plugins instead of falling back to hidden built-in codecs. Reinstall packages from **Plugins → Included packages** when needed.
 
-For an existing installation, update **Page editor** to **0.3.4** from **Plugins → Included packages**, or install `artifacts/org.foluma.editor-0.3.4.mte-plugin`, then restart. Update the Traditional Chinese pack to **0.3.3** for the new interface text.
+For an existing installation, update **Page editor** to **0.4.0** from **Plugins → Included packages**, or install `artifacts/org.foluma.editor-0.4.0.mte-plugin`, then restart. Update the Traditional Chinese pack to **0.4.3** for the new interface text.
+
+Plugin Management groups packages into **Import**, **Export**, **Editing and tools**, and **Language packs**. Category filters apply to installed, included and downloadable packages, with counts for unique plugins. The default **All plugins** view groups each list by capability; disabled and restart-pending plugins keep their category. Installed versions are not repeated under included packages, and identical included versions are not repeated in the official catalog. Available updates remain visible. Installation, removal, restart and safe-mode behavior are unchanged.
+
+### Optional formats
+
+Install these separately from **Plugins → Included packages**, then restart. They are available offline but are not automatically installed; import and export remain independent.
+
+- **ZIP image import** accepts `.zip` archives containing static JPEG, PNG or WebP pages. Nested page folders use natural filename order (`1`, `2`, `10`), and macOS resource forks/hidden files are skipped. Original JPEG/PNG bytes are kept when possible; WebP and rotated EXIF images become ordinary PNG assets. Optional `ComicInfo.xml` supplies title, author, language, reading direction and cover selection. Without it, the filename supplies the title, language defaults to `zh-Hant`, and direction defaults to left-to-right. ZIPs containing only PDFs or other documents are not image books.
+- **CBZ import** accepts `.cbz` books with the same image and metadata handling. Update existing CBZ installations to **0.1.1** before installing ZIP image import, then restart: CBZ 0.1.0 claimed both extensions, while 0.1.1 leaves `.zip` to the independent ZIP plugin.
+- **CBZ export** writes the current page order, real crops and white blank pages. Uncropped JPEG/PNG bytes are preserved; cropped pages are lossless PNG, with CMYK crops converted to RGB. ComicInfo metadata includes the selected cover and reading direction. CBZ is a finished image book, not an editable Foluma project: attention marks, undo state and cover-only spread preferences are not encoded.
+- **PDF export** creates an image-based PDF with the current page order, crops, blank pages, title, author, language and reading direction. Repeated images share one PDF resource, without resampling/recompressing JPEGs. Pixel dimensions become PDF points; pages beyond 14400 points are proportionally reduced without changing image data. Crops clip the displayed page but retain the complete source image in the PDF; use a separate redaction tool when hidden content must be removed. This does not reconstruct text, vector artwork or an OCR layer from an original PDF.
+
+ZIP and CBZ import reject unsafe paths, symlinks, duplicate filenames and XML entity declarations. Archives are limited to 10000 entries and 2 GB uncompressed; individual images to 128 MB and 100 million pixels; ComicInfo metadata to 1 MB. Empty or invalid image books fail without replacing the open document. Existing outputs and source files retain the engine's overwrite protection and atomic publication rules.
 
 English is built in. Choose **Install and use 繁體中文** under **Preferences → Interface language** to install the included language pack and switch immediately. Language packs can be disabled or removed immediately. A book's language setting controls EPUB metadata independently of the interface language.
 
 ## Folder projects
 
-A project is a folder you choose. Imported PDFs are copied into it, groups correspond to subfolders, and saved edits and embedded images live in the hidden `.foluma` directory. Move the entire project folder to keep its books and edits together.
+A project is a folder you choose. Imported source books are copied into it, groups correspond to subfolders, and saved edits and embedded images live in the hidden `.foluma` directory. Move the entire project folder to keep its books and edits together. Imported page images are saved independently of the source format: removing an import plugin or losing the original source does not stop an already imported book from opening, previewing or exporting through another installed plugin.
 
-- Add PDFs, import the PDF files directly inside a folder, or import an existing `.mteproj` book project.
+- Add files supported by enabled import plugins, import supported files directly inside a folder, or import an existing `.mteproj` book project.
 - Create groups while keeping your selection, or choose to move the selected books into the new group. Rename groups, move books between them, and change their order with arrows or **Move to position**. Groups support one level of subfolders.
 - Search titles and filenames, and use the visible group tabs to switch between **All books**, **Ungrouped**, custom groups and **Removed**.
 - Remove books and use **Undo removal**, or recover them from **Removed**. Removing a group moves its books to **Ungrouped**. Import sources are left untouched.
-- In **Removed**, permanently delete selected books or **Empty Removed** after reviewing the book count and size. This deletes project PDF copies and saved edits; original import sources and exported files are kept.
+- In **Removed**, permanently delete selected books or **Empty Removed** after reviewing the book count and size. This deletes project source copies and saved edits; original import sources and exported files are kept.
 - **Close project** returns to the welcome screen and stops reopening that project on the next launch. Saved project files are kept, and unsaved changes use the existing save/discard/cancel prompt. Finish or cancel background tasks before closing.
-- Open the project or choose **Refresh folder** to discover filesystem changes. New PDFs are added; uniquely matching renamed files retain their saved edits. Missing or changed sources are flagged, and relinking an edited book requires the original content.
+- Open the project or choose **Refresh folder** to discover filesystem changes. New supported book files are added; uniquely matching renamed files retain their saved edits. Missing or changed sources are flagged, but saved page images remain usable. Relinking an edited book still requires the original content.
 - Migrate an older series with **Save series as folder project**. Its individual book layouts and review state are preserved.
 
 Each book keeps its own page order, blanks, crops, attention marks, and saved edits. Use **Book reviewed** and **Next unreviewed** to track progress. Pending page marks remain visible in the project, and completing review with remaining marks requires confirmation. Select books to share reading direction or cover settings, or export each book's own layout without applying a preset. Batch results show completion counts; a book that needs rendering offers **Allow rendering and retry this book**. Existing output files are preserved by numbering duplicate names. Editing an exported book marks it **Needs re-export**.
 
-The toolbar identifies standalone PDFs and the current book separately from selected project books. In the project view, **Export selected books** and ⌘E export the selection; in a book view they export the current book. Book information is committed before saving, exporting or changing books, including while an input still has focus. Unsaved standalone books offer **Save and continue**, **Discard changes** and **Cancel**.
+The toolbar identifies standalone books and the current book separately from selected project books. In the project view, **Export selected books** and ⌘E export the selection; in a book view they export the current book. Book information is committed before saving, exporting or changing books, including while an input still has focus. Unsaved standalone books offer **Save and continue**, **Discard changes** and **Cancel**.
 
-Standalone books can also be saved as `.mteproj` folders. These reference the original PDF and embed inserted or rendered images. If the PDF moves, relink a file with matching contents. Older series continue to use per-book projects under the app's data directory until migrated.
+Standalone books can also be saved as `.mteproj` folders. These embed all page images and retain source paths as provenance. Missing originals do not block saved-image previews or exports; relinking still requires matching contents. Older series continue to use per-book projects under the app's data directory until migrated.
 
 ## Page editing
 
@@ -49,10 +62,10 @@ The desktop layout uses a toolbar, workspace sidebar, page list, preview, inspec
 
 | Action | Shortcut |
 | --- | --- |
-| Open PDF | ⌘O |
+| Import book | ⌘O |
 | Open project | ⇧⌘O |
 | Save project | ⌘S |
-| Export EPUB | ⌘E |
+| Export current book | ⌘E |
 | Insert blank before / after the current page | B / Shift+B |
 | Toggle review mark / jump to next marked page | M / Shift+M |
 
@@ -90,7 +103,11 @@ npm run build
 npm run tauri build
 ```
 
-The build produces editor and Traditional Chinese language packages, plus a plugin catalog, in `artifacts/`. These commands do not publish a release. See the [implementation plan](docs/PLAN.md), [plugin API](docs/PLUGIN-API.md), and [validation record](docs/VALIDATION.md).
+The build produces independent PDF import/export, CBZ import/export, ZIP image import and EPUB export packages, the editor and Traditional Chinese language packages, plus a plugin catalog, in `artifacts/`. These commands do not publish a release. See the [implementation plan](docs/PLAN.md), [plugin API](docs/PLUGIN-API.md), and [validation record](docs/VALIDATION.md).
+
+Release format plugins bundle their own native workers; the base engine does not bundle MuPDF or an EPUB writer. `npm run package:plugins:dev` creates local-development packages in `build/` using the repository's Python runtime, while release packaging creates self-contained native workers in `artifacts/`. `npm run test:engine` prepares development format packages automatically.
+
+Older projects with PDF-backed image references migrate to stored images when opened with PDF import enabled. Migration preserves page IDs, crops, metadata, revisions and extension data, and saves the project atomically. A legacy project still needs its original PDF and the import plugin for this one-time migration; after migration it no longer depends on either. Existing installations receive the formerly built-in PDF/EPUB capabilities once as removable default plugins.
 
 ## Current status
 

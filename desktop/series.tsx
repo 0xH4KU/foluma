@@ -18,7 +18,7 @@ export function ProjectCreator({host, initialName, migrate, create, close}: {
   useEffect(() => {dialog.current?.showModal();}, []);
   return <dialog ref={dialog} aria-labelledby="project-dialog-title" className="project-dialog" onCancel={event => {event.preventDefault(); if (!working) close();}}>
     <h1 id="project-dialog-title">{t(migrate ? "Save series as folder project" : "New project")}</h1>
-    <p>{t("A new folder will hold your PDF copies, groups and saved edits.")}</p>
+    <p>{t("A new folder will hold your source copies, groups and saved edits.")}</p>
     <form onSubmit={event => {event.preventDefault(); if (working) return; setWorking(true); setError(""); void create(parent,name.trim()).then(close).catch(reason => setError(String(reason))).finally(() => setWorking(false));}}>
       <fieldset disabled={working}>
         <label>{t("Project name")}<input autoFocus required maxLength={120} value={name} onChange={event => setName(event.target.value)}/></label>
@@ -59,6 +59,12 @@ export function SeriesWorkspace({series,host,busy,hidden,dpi,openBook,migrate,se
   openBook: (item: SeriesItem) => void; migrate: () => void;
   selectionChanged: (count: number) => void; prepare: () => Promise<void>;
 }) {
+  const formats = host.getFormats?.() || [];
+  const importers = formats.filter(plugin => plugin.format?.direction === "import");
+  const exporters = formats.filter(plugin => plugin.format?.direction === "export");
+  const extensions = [...new Set(importers.flatMap(plugin => plugin.format!.extensions))];
+  const [exporter,setExporter] = useState(() => exporters[0]?.id || "");
+  const outputFormat = exporters.find(plugin => plugin.id === exporter) || exporters[0];
   const [selected,setSelected] = useState<Set<string>>(new Set());
   const [group,setGroup] = useState("all");
   const [groupDialog,setGroupDialog] = useState<{previous?: string} | null>(null);
@@ -112,10 +118,10 @@ export function SeriesWorkspace({series,host,busy,hidden,dpi,openBook,migrate,se
     if (hidden || !series.managed) return;
     return host.onFileDrop?.(paths => void addPaths(paths));
   }, [hidden,series.managed,group,busy]);
-  const add = async (kind: "pdf" | "folder" | "book") => {
+  const add = async (kind: "files" | "folder" | "book") => {
     try {
-      const picked = await host.pickFile(kind === "pdf" ? {extensions:["pdf"],multiple:true,title:t("Add PDFs to project")} :
-        {directory:true,title:t(kind === "book" ? "Choose a .mteproj book folder" : "Import PDFs from this folder only")});
+      const picked = await host.pickFile(kind === "files" ? {extensions,multiple:true,title:t("Add books to project")} :
+        {directory:true,title:t(kind === "book" ? "Choose a .mteproj book folder" : "Import supported books from this folder only")});
       if (picked) await addPaths(Array.isArray(picked) ? picked : [picked]);
     } catch (error) {host.report(error);}
   };
@@ -138,7 +144,7 @@ export function SeriesWorkspace({series,host,busy,hidden,dpi,openBook,migrate,se
   });
   const deleteBooks = (ids: string[]) => run(async () => {
     const info = await host.rpc<{count: number; bytes: number}>("series.delete_info", {ids});
-    if (!await host.confirm(t("Permanently delete {0} removed books ({1})? Their project PDF copies and saved edits will be deleted. Import sources and exported files are kept. This cannot be undone.", info.count, formatBytes(info.bytes)), t("Permanently delete books"), t("Delete permanently"))) return;
+    if (!await host.confirm(t("Permanently delete {0} removed books ({1})? Their project source copies and saved edits will be deleted. Import sources and exported files are kept. This cannot be undone.", info.count, formatBytes(info.bytes)), t("Permanently delete books"), t("Delete permanently"))) return;
     const result = await host.rpc<Series & {summary: {deleted: number; cleanup_pending: boolean}}>("series.delete", {ids});
     setSelected(new Set());
     host.notify(result.summary.cleanup_pending ? t("Books deleted. Some files could not be cleaned; Foluma will retry when this project is opened.") : t("{0} books permanently deleted", result.summary.deleted));
@@ -155,14 +161,14 @@ export function SeriesWorkspace({series,host,busy,hidden,dpi,openBook,migrate,se
     else host.notify(t("Shared settings applied to {0} books",chosen.length));
   });
   const exportBooks = async (items = chosen, allowRendering = render, retrying = false) => {
-    if (busy || working.current || !items.length || !series.output_directory) return;
+    if (busy || working.current || !items.length || !series.output_directory || !outputFormat) return;
     const cohort = items.map(item => ({id:item.id,path:item.path,title:item.title}));
     working.current = true; host.notify(""); host.setBusy?.(true);
     setFinished(false); setRunning(true); abort.current = new AbortController();
     setRows(old => ({...retrying ? old : {},...Object.fromEntries(cohort.map(item => [item.id,{path:item.path,state:"pending" as const}]))}));
     try {
       await prepare(); host.setOutputDirectory?.(series.output_directory);
-      await runBatch(host,{paths:cohort.map(item => item.path),entries:cohort,directory:series.output_directory,render:allowRendering,dpi},abort.current.signal,
+      await runBatch(host,{paths:cohort.map(item => item.path),entries:cohort,directory:series.output_directory,render:allowRendering,dpi,exporter:outputFormat.id},abort.current.signal,
         (index,row) => {setRows(old => ({...old,[cohort[index].id]:row})); if (row.state === "working") setProgress({title:cohort[index].title,index:index+1,total:cohort.length});});
     } catch (error) {host.report(error);}
     finally {setRunning(false); setFinished(true); setProgress(null); working.current = false; host.setBusy?.(false);}
@@ -204,9 +210,9 @@ export function SeriesWorkspace({series,host,busy,hidden,dpi,openBook,migrate,se
       {series.managed ? <div className="project-actions"><button disabled={busy} onClick={() => void refresh()}>{t("Refresh folder")}</button><button onClick={() => void revealItemInDir(series.directory).catch(host.report)}>{t("Show project folder")}</button></div> : <button disabled={busy} className="primary" onClick={migrate}>{t("Save series as folder project")}</button>}
     </div>
     {series.managed ? <div className="project-tools">
-      <button className="primary" disabled={busy || removed} onClick={() => void add("pdf")}>{t("Add PDFs…")}</button>
+      <button className="primary" disabled={busy || removed || !extensions.length} onClick={() => void add("files")}>{t("Add books…")}</button>
       <details className="group-menu" onClickCapture={event => {if ((event.target as HTMLElement).closest("button")) event.currentTarget.open = false;}}><summary>{t("More import options")}</summary><div>
-        <button disabled={busy || removed} onClick={() => void add("folder")}>{t("Import folder · this level only…")}</button>
+        <button disabled={busy || removed || !extensions.length} onClick={() => void add("folder")}>{t("Import folder · this level only…")}</button>
         <button disabled={busy || removed} onClick={() => void add("book")}>{t("Import book project…")}</button>
       </div></details>
       <button disabled={busy} onClick={() => setGroupDialog({})}>{t("New group…")}</button>
@@ -245,7 +251,7 @@ export function SeriesWorkspace({series,host,busy,hidden,dpi,openBook,migrate,se
         <td><input type="checkbox" aria-label={t("Select {0}",item.title)} disabled={busy} checked={selected.has(item.id)} onChange={event => {const next = new Set(selected); if(event.target.checked) next.add(item.id); else next.delete(item.id); setSelected(next);}}/></td>
         <td><button className="volume-link" disabled={busy || removed || item.changed || item.missing} title={t("Edit pages: {0}",item.title)} onClick={() => openBook(item)}>{item.title}</button>
           <small>{item.group || t("Ungrouped")} · {item.path.split(/[\\/]/).pop()}{item.missing ? " · "+t("Source missing") : item.changed ? " · "+t("Source changed") : ""}</small>
-          {series.managed && !removed && (item.missing || item.changed) && <button onClick={() => void run(async () => {const path = await host.pickFile({extensions:["pdf"],title:t("Locate the original PDF")}); if (typeof path === "string") {await host.rpc("series.relink",{id:item.id,path}); host.notify(t("Source relinked: {0}",item.title));}})} disabled={busy}>{t("Relink…")}</button>}
+          {series.managed && !removed && (item.missing || item.changed) && <button onClick={() => void run(async () => {const path = await host.pickFile({extensions:[item.path.split(".").pop()!],title:t("Locate the original source")}); if (typeof path === "string") {await host.rpc("series.relink",{id:item.id,path}); host.notify(t("Source relinked: {0}",item.title));}})} disabled={busy}>{t("Relink…")}</button>}
         </td>
         <td>{item.page_count ?? "—"}</td><td>{item.reviewed ? t("Book reviewed") : item.revision === null ? t("Not started") : t("Not reviewed")}{!!item.review_count && <small className="review-pending">{t("{0} pages need attention",item.review_count)}</small>}{item.review_count === null && <small>{t("Open to check page marks")}</small>}</td>
         <td aria-live="polite">{row && row.state !== "completed" ? labels[row.state] : item.exported ? t("Exported") : item.needs_export ? t("Needs re-export") : "—"}
@@ -257,8 +263,8 @@ export function SeriesWorkspace({series,host,busy,hidden,dpi,openBook,migrate,se
       </tr>;
     })}</tbody></table>{!visible.length && <div className="project-empty">
       <h2>{t(removed ? "No removed books" : !series.items.length ? "Add your first book" : "No books match this filter")}</h2>
-      <p>{t(removed ? "Removed books will appear here. Restore them or permanently delete them to free space." : !series.items.length ? "Add PDFs or drop files here. Copies and saved edits stay in this project." : "Try another group, clear the search or show all books.")}</p>
-      {series.managed && !removed && !series.items.length && <button className="primary" disabled={busy} onClick={() => void add("pdf")}>{t("Add PDFs…")}</button>}
+      <p>{t(removed ? "Removed books will appear here. Restore them or permanently delete them to free space." : !series.items.length ? "Add supported books or drop files here. Copies and saved edits stay in this project." : "Try another group, clear the search or show all books.")}</p>
+      {series.managed && !removed && !series.items.length && <button className="primary" disabled={busy || !extensions.length} onClick={() => void add("files")}>{t("Add books…")}</button>}
     </div>}</div>
     {!removed && <>
       {!!chosen.length && <details className="shared-settings"><summary>{t("Shared settings for {0} selected books",chosen.length)}</summary><fieldset disabled={busy}>
@@ -270,8 +276,9 @@ export function SeriesWorkspace({series,host,busy,hidden,dpi,openBook,migrate,se
       {finished && <p className="batch-summary" role="status">{batchSummary(Object.values(rows))}</p>}
       {!!series.items.length && <div className="series-export">
         <label className="output-directory">{t("Output folder")}<button className="output-folder" disabled={busy} title={series.output_directory} onClick={() => void run(async () => {const directory = await host.pickFile({directory:true,title:t("Choose output folder")}); if(typeof directory === "string") {await host.rpc("series.output",{directory}); host.setOutputDirectory?.(directory);}})}>{series.output_directory || t("Choose output folder…")}</button></label>
-        <label><input type="checkbox" checked={render} disabled={busy} onChange={event => setRender(event.target.checked)}/>{t("Allow rendering complex PDF pages")} ({dpi === "auto" ? t("Auto resolution") : t("{0} DPI",dpi)})</label>
-        {running ? <button onClick={() => {abort.current.abort(); void host.cancelTask?.().catch(host.report);}}>{t("Cancel batch")}</button> : <><button disabled={busy || !retry.length || !series.output_directory} onClick={() => void exportBooks(retry,render,true)}>{t("Retry remaining")}</button><button id="export-selected-books" className="primary" disabled={busy || !chosen.length || !series.output_directory} onClick={() => void exportBooks()}>{t("Export {0} selected books",chosen.length)}</button></>}
+        <label>{t("Output format")}<select aria-label={t("Output format")} disabled={busy || !outputFormat} value={outputFormat?.id || ""} onChange={event => setExporter(event.target.value)}>{exporters.map(plugin => <option key={plugin.id} value={plugin.id}>{plugin.format!.name}</option>)}{!outputFormat && <option value="">{t("No export plugins enabled")}</option>}</select></label>
+        <label><input type="checkbox" checked={render} disabled={busy} onChange={event => setRender(event.target.checked)}/>{t("Allow rendering complex pages")} ({dpi === "auto" ? t("Auto resolution") : t("{0} DPI",dpi)})</label>
+        {running ? <button onClick={() => {abort.current.abort(); void host.cancelTask?.().catch(host.report);}}>{t("Cancel batch")}</button> : <><button disabled={busy || !retry.length || !series.output_directory || !outputFormat} onClick={() => void exportBooks(retry,render,true)}>{t("Retry remaining")}</button><button id="export-selected-books" className="primary" disabled={busy || !chosen.length || !series.output_directory || !outputFormat} onClick={() => void exportBooks()}>{t("Export {0} selected books",chosen.length)}</button></>}
         {!series.output_directory && <small>{t("Choose an output folder to enable export.")}</small>}
       </div>}
     </>}

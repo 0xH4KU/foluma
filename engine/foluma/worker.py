@@ -13,14 +13,9 @@ def emit(value: dict) -> None:
     print(json.dumps(value, ensure_ascii=False, allow_nan=False), flush=True)
 
 
-def run(path: str) -> None:
+def execute(operation: str, handler, translations: dict) -> None:
     started = time.perf_counter()
-    from . import media
-
-    request = parse_json(Path(path).read_text("utf-8"))
-    messages.set(request.get("messages", {}))
-    operation, params = request["operation"], request["params"]
-    data = Path(request["data"])
+    messages.set(translations)
     phase, phase_started, timings = t("Preparing"), started, {}
 
     def progress(done, total, message):
@@ -39,21 +34,36 @@ def run(path: str) -> None:
                              "phases": {key: round(value, 3) for key, value in timings.items()}}})
 
     try:
-        if operation == "import":
-            result = media.import_pdf(**params, asset_dir=data / "assets", progress=progress)
-        elif operation == "preview":
-            result = media.preview(**params, directory=data / "previews")
-        elif operation == "images.import":
-            result = media.import_images(**params, directory=data / "assets")
-        elif operation == "export":
-            result = media.export_epub(**params, progress=progress)
-        elif operation == "images.export":
-            result = media.export_images(**params, progress=progress)
-        else:
-            raise ValueError(t("Unsupported background task"))
+        result = handler(progress)
         report_timing()
         emit({"result": result})
     except Exception as exc:
         report_timing()
         emit({"error": {"message": str(exc), "data": getattr(exc, "data", None)}})
         sys.exit(1)
+
+
+def run(path: str) -> None:
+    from . import media
+
+    request = parse_json(Path(path).read_text("utf-8"))
+    operation, params = request["operation"], request["params"]
+    data = Path(request["data"])
+
+    def handle(progress):
+        if operation == "preview":
+            return media.preview(**params, directory=data / "previews")
+        if operation == "images.import":
+            return media.import_images(**params, directory=data / "assets")
+        if operation == "images.export":
+            return media.export_images(**params, progress=progress)
+        raise ValueError(t("Unsupported background task"))
+
+    execute(operation, handle, request.get("messages", {}))
+
+
+def run_plugin(handler) -> None:
+    request = parse_json(sys.stdin.readline())
+    operation = request["operation"]
+    execute(operation, lambda progress: handler(operation, request.get("input", {}), request.get("book"), progress),
+            request.get("messages", {}))

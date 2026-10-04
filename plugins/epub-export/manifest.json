@@ -1,0 +1,10 @@
+{
+  "id": "org.foluma.export.epub",
+  "name": "EPUB export",
+  "version": "0.1.0",
+  "api_version": 1,
+  "description": "Export validated fixed-layout EPUB books with covers, crops and reading direction.",
+  "platforms": ["all"],
+  "format": {"direction": "export", "name": "EPUB", "extensions": ["epub"]},
+  "workers": {}
+}

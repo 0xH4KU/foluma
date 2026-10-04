@@ -138,7 +138,7 @@ export function applyPreset(book: Book, payload: Preset, remap: Record<string,st
     if (item.kind === "blank") return {id, kind: "blank", width: item.width, height: item.height};
     if (item.kind !== "source" && item.kind !== "inserted") throw new Error(t("Preset contains an unknown page type"));
     const assetId = item.kind === "source" ? originals.get(item.source_page!) : remap[item.asset_id!];
-    if (!assetId || !book.assets[assetId]) throw new Error(t("Missing preset asset or PDF page {0}", item.source_page || "?"));
+    if (!assetId || !book.assets[assetId]) throw new Error(t("Missing preset asset or source page {0}", item.source_page || "?"));
     const asset = book.assets[assetId];
     const page: Page = {id, kind: "image", asset_id: assetId, crop: item.crop, width: asset.width, height: asset.height,
                         source_page: item.kind === "source" ? item.source_page : null};

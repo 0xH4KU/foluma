@@ -4,7 +4,7 @@ import {t} from "../../../sdk/i18n.ts";
 import {applyPreset, type Preset} from "./pages.ts";
 
 export type BatchRow = {path: string; state: "pending" | "working" | "completed" | "failed" | "cancelled" | "skipped"; output?: string; error?: string; renderRequired?: number[]};
-export type BatchOptions = {paths: string[]; preset?: string; entries?: {id: string; path: string}[]; directory: string; render: boolean; dpi: RenderResolution};
+export type BatchOptions = {paths: string[]; preset?: string; entries?: {id: string; path: string}[]; directory: string; render: boolean; dpi: RenderResolution; exporter?: string};
 
 export function batchSummary(rows: BatchRow[]): string {
   return t("{0} exported · {1} failed · {2} cancelled or skipped",rows.filter(row => row.state === "completed").length,rows.filter(row => row.state === "failed").length,rows.filter(row => row.state === "cancelled" || row.state === "skipped").length);
@@ -29,7 +29,7 @@ export async function runBatch(host: HostAPI, options: BatchOptions, signal: Abo
         book = await host.apply(preset.document,applyPreset(preset.document,preset.payload,preset.asset_ids));
       }
       cancelled();
-      const result = await host.task<{path: string}>({operation: "export",...documentRef(book),directory: options.directory});
+      const result = await host.task<{path: string}>({operation: "export",...documentRef(book),directory: options.directory,plugin_id: options.exporter});
       update(index,{path,state: "completed",output: result.path});
     } catch (error) {
       stopped = signal.aborted || !!(error as {cancelled?: boolean})?.cancelled;

@@ -1,0 +1,10 @@
+{
+  "id": "org.foluma.export.cbz",
+  "name": "CBZ export",
+  "version": "0.1.0",
+  "api_version": 1,
+  "description": "Export edited pages and blank pages as a CBZ archive, preserving uncropped images and ComicInfo metadata.",
+  "platforms": ["all"],
+  "format": {"direction": "export", "name": "CBZ", "extensions": ["cbz"]},
+  "workers": {}
+}

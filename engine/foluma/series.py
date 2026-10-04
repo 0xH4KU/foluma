@@ -36,9 +36,10 @@ def pending_review_count(book: dict) -> int:
 class Series:
     managed = False
 
-    def __init__(self, data: Path, paths: list[str]):
+    def __init__(self, data: Path, paths: list[str], extensions=()):
         if not isinstance(paths, list) or not paths or not all(isinstance(p, str) for p in paths):
-            raise ValueError(t("Choose a folder or PDF files"))
+            raise ValueError(t("Choose a folder or supported book files"))
+        self.extensions = {f".{extension}" for extension in extensions}
         roots = sorted({str(Path(p).resolve()) for p in paths})
         self.directory = data / "series" / path_id(json.dumps(roots))
         self.path = self.directory / "series.json"
@@ -48,10 +49,10 @@ class Series:
             if not root.exists() and not self.path.exists():
                 raise ValueError(t("Folder or file is missing: {0}", name))
             for item in root.iterdir() if root.is_dir() else [root]:
-                if item.is_file() and item.suffix.lower() == ".pdf":
+                if item.is_file() and item.suffix.lower() in self.extensions:
                     files.add(str(item.resolve()))
         if not files and not self.path.exists():
-            raise ValueError(t("No PDF files were found in this folder"))
+            raise ValueError(t("No supported book files were found in this folder"))
         self.state = parse_json(self.path.read_text("utf-8")) if self.path.exists() else {
             "schema": 1, "id": self.directory.name, "roots": roots,
             "name": Path(roots[0]).name if len(roots) == 1 and Path(roots[0]).is_dir() else Path(roots[0]).parent.name,
@@ -136,12 +137,13 @@ def folder_name(value: str) -> str:
 
 
 class FolderProject(Series):
-    """Managed PDF copies in visible folders; ordinary book projects stay under .foluma."""
+    """Managed source copies in visible folders; ordinary book projects stay under .foluma."""
 
     managed = True
 
-    def __init__(self, data: Path, root: str):
+    def __init__(self, data: Path, root: str, extensions=()):
         self.data, self.root = data, Path(root).resolve(strict=True)
+        self.extensions = {f".{extension}" for extension in extensions}
         self.directory = contained(self.root, ".foluma/books")
         self.path = contained(self.root, ".foluma/project.json")
         self.state = parse_json(self.path.read_text("utf-8"))
@@ -155,10 +157,10 @@ class FolderProject(Series):
                 raise ValueError(t("Invalid project book identity"))
             identifiers.add(item["id"])
             relative = Path(item["path"])
-            if (relative.suffix.lower() != ".pdf" or ".." in relative.parts
+            if (not re.fullmatch(r"\.[a-zA-Z0-9]{1,16}", relative.suffix) or ".." in relative.parts
                     or (item.get("removed") and relative.parts[:3] != (".foluma", "removed", item["id"]))
                     or (not item.get("removed") and (len(relative.parts) not in (1, 2) or any(p.startswith(".") for p in relative.parts)))):
-                raise ValueError(t("Invalid project PDF path"))
+                raise ValueError(t("Invalid project source path"))
             item["path"] = str(contained(self.root, item["path"]))
             if item.get("restore_path"):
                 contained(self.root, item["restore_path"])
@@ -177,14 +179,14 @@ class FolderProject(Series):
         self.refresh()
 
     @classmethod
-    def create(cls, data: Path, parent: str, name: str):
+    def create(cls, data: Path, parent: str, name: str, extensions=()):
         root = Path(parent).resolve(strict=True) / folder_name(name)
         root.mkdir()  # Never adopt or overwrite an existing directory implicitly.
         atomic_json(root / ".foluma/project.json", {
             "schema": 2, "id": new_id(), "name": name, "roots": [], "groups": [],
             "current_id": None, "output_directory": "", "items": [],
         })
-        return cls(data, str(root))
+        return cls(data, str(root), extensions)
 
     def activate(self):
         atomic_json(self.data / "series/current.json", {"project": str(self.root)})
@@ -288,7 +290,7 @@ class FolderProject(Series):
         return contained(self.root, folder_name(group)) if group else self.root
 
     @staticmethod
-    def copy_pdf(source: Path, target: Path):
+    def copy_source(source: Path, target: Path):
         target.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(dir=target.parent, prefix=".import-", delete=False) as temporary:
             staged = Path(temporary.name)
@@ -301,18 +303,18 @@ class FolderProject(Series):
     def add(self, paths: list[str], group: str = ""):
         destination = self.group_path(group)
         if not isinstance(paths, list) or not paths or not all(isinstance(path, str) for path in paths):
-            raise ValueError(t("Choose a folder or PDF files"))
+            raise ValueError(t("Choose a folder or supported book files"))
         inputs, folders_skipped, skipped = [], 0, 0
         before = len(self.state["items"])
         for name in paths:
             path = Path(name).resolve(strict=True)
             if path.is_dir() and path.suffix != ".mteproj":
-                inputs.extend(sorted((p for p in path.iterdir() if p.is_file() and p.suffix.lower() == ".pdf"), key=lambda p: natural_key(p.name)))
+                inputs.extend(sorted((p for p in path.iterdir() if p.is_file() and p.suffix.lower() in self.extensions), key=lambda p: natural_key(p.name)))
                 folders_skipped += sum(p.is_dir() and not p.name.startswith(".") for p in path.iterdir())
             else:
                 inputs.append(path)
         if not inputs:
-            raise ValueError(t("No PDF files were found in this folder"))
+            raise ValueError(t("No supported book files were found in this folder"))
         with self.change() as (_, copies, _directories):
             for source in inputs:
                 book = open_project(source) if source.is_dir() and source.suffix == ".mteproj" else None
@@ -320,14 +322,14 @@ class FolderProject(Series):
                     if any(item["document_id"] == book["id"] for item in self.state["items"]):
                         raise ValueError(t("This book project is already in the project"))
                     if not book["sources"]:
-                        raise ValueError(t("This book project has no source PDF"))
+                        raise ValueError(t("This book project has no source file"))
                     primary = next(iter(book["sources"].values()))
                     source = Path(primary["path"]).resolve(strict=True)
-                if not source.is_file() or source.suffix.lower() != ".pdf" or source.name.startswith("."):
-                    raise ValueError(t("Choose PDF files or a .mteproj book folder"))
+                if not source.is_file() or not book and source.suffix.lower() not in self.extensions or source.name.startswith("."):
+                    raise ValueError(t("Choose supported book files or a .mteproj book folder"))
                 fingerprint = digest(source)
                 if book and fingerprint != primary["sha256"]:
-                    raise ValueError(t("The file differs from the original PDF and cannot be relinked"))
+                    raise ValueError(t("The file differs from the original source and cannot be relinked"))
                 target = destination / source.name
                 known = next((item for item in self.state["items"] if not item.get("removed")
                               and item.get("imported_from") == str(source) and item["sha256"] == fingerprint), None)
@@ -341,7 +343,7 @@ class FolderProject(Series):
                 while target.exists() or any(item["path"] == str(target) for item in self.state["items"]):
                     target = destination / f"{source.stem} ({number}){source.suffix}"
                     number += 1
-                self.copy_pdf(source, target)
+                self.copy_source(source, target)
                 copies.append(target)
                 item = self.new_item(target, fingerprint)
                 item["imported_from"] = str(source)
@@ -351,10 +353,10 @@ class FolderProject(Series):
                     for source_info in book["sources"].values():
                         original = Path(source_info["path"])
                         if digest(original) != source_info["sha256"]:
-                            raise ValueError(t("The file differs from the original PDF and cannot be relinked"))
-                        local = target if source_info["sha256"] == fingerprint else self.directory / item["id"] / f"{source_info['sha256']}.pdf"
+                            raise ValueError(t("The file differs from the original source and cannot be relinked"))
+                        local = target if source_info["sha256"] == fingerprint else self.directory / item["id"] / f"{source_info['sha256']}{original.suffix}"
                         if local != target:
-                            self.copy_pdf(original, local)
+                            self.copy_source(original, local)
                             copies.append(local)
                         source_info["path"] = str(local)
                     save_project(book, self.project(item))
@@ -548,12 +550,12 @@ class FolderProject(Series):
         source = Path(path).resolve(strict=True)
         fingerprint = digest(source)
         if item["sha256"] is not None and fingerprint != item["sha256"]:
-            raise ValueError(t("The file differs from the original PDF and cannot be relinked"))
+            raise ValueError(t("The file differs from the original source and cannot be relinked"))
         target = Path(item["path"])
         if target.is_file():
             raise ValueError(t("The project already has a file at this location. Move it out before relinking."))
         with self.change() as (_, copies, _directories):
-            self.copy_pdf(source, target)
+            self.copy_source(source, target)
             copies.append(target)
             item["sha256"] = fingerprint
             item["changed"] = False
@@ -572,9 +574,10 @@ class FolderProject(Series):
             self.state["output_directory"] = str(contained(self.root, self.state["output_directory"]))
         groups = sorted((p.name for p in self.root.iterdir() if p.is_dir() and not p.is_symlink() and not p.name.startswith(".") and p.suffix != ".mteproj"), key=natural_key)
         files = {}
+        tracked = self.extensions | {Path(item["path"]).suffix.lower() for item in self.state["items"]}
         for directory in [self.root, *(self.root / group for group in groups)]:
             for path in directory.iterdir():
-                if path.is_file() and not path.is_symlink() and path.suffix.lower() == ".pdf":
+                if path.is_file() and not path.is_symlink() and path.suffix.lower() in tracked:
                     files[str(path)] = digest(path)
         with self.change():
             active = [item for item in self.state["items"] if not item.get("removed")]
@@ -598,7 +601,7 @@ class FolderProject(Series):
                 else:
                     item.pop("stamp", None)
             known = {item["path"] for item in active}
-            for path in sorted(files.keys() - known, key=natural_key):
+            for path in sorted((path for path in files.keys() - known if Path(path).suffix.lower() in self.extensions), key=natural_key):
                 self.state["items"].append(self.new_item(Path(path), files[path]))
             self.state["groups"] = list(dict.fromkeys([*groups, *(item["group"] for item in active if item["group"])]))
             self.state["refreshed_at"] = datetime.now(UTC).isoformat()

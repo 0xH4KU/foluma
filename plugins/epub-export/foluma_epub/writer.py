@@ -14,7 +14,6 @@ from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile, ZipInfo
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-from ..pdf.image_types import PdfImageError
 from .validation import validate_epub_structure
 
 
@@ -41,7 +40,7 @@ class EpubPage:
             return self.image_data
         if self.image_data_loader is not None:
             return self.image_data_loader()
-        raise PdfImageError(f"Page {self.label} has no image payload")
+        raise ValueError(f"Page {self.label} has no image payload")
 
 
 def media_type_for_ext(ext: str) -> str:
@@ -50,7 +49,7 @@ def media_type_for_ext(ext: str) -> str:
         return "image/jpeg"
     if ext == "png":
         return "image/png"
-    raise PdfImageError(f"Unsupported image extension for EPUB: {ext}")
+    raise ValueError(f"Unsupported image extension for EPUB: {ext}")
 
 
 def write_epub_from_pages(
@@ -70,16 +69,16 @@ def write_epub_from_pages(
     cover_png: bytes | None = None,
 ) -> dict[str, int]:
     if reading_direction not in {"rtl", "ltr"}:
-        raise PdfImageError("Reading direction must be 'rtl' or 'ltr'")
+        raise ValueError("Reading direction must be 'rtl' or 'ltr'")
     if epub_path.exists() and not overwrite:
-        raise PdfImageError(f"Refusing to overwrite existing file: {epub_path}")
+        raise ValueError(f"Refusing to overwrite existing file: {epub_path}")
     identifier = f"urn:uuid:{uuid.uuid5(uuid.NAMESPACE_URL, source_path.resolve().as_uri())}"
 
     cover_id = cover_item_id or _first_image_item_id(pages)
     _validate_cover_item_id(pages, cover_id)
     reading_pages = _reading_pages(pages, cover_id, exclude_cover_from_reading)
     if not reading_pages:
-        raise PdfImageError("Cover-only export would leave no reading pages")
+        raise ValueError("Cover-only export would leave no reading pages")
 
     temp_path = _temporary_epub_path(epub_path)
     try:
@@ -195,9 +194,9 @@ def _itunes_artwork(image_data: bytes, media_type: str | None) -> bytes:
     except UnidentifiedImageError:
         if media_type == "image/jpeg":
             return image_data
-        raise PdfImageError("Cannot create Apple Books cover artwork")
+        raise ValueError("Cannot create Apple Books cover artwork")
     except OSError as exc:
-        raise PdfImageError("Cannot create Apple Books cover artwork") from exc
+        raise ValueError("Cannot create Apple Books cover artwork") from exc
 
 
 def _publish_epub(temp_path: Path, epub_path: Path, overwrite: bool) -> None:
@@ -208,7 +207,7 @@ def _publish_epub(temp_path: Path, epub_path: Path, overwrite: bool) -> None:
     try:
         os.link(temp_path, epub_path)
     except FileExistsError as exc:
-        raise PdfImageError(f"Refusing to overwrite existing file: {epub_path}") from exc
+        raise ValueError(f"Refusing to overwrite existing file: {epub_path}") from exc
     finally:
         temp_path.unlink(missing_ok=True)
 
@@ -350,7 +349,7 @@ def _validate_cover_item_id(pages: list[EpubPage], cover_item_id: str | None) ->
         return
     if any(not page.is_blank and page.item_id == cover_item_id for page in pages):
         return
-    raise PdfImageError(f"Invalid cover item ID: {cover_item_id}")
+    raise ValueError(f"Invalid cover item ID: {cover_item_id}")
 
 
 def _reading_pages(

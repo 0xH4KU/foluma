@@ -1,0 +1,10 @@
+{
+  "id": "org.foluma.import.cbz",
+  "name": "CBZ import",
+  "version": "0.1.1",
+  "api_version": 1,
+  "description": "Import naturally ordered JPEG, PNG and WebP pages from CBZ archives, with ComicInfo metadata.",
+  "platforms": ["all"],
+  "format": {"direction": "import", "name": "CBZ", "extensions": ["cbz"]},
+  "workers": {}
+}

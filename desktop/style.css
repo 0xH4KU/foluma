@@ -50,6 +50,15 @@ main {min-width: 0; min-height: 0; display: flex; flex-direction: column; overfl
 
 .breadcrumb {background:transparent; border:0; color:var(--accent); max-width:210px; overflow:hidden; text-overflow:ellipsis;}.outside-project {color:#9b5f18 !important;}
 .notice-actions {display:flex; align-items:center; gap:10px; flex-shrink:0;}.notice-actions > button:last-child {background:transparent; border:0; min-height:22px;}
+.plugin-filters {display:flex; flex-wrap:wrap; gap:6px; margin:16px 0 20px;}
+.plugin-filters button {gap:8px;}
+.plugin-filters button[aria-pressed=true] {background:var(--accent); border-color:var(--accent); color:#fff;}
+.plugin-filters button span {font-size:11px; font-variant-numeric:tabular-nums; opacity:.8;}
+.plugin-group + .plugin-group {margin-top:12px;}
+.plugin-group-heading {display:flex; align-items:center; gap:8px; padding:8px 12px; background:#f5f7f9; border-bottom:1px solid var(--line); color:var(--muted);}
+.plugin-group-heading h3 {margin:0; font-size:12px; font-weight:600;}
+.plugin-group-heading span {font-size:11px; font-variant-numeric:tabular-nums;}
+.plugin-table .plugin-group + .plugin-group {margin-top:0;}
 .metadata input[aria-invalid=true] {border-color:#a74439;}.project-dialog .check-label {flex-direction:row; align-items:center; gap:8px;}
 .project-tools {position:relative;}.refresh-time {margin-left:auto;}.project-groups {display:flex; flex-direction:row; flex-wrap:nowrap; gap:5px; padding:7px 14px; border-block:1px solid var(--line); overflow:auto; flex-shrink:0;}
 .project-groups button {flex-shrink:0; padding:4px 10px; min-height:27px; border:1px solid transparent; border-radius:4px; background:transparent;}.project-groups button[aria-pressed=true] {color:#174f7d; background:#dce9f5; border-color:#aac0d3;}

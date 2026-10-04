@@ -26,5 +26,12 @@ test("document RPC acknowledgements update the active revision before notificati
   (globalThis as any).window.__TAURI_INTERNALS__.invoke = async () => before;
   await rpc("project.open",{path:"saved.mteproj"});
   assert.equal(host.getDocument()!.revision,0,"explicitly reopening a saved book can restore its saved revision");
+  const importer = {id:"test.import",format:{direction:"import",name:"SCAN",extensions:["scan"]}};
+  (globalThis as any).window.__TAURI_INTERNALS__.invoke = async () => ({plugins:{active:[importer,{id:"test.workspace"}]}});
+  await rpc("app.info");
+  assert.deepEqual(host.getFormats!(),[importer],"format menus use active providers rather than all installed plugins");
+  (globalThis as any).window.__TAURI_INTERNALS__.invoke = async () => ({active:[]});
+  await rpc("plugins.list");
+  assert.deepEqual(host.getFormats!(),[],"removing providers cannot leave a hidden built-in format available");
   delete (globalThis as any).window;
 });

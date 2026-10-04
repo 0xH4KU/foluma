@@ -81,6 +81,18 @@ def manifest_at(root: Path) -> dict:
     for worker in workers.values():
         if not contained(root, worker).is_file():
             raise ValueError(t("Plugin worker file is missing"))
+    format_info = manifest.get("format")
+    if format_info is not None:
+        if (not isinstance(format_info, dict) or format_info.get("direction") not in ("import", "export")
+                or not isinstance(format_info.get("name"), str) or not 0 < len(format_info["name"]) <= 120
+                or not isinstance(format_info.get("extensions"), list) or not format_info["extensions"]
+                or not all(isinstance(extension, str) and re.fullmatch(r"[a-z0-9]{1,16}", extension)
+                           for extension in format_info["extensions"])
+                or len(set(format_info["extensions"])) != len(format_info["extensions"])
+                or type(format_info.get("rendering", False)) is not bool
+                or format_info.get("rendering") and format_info["direction"] != "import"
+                or platform_id() not in workers):
+            raise ValueError(t("Invalid format plugin configuration"))
     language = manifest.get("language")
     if language is not None:
         if (
@@ -93,6 +105,7 @@ def manifest_at(root: Path) -> dict:
             or not isinstance(language.get("messages"), str)
             or ui
             or workers
+            or format_info
         ):
             raise ValueError(t("Invalid language pack"))
         translations = parse_json(contained(root, language["messages"]).read_text("utf-8"))
@@ -159,6 +172,25 @@ class Plugins:
                 self.install(str(bundled_editor), expected_id="org.foluma.editor")
             except (OSError, ValueError, BadZipFile) as exc:
                 self.errors.append(t("Bundled editor could not be installed: {0}", exc))
+        packages = (("org.foluma.import.pdf", "pdf-import.mte-plugin"),
+                    ("org.foluma.export.epub", "epub-export.mte-plugin"))
+        defaults = self.config.get("format_defaults", [])
+        if not isinstance(defaults, list) or not all(isinstance(identifier, str) for identifier in defaults):
+            self.errors.append(t("Invalid default plugin settings"))
+            defaults = [identifier for identifier, _filename in packages]
+        for identifier, filename in packages:
+            if identifier in defaults:
+                continue
+            package = self.bundled_directory / filename if self.bundled_directory else None
+            if identifier not in self.config.get("installed", {}) and package and package.is_file():
+                try:
+                    self.install(str(package), expected_id=identifier)
+                except (OSError, ValueError, BadZipFile) as error:
+                    self.errors.append(t("Default plugin could not be installed: {0}", error))
+                    continue
+            if identifier in self.config.get("installed", {}):
+                defaults.append(identifier)
+        self.config["format_defaults"] = defaults
         atomic_json(self.config_path, self.config)
         for plugin_id, item in self.config.get("installed", {}).items():
             try:
@@ -195,6 +227,25 @@ class Plugins:
         ):
             raise ValueError(t("Invalid plugin location"))
         return contained(self.root, f"{plugin_id}/{version}")
+
+    def formats(self, direction: str) -> list[dict]:
+        return [plugin for plugin in self.active.values() if plugin.get("format", {}).get("direction") == direction]
+
+    def extensions(self, direction: str) -> list[str]:
+        return sorted({extension for plugin in self.formats(direction) for extension in plugin["format"]["extensions"]})
+
+    def format(self, direction: str, path: str | None = None, plugin_id: str | None = None) -> dict:
+        candidates = self.formats(direction)
+        if plugin_id is not None:
+            candidates = [plugin for plugin in candidates if plugin["id"] == plugin_id]
+        extension = Path(path).suffix.lower().lstrip(".") if path else ""
+        if extension:
+            candidates = [plugin for plugin in candidates if extension in plugin["format"]["extensions"]]
+        if len(candidates) != 1:
+            error = ValueError(t("Choose an enabled {0} plugin for {1}", t(direction), f".{extension}" if extension else t("this format")))
+            error.data = {"kind": "format_plugin_required", "direction": direction, "extension": extension}
+            raise error
+        return candidates[0]
 
     def list(self) -> dict:
         items = []

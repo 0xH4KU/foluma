@@ -1,0 +1,10 @@
+{
+  "id": "org.foluma.import.pdf",
+  "name": "PDF import",
+  "version": "0.1.0",
+  "api_version": 1,
+  "description": "Import PDF pages, preserving original images or rendering complex pages with your consent.",
+  "platforms": ["all"],
+  "format": {"direction": "import", "name": "PDF", "extensions": ["pdf"], "rendering": true},
+  "workers": {}
+}

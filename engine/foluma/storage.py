@@ -93,6 +93,23 @@ def copy_asset(source: Path, directory: Path, extension: str) -> Path:
     return destination
 
 
+def write_asset(payload: bytes, directory: Path, extension: str) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    destination = directory / f"{hashlib.sha256(payload).hexdigest()}.{extension}"
+    if not destination.exists():
+        descriptor, name = tempfile.mkstemp(dir=directory)
+        staged = Path(name)
+        try:
+            with os.fdopen(descriptor, "wb") as temporary:
+                temporary.write(payload)
+                temporary.flush()
+                os.fsync(temporary.fileno())
+            os.replace(staged, destination)
+        finally:
+            staged.unlink(missing_ok=True)
+    return destination
+
+
 def save_project(book: dict, directory: Path) -> None:
     directory = directory.resolve()
     if directory.suffix != ".mteproj":
