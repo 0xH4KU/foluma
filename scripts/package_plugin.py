@@ -51,7 +51,7 @@ for manifest_path in sorted((root / "plugins").glob("*/manifest.json")):
         if worker:
             archive.write(worker, manifest["workers"][platform_id()])
         if not worker or arguments.development:
-            if folder in ("cbz-import", "zip-import"):
+            if folder in ("cbz-import", "zip-import", "epub-import"):
                 archive.write(root / "plugins/image_archive.py", "image_archive.py")
             for source in sorted(content.rglob("*")):
                 if source.is_file() and source != manifest_path and "__pycache__" not in source.parts:

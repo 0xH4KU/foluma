@@ -17,6 +17,26 @@ from foluma.storage import digest
 from PIL import Image
 
 
+def validate_archive(archive):
+    entries = archive.infolist()
+    if len(entries) > 10_000 or sum(entry.file_size for entry in entries) > 2_000_000_000:
+        raise ValueError(t("Image archives cannot exceed 10000 entries or 2 GB of uncompressed data"))
+    names = set()
+    for entry in entries:
+        member = PurePosixPath(entry.filename)
+        if (member.is_absolute() or ".." in member.parts or "\\" in entry.filename
+                or re.match(r"^[A-Za-z]:", entry.filename) or stat.S_ISLNK(entry.external_attr >> 16)
+                or str(member) != entry.filename.rstrip("/") or "\x00" in entry.filename):
+            raise ValueError(t("Unsafe path in package"))
+        if entry.flag_bits & 1:
+            raise ValueError(t("Encrypted archives are not supported"))
+        name = entry.filename.casefold()
+        if name in names:
+            raise ValueError(t("Image archive contains duplicate filenames"))
+        names.add(name)
+    return entries
+
+
 def handle(operation: str, params: dict, book: dict | None, progress):
     if operation != "import":
         raise ValueError(t("Unsupported background task"))
@@ -28,19 +48,7 @@ def handle(operation: str, params: dict, book: dict | None, progress):
                          "cover_id": None, "cover_only": False},
             "sources": {}, "assets": {}, "pages": [], "extensions": {}}
     with ZipFile(source) as archive, tempfile.TemporaryDirectory() as temporary:
-        entries = archive.infolist()
-        if len(entries) > 10_000 or sum(entry.file_size for entry in entries) > 2_000_000_000:
-            raise ValueError(t("Image archives cannot exceed 10000 entries or 2 GB of uncompressed data"))
-        names = set()
-        for entry in entries:
-            member = PurePosixPath(entry.filename)
-            if (member.is_absolute() or ".." in member.parts or "\\" in entry.filename
-                    or re.match(r"^[A-Za-z]:", entry.filename) or stat.S_ISLNK(entry.external_attr >> 16)):
-                raise ValueError(t("Unsafe path in package"))
-            name = entry.filename.casefold()
-            if name in names:
-                raise ValueError(t("Image archive contains duplicate filenames"))
-            names.add(name)
+        entries = validate_archive(archive)
         images = sorted((entry for entry in entries if not entry.is_dir()
                          and PurePosixPath(entry.filename).suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")
                          and not any(part.startswith(".") or part == "__MACOSX"

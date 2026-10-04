@@ -338,6 +338,205 @@ class FormatPluginTests(unittest.TestCase):
                            path=str(self.root / "saved.epub"))
         self.assertEqual(result["total"], 3)
 
+    def test_epub_import_preserves_spine_crops_blanks_and_survives_plugin_removal(self):
+        identifier = "org.foluma.import.epub"
+        self.assertIn(identifier, {plugin["id"] for plugin in self.engine.plugins.bundled()})
+        self.assertNotIn(identifier, self.engine.plugins.active)
+        book = self.task("import", path=str(self.pdf))
+        original = Path(book["assets"][book["pages"][0]["asset_id"]]["path"]).read_bytes()
+        pages = [copy.deepcopy(book["pages"][0]) for _number in range(3)]
+        for candidate in pages:
+            candidate["id"] = new_id()
+        pages[1]["crop"] = [0.5, 0, 0.5, 1]
+        pages[2]["crop"] = [0, 0.5, 1, 0.5]
+        pages.insert(2, {"id": new_id(), "kind": "blank", "width": 80, "height": 120})
+        book = self.engine.call("document.apply", {"document_id": book["id"], "base_revision": book["revision"],
+                                                   "changes": {"pages": pages, "metadata": {"title": "EPUB & 測試",
+                                                               "author": "Author", "language": "ja", "direction": "rtl",
+                                                               "cover_id": pages[3]["id"]}}})
+        source = self.root / "edited.epub"
+        self.task("export", document_id=book["id"], base_revision=book["revision"], path=str(source))
+        self.engine.plugins.install_bundled(identifier)
+        self.assertNotIn("epub", self.engine.plugins.extensions("import"))
+        self.engine.plugins.remove("org.foluma.import.pdf")
+        self.engine.plugins.remove("org.foluma.export.epub")
+        self.restart()
+        restored = self.task("import", path=str(source))
+        self.assertEqual(len(restored["pages"]), 4)
+        self.assertEqual([candidate["kind"] for candidate in restored["pages"]], ["image", "image", "blank", "image"])
+        self.assertEqual([candidate.get("crop") for candidate in restored["pages"]],
+                         [[0, 0, 1, 1], [0.5, 0, 0.5, 1], None, [0, 0.5, 1, 0.5]])
+        self.assertEqual([(candidate["width"], candidate["height"]) for candidate in restored["pages"]], [(80, 120)] * 4)
+        self.assertEqual([candidate["source_page"] for candidate in restored["pages"]], [1, 2, 3, 4])
+        self.assertEqual(len({candidate["id"] for candidate in restored["pages"]}), 4)
+        self.assertEqual(len(restored["assets"]), 1)
+        self.assertEqual(restored["metadata"], {"title": "EPUB & 測試", "author": "Author", "language": "ja",
+                                               "direction": "rtl", "cover_id": restored["pages"][3]["id"], "cover_only": False})
+        self.assertEqual(Path(next(iter(restored["assets"].values()))["path"]).read_bytes(), original)
+        saved = self.root / "epub.mteproj"
+        save_project(self.engine.session.book, saved)
+        self.engine.plugins.remove(identifier)
+        self.engine.plugins.install_bundled("org.foluma.export.epub")
+        source.unlink()
+        self.restart()
+        self.assertFalse(self.engine.plugins.formats("import"))
+        self.assertIn("org.foluma.export.epub", self.engine.plugins.active)
+        reopened = self.engine.call("project.open", {"path": str(saved)})
+        preview = self.engine.call("document.preview", {"document_id": reopened["id"], "page_id": reopened["pages"][1]["id"]})
+        with Image.open(self.profile / preview) as image:
+            self.assertEqual(image.size, (40, 120))
+        result = self.task("export", document_id=reopened["id"], base_revision=reopened["revision"],
+                           path=str(self.root / "after-removal.epub"))
+        self.assertEqual(result["total"], 4)
+
+    def test_epub_import_reads_external_epub2_and_epub3_cover_only_and_encoded_paths(self):
+        self.engine.plugins.install_bundled("org.foluma.import.epub")
+        self.restart()
+        images = {}
+        for name, format_name, color in (("OEBPS/Images/封面 cover.jpg", "JPEG", "red"),
+                                         ("OEBPS/Images/page.jpg", "JPEG", "blue"),
+                                         ("OEBPS/Images/2.png", "PNG", "green")):
+            encoded = io.BytesIO()
+            Image.new("RGB", (80, 120), color).save(encoded, format_name)
+            images[name] = encoded.getvalue()
+        for version in ("2.0", "3.0"):
+            with self.subTest(version=version):
+                source = self.root / f"external-{version}.epub"
+                properties = ' properties="cover-image"' if version == "3.0" else ""
+                package = f'''<package xmlns="http://www.idpf.org/2007/opf" version="{version}">
+                  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>External</dc:title>
+                    <dc:creator>Author A</dc:creator><dc:creator>Author B</dc:creator><dc:language>en</dc:language>
+                    <meta name="cover" content="cover-art"/></metadata>
+                  <manifest><item id="second" href="Pages/2.xhtml" media-type="application/xhtml+xml"/>
+                    <item id="first" href="Pages/10.svg" media-type="image/svg+xml"/>
+                    <item id="cover" href="Pages/cover.xhtml" media-type="application/xhtml+xml"/>
+                    <item id="cover-art" href="Images/%E5%B0%81%E9%9D%A2%20cover.jpg" media-type="image/jpeg"{properties}/>
+                    <item id="image" href="Images/page.jpg" media-type="image/jpeg"/>
+                    <item id="png" href="Images/2.png" media-type="image/png"/>
+                    <item id="css" href="style.css" media-type="text/css"/>
+                    <item id="font" href="font.otf" media-type="font/otf"/></manifest>
+                  <spine page-progression-direction="ltr"><itemref idref="cover" linear="no"/>
+                    <itemref idref="first"/><itemref idref="second"/></spine>
+                  <guide><reference type="cover" href="Pages/cover.xhtml#cover"/></guide></package>'''
+                with ZipFile(source, "w") as archive:
+                    archive.writestr("mimetype", "application/epub+zip")
+                    archive.writestr("META-INF/container.xml", '<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
+                                     '<rootfiles><rootfile full-path="OEBPS/book.opf" media-type="application/oebps-package+xml"/>'
+                                     '</rootfiles></container>')
+                    archive.writestr("OEBPS/book.opf", package)
+                    archive.writestr("OEBPS/style.css", 'html, body {margin: 0; padding: 0;} img {max-width: 100%; height: auto;}')
+                    archive.writestr("OEBPS/Pages/cover.xhtml", '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" '
+                                     '"http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd"><html xmlns="http://www.w3.org/1999/xhtml">'
+                                     '<head><link rel="stylesheet" href="../style.css"/></head>'
+                                     '<body><img src="../Images/%E5%B0%81%E9%9D%A2%20cover.jpg"/></body></html>')
+                    archive.writestr("OEBPS/Pages/10.svg", '<svg xmlns="http://www.w3.org/2000/svg" '
+                                     'xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="20 10 40 60">'
+                                     '<image width="80" height="120" xlink:href="../Images/page.jpg"/></svg>')
+                    archive.writestr("OEBPS/Pages/2.xhtml", '<html xmlns="http://www.w3.org/1999/xhtml"><head>'
+                                     '<link rel="stylesheet" href="../style.css"/></head><body><div><img width="80" height="120" '
+                                     'src="../Images/2.png"/></div></body></html>')
+                    archive.writestr("META-INF/encryption.xml", '<encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
+                                     '<EncryptedData xmlns="http://www.w3.org/2001/04/xmlenc#"><EncryptionMethod '
+                                     'Algorithm="http://www.idpf.org/2008/embedding"/><CipherData>'
+                                     '<CipherReference URI="OEBPS/font.otf"/></CipherData></EncryptedData></encryption>')
+                    archive.writestr("OEBPS/font.otf", b"unused obfuscated font")
+                    for name, payload in images.items():
+                        archive.writestr(name, payload)
+                book = self.task("import", path=str(source))
+                self.assertEqual([book["assets"][candidate["asset_id"]]["member"] for candidate in book["pages"]],
+                                 ["OEBPS/Images/封面 cover.jpg", "OEBPS/Images/page.jpg", "OEBPS/Images/2.png"])
+                self.assertEqual(book["pages"][1]["crop"], [0.25, 10 / 120, 0.5, 0.5])
+                self.assertEqual(book["metadata"]["author"], "Author A, Author B")
+                self.assertEqual(book["metadata"]["language"], "en")
+                self.assertEqual(book["metadata"]["direction"], "ltr")
+                self.assertTrue(book["metadata"]["cover_only"])
+                self.assertEqual(book["metadata"]["cover_id"], book["pages"][0]["id"])
+                self.assertEqual([candidate["source_page"] for candidate in book["pages"]], [1, 2, 3])
+                for asset in book["assets"].values():
+                    self.assertEqual(Path(asset["path"]).read_bytes(), images[asset["member"]])
+                output = self.root / f"roundtrip-{version}.epub"
+                result = self.task("export", document_id=book["id"], base_revision=book["revision"], path=str(output))
+                self.assertEqual(result["total"], 2)
+                restored = self.task("import", path=str(output))
+                self.assertTrue(restored["metadata"]["cover_only"])
+                self.assertEqual(len(restored["pages"]), 3)
+                self.assertEqual(restored["pages"][1]["crop"], book["pages"][1]["crop"])
+                if version == "3.0":
+                    svg_cover = package.replace(' properties="cover-image"', '').replace(
+                        'href="Pages/10.svg" media-type="image/svg+xml"',
+                        'href="Pages/10.svg" media-type="image/svg+xml" properties="cover-image"')
+                    svg_cover = svg_cover.replace('<guide><reference type="cover" href="Pages/cover.xhtml#cover"/></guide>', '')
+                    svg_source = self.root / "svg-cover.epub"
+                    with ZipFile(source) as archive, ZipFile(svg_source, "w") as destination:
+                        for member in archive.namelist():
+                            destination.writestr(member, svg_cover.encode() if member == "OEBPS/book.opf" else archive.read(member))
+                    covered = self.task("import", path=str(svg_source))
+                    self.assertEqual(len(covered["pages"]), 2)
+                    self.assertFalse(covered["metadata"]["cover_only"])
+                    self.assertEqual(covered["metadata"]["cover_id"], covered["pages"][0]["id"])
+
+
+    def test_epub_import_rejects_unsafe_encrypted_missing_and_complex_content_atomically(self):
+        self.engine.plugins.install_bundled("org.foluma.import.epub")
+        self.restart()
+        book = self.task("import", path=str(self.pdf))
+        source = self.root / "valid.epub"
+        self.task("export", document_id=book["id"], base_revision=book["revision"], path=str(source))
+        with ZipFile(source) as archive:
+            original = {member: archive.read(member) for member in archive.namelist()}
+        image_member = next(member for member in original if member.endswith(".jpg"))
+        opf = original["EPUB/content.opf"].decode()
+        page_member = "EPUB/pages/000001.xhtml"
+        image_page = original[page_member].decode()
+        animated = io.BytesIO()
+        Image.new("RGB", (80, 120), "blue").save(animated, "PNG", save_all=True,
+                                                append_images=[Image.new("RGB", (80, 120), "red")])
+        cases = [
+            ({"../page.jpg": b"unsafe"}, "Unsafe"),
+            ({"mimetype": b"not an EPUB"}, "Invalid EPUB container"),
+            ({"META-INF/container.xml": None}, "resource is missing"),
+            ({image_member: None}, "resource is missing"),
+            ({"EPUB/content.opf": opf.replace('idref="page-', 'idref="missing-').encode()}, "Invalid EPUB spine"),
+            ({page_member: image_page.replace('<body>', '<body><p>Novel text</p>').encode()}, "Only simple image pages"),
+            ({page_member: image_page.replace('<svg ', '<svg transform="rotate(90)" ').encode()}, "Only simple image pages"),
+            ({page_member: image_page.replace('<html ', '<html style="transform: rotate(90deg)" ').encode()}, "Only simple image pages"),
+            ({page_member: image_page.replace('</svg>', '<image href="../missing.jpg" width="80" height="120"/></svg>').encode()},
+             "Only simple image pages"),
+            ({page_member: image_page.replace('href="../images/', 'href="https://example.invalid/images/').encode()}, "inside the archive"),
+            ({page_member: image_page.replace('href="../images/', 'href="../../../images/').encode()}, "inside the archive"),
+            ({page_member: image_page.replace('href="../images/', 'href="../%FF/').encode()}, "inside the archive"),
+            ({"EPUB/styles/page.css": b"svg {transform: rotate(90deg);}"}, "Only simple image pages"),
+            ({page_member: image_page.replace('<image ', '<image style="width:100%;height:100%;" ').encode()},
+             "Only simple image pages"),
+            ({"EPUB/styles/page.css": b"image {width:100%;height:100%;}"}, "Only simple image pages"),
+            ({page_member: image_page.replace('<image ', '<image class="resized" ').encode(),
+              "EPUB/styles/page.css": b".resized {width:100%;height:100%;}"}, "Only simple image pages"),
+            ({"EPUB/styles/page.css": b"\xff"}, "Only simple image pages"),
+            ({page_member: b" " * 1_000_001}, "1 MB"),
+            ({"EPUB/content.opf": '<!DOCTYPE package [<!ENTITY bomb "boom">]><package>&bomb;</package>'.encode("utf-16")},
+             "cannot contain entities"),
+            ({"EPUB/content.opf": opf.replace('media-type="image/jpeg"', 'media-type="image/png"').encode(),
+              image_member: animated.getvalue()}, "Animated"),
+            ({"META-INF/encryption.xml": ('<encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
+              '<EncryptedData xmlns="http://www.w3.org/2001/04/xmlenc#"><EncryptionMethod '
+              'Algorithm="http://www.w3.org/2001/04/xmlenc#aes128-cbc"/><CipherData>'
+              f'<CipherReference URI="{image_member}"/></CipherData></EncryptedData></encryption>').encode()}, "Encrypted EPUB"),
+        ]
+        before = copy.deepcopy(self.engine.session.book)
+        invalid = self.root / "invalid.epub"
+        for replacements, message in cases:
+            with self.subTest(message=message, replacements=list(replacements)):
+                members = original | replacements
+                with ZipFile(invalid, "w") as archive:
+                    for member, payload in members.items():
+                        if payload is not None:
+                            archive.writestr(member, payload)
+                fingerprint = digest(invalid)
+                failure = self.task("import", expected_state="failed", path=str(invalid))
+                self.assertIn(message, failure["error"]["message"])
+                self.assertEqual(self.engine.session.book, before)
+                self.assertEqual(digest(invalid), fingerprint)
+
     def test_defaults_are_independent_removable_and_never_silently_restored(self):
         importer, exporter = "org.foluma.import.pdf", "org.foluma.export.epub"
         self.assertEqual([plugin["id"] for plugin in self.engine.plugins.formats("import")], [importer])
