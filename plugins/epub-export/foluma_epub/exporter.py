@@ -14,7 +14,9 @@ from PIL import Image
 from .writer import EpubPage, media_type_for_ext, write_epub_from_pages
 
 
-def export_epub(book: dict, path: str, progress=lambda *_: None) -> dict:
+def export_epub(book: dict, path: str, progress=lambda *_: None, *, layout: str = "general") -> dict:
+    if layout not in ("general", "spread"):
+        raise ValueError(t("Unknown EPUB layout"))
     validate(book)
     if not book["metadata"]["cover_id"]:
         raise ValueError(t("The book needs at least one image for its cover"))
@@ -76,6 +78,7 @@ def export_epub(book: dict, path: str, progress=lambda *_: None) -> dict:
         exclude_cover_from_reading=meta["cover_only"],
         reading_direction=meta["direction"],
         cover_png=cover_png,
+        layout=layout,
     )
 
 
@@ -83,4 +86,4 @@ def export_epub(book: dict, path: str, progress=lambda *_: None) -> dict:
 def handle(operation: str, params: dict, book: dict | None, progress):
     if operation != "export":
         raise ValueError(t("Unsupported background task"))
-    return export_epub(book, params["path"], progress)
+    return export_epub(book, params["path"], progress, layout=params.get("options", {}).get("layout", "general"))

@@ -3,6 +3,7 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import type { HostAPI, RenderResolution, Series, SeriesItem } from "../sdk/types";
 import { t } from "../sdk/i18n";
 import { batchSummary, runBatch, type BatchRow } from "../sdk/batch";
+import { ExportVariantSelect } from "../sdk/export-variant";
 import { moveBefore } from "../sdk/order";
 import { formatBytes } from "./storage";
 import { BookInformationDialog, type InformationChange } from "./book-information-dialog";
@@ -223,6 +224,8 @@ export function SeriesWorkspace({
   const extensions = [...new Set(importers.flatMap((plugin) => plugin.format!.extensions))];
   const [exporter, setExporter] = useState(() => exporters[0]?.id || "");
   const outputFormat = exporters.find((plugin) => plugin.id === exporter) || exporters[0];
+  const [variantId, setVariantId] = useState("");
+  const variant = outputFormat?.format?.variants?.find((value) => value.id === variantId) || outputFormat?.format?.variants?.[0];
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [group, setGroup] = useState("all");
   const [groupDialog, setGroupDialog] = useState<{ previous?: string } | null>(null);
@@ -451,6 +454,7 @@ export function SeriesWorkspace({
           render: allowRendering,
           dpi,
           exporter: outputFormat.id,
+          exportOptions: variant?.options,
         },
         abort.current.signal,
         (index, row) => {
@@ -1088,7 +1092,7 @@ export function SeriesWorkspace({
                   aria-label={t("Output format")}
                   disabled={busy || !outputFormat}
                   value={outputFormat?.id || ""}
-                  onChange={(event) => setExporter(event.target.value)}
+                  onChange={(event) => { setExporter(event.target.value); setVariantId(""); }}
                 >
                   {exporters.map((plugin) => (
                     <option key={plugin.id} value={plugin.id}>
@@ -1098,6 +1102,8 @@ export function SeriesWorkspace({
                   {!outputFormat && <option value="">{t("No export plugins enabled")}</option>}
                 </select>
               </label>
+              <ExportVariantSelect variants={outputFormat?.format?.variants} value={variantId}
+                onChange={setVariantId} disabled={busy} />
               <label>
                 <input
                   type="checkbox"

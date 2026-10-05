@@ -16,6 +16,7 @@ export type BatchOptions = {
   render: boolean;
   dpi: RenderResolution;
   exporter?: string;
+  exportOptions?: Record<string, unknown>;
 };
 
 export function batchSummary(rows: BatchRow[]): string {
@@ -63,6 +64,7 @@ export async function runBatch(
         ...documentRef(book),
         directory: options.directory,
         plugin_id: options.exporter,
+        options: options.exportOptions,
       });
       update(index, { path, state: "completed", output: result.path });
     } catch (error) {

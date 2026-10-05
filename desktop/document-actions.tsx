@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Book, HostAPI, Metadata, RenderResolution, Series, SeriesItem } from "../sdk/types";
+import type { Book, ExportVariant, HostAPI, Metadata, RenderResolution, Series, SeriesItem } from "../sdk/types";
+import { ExportVariantSelect } from "../sdk/export-variant";
 import { documentRef } from "../sdk/types";
 import { t } from "../sdk/i18n";
 import { flushMetadata, type MetadataDraft } from "./metadata";
@@ -11,6 +12,28 @@ export type MetadataEditor = {
 };
 
 type UnsavedChoice = "save" | "discard" | "cancel";
+export function ExportEdition({ variants, respond }: {
+  variants: ExportVariant[];
+  respond: (variant: ExportVariant | null) => void;
+}) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const [selected, setSelected] = useState(variants[0].id);
+  useEffect(() => { dialog.current?.showModal(); }, []);
+  return <dialog ref={dialog} className="project-dialog" aria-labelledby="export-edition-title"
+    onCancel={(event) => { event.preventDefault(); respond(null); }}>
+    <h1 id="export-edition-title">{t("Export edition")}</h1>
+    <fieldset>
+      <ExportVariantSelect variants={variants} value={selected} onChange={setSelected} />
+    </fieldset>
+    <div className="project-dialog-actions">
+      <button onClick={() => respond(null)}>{t("Cancel")}</button>
+      <button className="primary" onClick={() => respond(variants.find((variant) => variant.id === selected)!)}>
+        {t("Continue")}
+      </button>
+    </div>
+  </dialog>;
+}
+
 export function UnsavedChanges({
   title,
   respond,
@@ -53,6 +76,10 @@ export function useDocumentActions(
   editorAvailable: boolean,
   setTab: (tab: string) => void,
 ) {
+  const [exportEdition, setExportEdition] = useState<{
+    variants: ExportVariant[];
+    respond: (variant: ExportVariant | null) => void;
+  } | null>(null);
   const [unsaved, setUnsaved] = useState<{
     title: string;
     respond: (choice: UnsavedChoice) => void;
@@ -252,14 +279,23 @@ export function useDocumentActions(
       const provider = candidates[0];
       const current = host.getDocument();
       if (!current) return;
+      const variants = provider.format?.variants;
+      let variant: ExportVariant | null = null;
+      if (variants?.length) {
+        variant = await new Promise<ExportVariant | null>((resolve) => {
+          setExportEdition({ variants, respond: (value) => { setExportEdition(null); resolve(value); } });
+        });
+        if (!variant) return;
+      }
       const path = await host.saveFile(
-        `${current.metadata.title}.${provider.format!.extensions[0]}`,
+        `${current.metadata.title}${variant && variant.id !== variants?.[0].id ? ` (${t(variant.name)})` : ""}.${provider.format!.extensions[0]}`,
         provider.format!.extensions,
       );
       if (!path) return;
       const result = await host.task<{ path: string }>({
         operation: "export",
         plugin_id: provider.id,
+        options: variant?.options,
         ...documentRef(host.getDocument()!),
         path,
         overwrite: true,
@@ -284,6 +320,7 @@ export function useDocumentActions(
       }
     }, false);
   return {
+    exportEdition,
     unsaved,
     metadataDraft,
     savingInformation,

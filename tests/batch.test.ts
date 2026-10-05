@@ -151,7 +151,7 @@ Image.new('RGB',(120,160),'red').save(root/'insert.png')
     );
     await runBatch(
       host,
-      { paths, directory, render: true, dpi: "auto" },
+      { paths, directory, render: true, dpi: "auto", exportOptions: { layout: "spread" } },
       new AbortController().signal,
       (index, row) => (rows[index] = row),
       prepare,
@@ -178,6 +178,8 @@ for path in sys.argv[1:]:
  with zipfile.ZipFile(path) as z:
   assert z.testzip() is None
   opf=ET.fromstring(z.read('EPUB/content.opf'))
+  refs=opf.findall('{http://www.idpf.org/2007/opf}spine/{http://www.idpf.org/2007/opf}itemref')
+  assert all(ref.get('properties') == 'rendition:page-spread-' + ('left' if i % 2 == 0 else 'right') for i,ref in enumerate(refs))
   counts.append(len(opf.findall('{http://www.idpf.org/2007/opf}spine/{http://www.idpf.org/2007/opf}itemref')))
 print(json.dumps(counts))
 `,

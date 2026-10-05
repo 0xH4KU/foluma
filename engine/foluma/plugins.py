@@ -93,6 +93,18 @@ def manifest_at(root: Path) -> dict:
                 or format_info.get("rendering") and format_info["direction"] != "import"
                 or platform_id() not in workers):
             raise ValueError(t("Invalid format plugin configuration"))
+        variants = format_info.get("variants", [])
+        if (not isinstance(variants, list) or len(variants) > 20
+                or variants and format_info["direction"] != "export"
+                or any(not isinstance(variant, dict)
+                       or not isinstance(variant.get("id"), str)
+                       or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", variant["id"])
+                       or not isinstance(variant.get("name"), str) or not 0 < len(variant["name"]) <= 120
+                       or not isinstance(variant.get("description"), str) or len(variant["description"]) > 1000
+                       or not isinstance(variant.get("options"), dict) for variant in variants)):
+            raise ValueError(t("Invalid format plugin configuration"))
+        if len({variant["id"] for variant in variants}) != len(variants):
+            raise ValueError(t("Invalid format plugin configuration"))
     language = manifest.get("language")
     if language is not None:
         if (

@@ -389,6 +389,71 @@ class FormatPluginTests(unittest.TestCase):
                            path=str(self.root / "after-removal.epub"))
         self.assertEqual(result["total"], 4)
 
+    def test_epub_export_editions_preserve_content_and_pair_actual_reading_pages(self):
+        self.engine.plugins.install_bundled("org.foluma.import.epub")
+        self.restart()
+        imported = self.task("import", path=str(self.pdf))
+        pages = [copy.deepcopy(imported["pages"][0]) for _ in range(5)]
+        for page in pages:
+            page["id"] = new_id()
+        pages[1]["crop"] = [0.25, 0, 0.5, 1]
+        pages[2]["crop"] = [0, 0.25, 1, 0.5]
+        pages.insert(2, {"id": new_id(), "kind": "blank", "width": 80, "height": 120})
+        book = self.engine.call("document.apply", {"document_id": imported["id"], "base_revision": imported["revision"],
+            "changes": {"pages": pages, "metadata": {"cover_id": pages[0]["id"]}}})
+        ns = {"o": "http://www.idpf.org/2007/opf", "h": "http://www.w3.org/1999/xhtml",
+              "s": "http://www.w3.org/2000/svg", "dc": "http://purl.org/dc/elements/1.1/"}
+        for direction in ("rtl", "ltr"):
+            for cover_only in (False, True):
+                with self.subTest(direction=direction, cover_only=cover_only):
+                    book = self.engine.call("document.apply", {"document_id": book["id"], "base_revision": book["revision"],
+                        "changes": {"metadata": {"direction": direction, "cover_only": cover_only}}})
+                    outputs = [self.root / f"{direction}-{cover_only}-{layout}.epub" for layout in ("general", "spread")]
+                    for layout, path in zip(("general", "spread"), outputs):
+                        self.task("export", document_id=book["id"], base_revision=book["revision"], path=str(path),
+                                  options={} if layout == "general" else {"layout": layout})
+                    with ZipFile(outputs[0]) as general, ZipFile(outputs[1]) as spread:
+                        css = general.read("EPUB/styles/page.css").decode()
+                        self.assertEqual(spread.read("EPUB/styles/page.css").decode(), css)
+                        self.assertIn("color-scheme: light dark;", css)
+                        self.assertIn("background: #fff;", css.split("@media")[0])
+                        self.assertIn("@media (prefers-color-scheme: dark)", css)
+                        self.assertIn("background: #000;", css.split("@media")[1])
+                        original = ET.fromstring(general.read("EPUB/content.opf"))
+                        package = ET.fromstring(spread.read("EPUB/content.opf"))
+                        self.assertNotEqual(original.find("o:metadata/dc:identifier", ns).text,
+                                            package.find("o:metadata/dc:identifier", ns).text)
+                        self.assertEqual(package.find("o:metadata/o:meta[@property='rendition:spread']", ns).text, "auto")
+                        reading = pages[1:] if cover_only else pages
+                        refs = list(package.find("o:spine", ns))
+                        self.assertEqual([ref.get("idref") for ref in refs], [f"page-{page['id']}" for page in reading])
+                        self.assertTrue(all(not ref.get("properties") for ref in original.find("o:spine", ns)))
+                        for position, (page, ref) in enumerate(zip(reading, refs)):
+                            left = (position % 2 == 0) == (direction == "rtl")
+                            side = "left" if left else "right"
+                            self.assertEqual(ref.get("properties"), f"rendition:page-spread-{side}")
+                            member = f"EPUB/pages/{pages.index(page) + 1:06d}.xhtml"
+                            a, b = ET.fromstring(general.read(member)), ET.fromstring(spread.read(member))
+                            self.assertEqual(a.find(".//h:meta[@name='viewport']", ns).attrib,
+                                             b.find(".//h:meta[@name='viewport']", ns).attrib)
+                            sa, sb = a.find(".//s:svg", ns), b.find(".//s:svg", ns)
+                            if page["kind"] == "image":
+                                self.assertEqual(sb.get("preserveAspectRatio"), "xMaxYMid meet" if left else "xMinYMid meet")
+                                sb.set("preserveAspectRatio", "xMidYMid meet")
+                            self.assertEqual(ET.tostring(sa), ET.tostring(sb), "Only horizontal alignment may change")
+                        for name in general.namelist():
+                            if name.startswith("EPUB/images/"):
+                                self.assertEqual(general.read(name), spread.read(name))
+                    restored = self.task("import", path=str(outputs[1]), background=True)
+                    self.assertEqual([page.get("crop") for page in restored["pages"]], [page.get("crop") for page in reading])
+                    self.assertEqual(restored["metadata"]["direction"], direction)
+                    self.engine.call("document.release", {"document_id": restored["id"]})
+        path = self.root / "invalid.epub"
+        failure = self.task("export", expected_state="failed", document_id=book["id"], base_revision=book["revision"],
+                            path=str(path), options={"layout": "unknown"})
+        self.assertIn("Unknown EPUB layout", failure["error"]["message"])
+        self.assertFalse(path.exists())
+
     def test_epub_import_reads_external_epub2_and_epub3_cover_only_and_encoded_paths(self):
         self.engine.plugins.install_bundled("org.foluma.import.epub")
         self.restart()
@@ -476,6 +541,81 @@ class FormatPluginTests(unittest.TestCase):
                     self.assertEqual(covered["metadata"]["cover_id"], covered["pages"][0]["id"])
 
 
+    def test_epub_import_accepts_shared_comic_css_and_reuses_spine_cover(self):
+        self.engine.plugins.install_bundled("org.foluma.import.epub")
+        self.restart()
+        source = self.root / "comic.epub"
+        images = {}
+        for name, color in (("cover", "red"), ("page", "blue"), ("end", "green")):
+            encoded = io.BytesIO()
+            Image.new("RGB", (80, 120), color).save(encoded, "JPEG")
+            images[f"image/{name}.jpg"] = encoded.getvalue()
+        stylesheet = '''html {color:#000; background:#FFF;}
+            body,div,p,h1,table,input {margin:0; padding:0;}
+            table {border-collapse:collapse; cellspacing:0; cellpadding:0;}
+            fieldset,img {border:0;}
+            h1 {font-size:100%; font-weight:normal;}
+            input,textarea,select {*font-size:100%;}
+            q:before,q:after {content:'';}
+            div.fs {text-align:center; vertical-align:top; border:0;}
+            div.fs a {display:block;}
+            div.fs div {white-space:nowrap;}
+            img.singlePage {margin:0; text-align:center; vertical-align:top;}
+            img.singlePage.other, #unused {display:none;}
+            @media screen and (min-width:1000px) {
+                @media (max-height:1000px) {img.twoPage {transform:rotate(90deg); max-width:75%;}}
+            }'''
+        package = '''<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+            <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+                <dc:title>Comic</dc:title><dc:creator>Author</dc:creator><dc:language>zh-TW</dc:language>
+                <meta name="cover" content="cover-image"/></metadata>
+            <manifest><item id="css" href="css/style.css" media-type="text/css"/>'''
+        for name in ("cover", "page", "end"):
+            package += (f'<item id="{name}" href="html/{name}.html" media-type="application/xhtml+xml"/>'
+                        f'<item id="{name}-image" href="image/{name}.jpg" media-type="image/jpeg"/>')
+        package += '''</manifest><spine page-progression-direction="rtl"><itemref idref="cover"/>
+            <itemref idref="page"/><itemref idref="end"/></spine>
+            <guide><reference type="cover" href="image/cover.jpg"/></guide></package>'''
+        members = {"mimetype": b"application/epub+zip", "book.opf": package.encode(),
+                   "css/style.css": stylesheet.encode(), **images,
+                   "META-INF/container.xml": b'<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
+                   b'<rootfiles><rootfile full-path="book.opf" media-type="application/oebps-package+xml"/>'
+                   b'</rootfiles></container>'}
+        for name in ("cover", "page", "end"):
+            members[f"html/{name}.html"] = (f'<!DOCTYPE html SYSTEM "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">'
+                f'<html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" href="../css/style.css"/>'
+                f'</head><body><center><div class="fs"><div><img src="../image/{name}.jpg" class="singlePage" '
+                f'style="height:100%;max-width:80px;max-height:120px;" kmoetag="rotate:1" '
+                f'kimageraw="../image/unused-original.jpg"/></div></div></center></body></html>').encode()
+        with ZipFile(source, "w") as archive:
+            for member, payload in members.items():
+                archive.writestr(member, payload)
+        fingerprint = digest(source)
+        book = self.task("import", path=str(source))
+        self.assertEqual([book["assets"][candidate["asset_id"]]["member"] for candidate in book["pages"]],
+                         ["image/cover.jpg", "image/page.jpg", "image/end.jpg"])
+        self.assertEqual([candidate["source_page"] for candidate in book["pages"]], [1, 2, 3])
+        self.assertEqual(book["metadata"]["direction"], "rtl")
+        self.assertEqual(book["metadata"]["cover_id"], book["pages"][0]["id"])
+        self.assertFalse(book["metadata"]["cover_only"])
+        for asset in book["assets"].values():
+            self.assertEqual(Path(asset["path"]).read_bytes(), images[asset["member"]])
+        self.assertEqual(digest(source), fingerprint)
+        before = copy.deepcopy(self.engine.session.book)
+        for css in (stylesheet.replace('img.twoPage', 'img.singlePage'),
+                    stylesheet + 'img::before {content:"visible text";}',
+                    stylesheet + '.unused, img {transform:rotate(90deg);}',
+                    stylesheet + '@media screen {img {display:none;}}',
+                    stylesheet + 'img {max-height:0px;}', stylesheet + '}'):
+            with self.subTest(css=css):
+                invalid = self.root / "complex.epub"
+                with ZipFile(invalid, "w") as archive:
+                    for member, payload in (members | {"css/style.css": css.encode()}).items():
+                        archive.writestr(member, payload)
+                failure = self.task("import", expected_state="failed", path=str(invalid))
+                self.assertIn("Only simple image pages", failure["error"]["message"])
+                self.assertEqual(self.engine.session.book, before)
+
     def test_epub_import_rejects_unsafe_encrypted_missing_and_complex_content_atomically(self):
         self.engine.plugins.install_bundled("org.foluma.import.epub")
         self.restart()
@@ -506,9 +646,13 @@ class FormatPluginTests(unittest.TestCase):
             ({page_member: image_page.replace('href="../images/', 'href="../../../images/').encode()}, "inside the archive"),
             ({page_member: image_page.replace('href="../images/', 'href="../%FF/').encode()}, "inside the archive"),
             ({"EPUB/styles/page.css": b"svg {transform: rotate(90deg);}"}, "Only simple image pages"),
+            ({"EPUB/styles/page.css": b":root {transform: rotate(90deg);}"}, "Only simple image pages"),
+            ({"EPUB/styles/page.css": b":root {color-scheme: invalid;}"}, "Only simple image pages"),
+            ({"EPUB/styles/page.css": b"@media screen {svg {transform: rotate(90deg);}}"}, "Only simple image pages"),
             ({page_member: image_page.replace('<image ', '<image style="width:100%;height:100%;" ').encode()},
              "Only simple image pages"),
             ({"EPUB/styles/page.css": b"image {width:100%;height:100%;}"}, "Only simple image pages"),
+            ({"EPUB/styles/page.css": b"@media screen {image {width:100%;height:100%;}}"}, "Only simple image pages"),
             ({page_member: image_page.replace('<image ', '<image class="resized" ').encode(),
               "EPUB/styles/page.css": b".resized {width:100%;height:100%;}"}, "Only simple image pages"),
             ({"EPUB/styles/page.css": b"\xff"}, "Only simple image pages"),

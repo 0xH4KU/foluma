@@ -27,7 +27,7 @@ import {
   subscribeTask,
 } from "./bridge";
 import { ProjectCreator, SeriesWorkspace, type SeriesSelection } from "./series";
-import { useDocumentActions, UnsavedChanges } from "./document-actions";
+import { useDocumentActions, UnsavedChanges, ExportEdition } from "./document-actions";
 import { DocumentView } from "./document";
 import { PluginManager } from "./plugin-manager";
 import { Toolbar, DocumentBar, Sidebar, StatusBar } from "./shell";
@@ -152,6 +152,7 @@ function App() {
   const editorAvailable = plugins.active.some((plugin) => plugin.id === "org.foluma.editor");
   const {
     unsaved,
+    exportEdition,
     metadataDraft,
     savingInformation,
     working,
@@ -336,6 +337,7 @@ function App() {
   return (
     <div className="app-shell">
       {unsaved && <UnsavedChanges {...unsaved} />}
+      {exportEdition && <ExportEdition {...exportEdition} />}
       {draggingFiles && (
         <div className="file-drop-hint" role="status">
           {t("Drop book files or a folder")}

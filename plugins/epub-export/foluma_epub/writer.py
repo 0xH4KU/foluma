@@ -67,12 +67,18 @@ def write_epub_from_pages(
     counts: dict[str, int] | None = None,
     reading_direction: str = "rtl",
     cover_png: bytes | None = None,
+    layout: str = "general",
 ) -> dict[str, int]:
+    if layout not in ("general", "spread"):
+        raise ValueError("EPUB layout must be 'general' or 'spread'")
+    if layout == "spread" and apple_books:
+        raise ValueError("Two-page layout cannot use single-page spread settings")
     if reading_direction not in {"rtl", "ltr"}:
         raise ValueError("Reading direction must be 'rtl' or 'ltr'")
     if epub_path.exists() and not overwrite:
         raise ValueError(f"Refusing to overwrite existing file: {epub_path}")
-    identifier = f"urn:uuid:{uuid.uuid5(uuid.NAMESPACE_URL, source_path.resolve().as_uri())}"
+    identity = source_path.resolve().as_uri() + ("#spread" if layout == "spread" else "")
+    identifier = f"urn:uuid:{uuid.uuid5(uuid.NAMESPACE_URL, identity)}"
 
     cover_id = cover_item_id or _first_image_item_id(pages)
     _validate_cover_item_id(pages, cover_id)
@@ -95,6 +101,7 @@ def write_epub_from_pages(
             cover_id,
             reading_direction,
             cover_png,
+            layout,
         )
         validate_epub_structure(temp_path)
         _publish_epub(temp_path, epub_path, overwrite=overwrite)
@@ -127,11 +134,17 @@ def _write_epub_zip(
     cover_id: str | None,
     reading_direction: str,
     cover_png: bytes | None = None,
+    layout: str = "general",
 ) -> None:
     page_sizes = [
         (page.crop_width or page.width, page.crop_height or page.height) for page in reading_pages if not page.is_blank
     ]
     viewport = Counter(page_sizes or [(reading_pages[0].width, reading_pages[0].height)]).most_common(1)[0][0]
+    # Count actual reading pages, including blanks, after removing a bookshelf-only cover.
+    sides = ("left", "right") if reading_direction == "rtl" else ("right", "left")
+    if pair_first_two_pages:
+        sides = sides[::-1]
+    page_sides = {page.item_id: sides[i % 2] for i, page in enumerate(reading_pages)} if layout == "spread" else {}
     cover_href = (
         "images/cover.png"
         if cover_png
@@ -158,6 +171,7 @@ def _write_epub_zip(
                 cover_id,
                 reading_direction,
                 cover_png is not None,
+                page_sides,
             ),
         )
         _write_deflated(archive, "EPUB/nav.xhtml", _nav_xhtml(title, reading_pages, language, cover_id))
@@ -169,7 +183,7 @@ def _write_epub_zip(
             if page.is_blank:
                 _write_deflated(archive, f"EPUB/{page.xhtml_href}", _blank_page_xhtml(title, page, language, viewport))
             else:
-                _write_deflated(archive, f"EPUB/{page.xhtml_href}", _page_xhtml(title, page, language, viewport))
+                _write_deflated(archive, f"EPUB/{page.xhtml_href}", _page_xhtml(title, page, language, viewport, page_sides.get(page.item_id)))
         for page in _unique_image_pages(pages):
             image_data = page.load_image_data()
             _write_stored(archive, f"EPUB/{page.image_href}", image_data)
@@ -252,6 +266,7 @@ def _content_opf(
     cover_item_id: str | None = None,
     reading_direction: str = "rtl",
     separate_cover: bool = False,
+    page_sides: dict[str, str] | None = None,
 ) -> str:
     title_xml = html.escape(title, quote=True)
     language_xml = html.escape(language or "zh-Hant", quote=True)
@@ -283,7 +298,12 @@ def _content_opf(
         )
     xhtml_items = "\n".join(_xhtml_manifest_item(page) for page in reading_pages)
     spread = "none" if apple_books else "auto"
-    if apple_books:
+    if page_sides:
+        spine_items = "\n".join(
+            f'    <itemref idref="{page.item_id}" properties="rendition:page-spread-{page_sides[page.item_id]}"/>'
+            for page in reading_pages
+        )
+    elif apple_books:
         spine_items = "\n".join(
             f'    <itemref idref="{page.item_id}" properties="rendition:page-spread-center"/>' for page in reading_pages
         )
@@ -415,12 +435,22 @@ def _nav_xhtml(
 
 
 def _page_css() -> str:
-    return """html, body {
+    return """:root {
+  color-scheme: light dark;
+}
+
+html, body {
   margin: 0;
   padding: 0;
   width: 100%;
   height: 100%;
-  background: #000;
+  background: #fff;
+}
+
+@media (prefers-color-scheme: dark) {
+  html, body {
+    background: #000;
+  }
 }
 
 svg {
@@ -431,7 +461,7 @@ svg {
 """
 
 
-def _page_xhtml(title: str, page: EpubPage, language: str, viewport: tuple[int, int]) -> str:
+def _page_xhtml(title: str, page: EpubPage, language: str, viewport: tuple[int, int], side: str | None = None) -> str:
     page_title = html.escape(f"{title} - Page {page.index}", quote=True)
     language_xml = html.escape(language or "zh-Hant", quote=True)
     href = html.escape(f"../{page.image_href}", quote=True)
@@ -439,6 +469,7 @@ def _page_xhtml(title: str, page: EpubPage, language: str, viewport: tuple[int, 
     page_width = page.crop_width or page.width
     page_height = page.crop_height or page.height
     image_x = -page.crop_x
+    alignment = {"left": "xMaxYMid", "right": "xMinYMid"}.get(side, "xMidYMid")
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="{language_xml}" xml:lang="{language_xml}">
@@ -448,7 +479,7 @@ def _page_xhtml(title: str, page: EpubPage, language: str, viewport: tuple[int, 
     <link rel="stylesheet" type="text/css" href="../styles/page.css"/>
   </head>
   <body>
-    <svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="{viewport_width}" height="{viewport_height}" viewBox="0 0 {page_width} {page_height}" preserveAspectRatio="xMidYMid meet" overflow="hidden" role="img" aria-label="Page {page.index}">
+    <svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="{viewport_width}" height="{viewport_height}" viewBox="0 0 {page_width} {page_height}" preserveAspectRatio="{alignment} meet" overflow="hidden" role="img" aria-label="Page {page.index}">
       <image x="{image_x}" y="{-page.crop_y}" width="{page.width}" height="{page.height}" href="{href}"/>
     </svg>
   </body>

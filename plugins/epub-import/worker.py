@@ -85,6 +85,9 @@ def check_style(style, member):
         "background-color": {"#000", "#000000", "black", "#fff", "#ffffff", "white", "transparent"},
         "object-fit": {"contain"}, "text-align": {"center", "left", "right"},
         "vertical-align": {"middle", "top", "bottom"}, "box-sizing": {"border-box", "content-box"},
+        "color": {"#000", "#000000", "black", "#fff", "#ffffff", "white"},
+        "white-space": {"normal", "nowrap"},
+        "color-scheme": {"normal", "light", "dark", "light dark", "dark light"},
         "page-break-before": {"always", "auto", "avoid"}, "page-break-after": {"always", "auto", "avoid"},
     }
     for declaration in style.split(";"):
@@ -95,6 +98,9 @@ def check_style(style, member):
         property_name, value = declaration.split(":", 1)
         property_name = property_name.strip().lower()
         value = re.sub(r"\s*!important\s*$", "", value.strip().lower())
+        if property_name in ("max-width", "max-height") and re.fullmatch(r"\d+(?:\.\d+)?px", value):
+            if number(value, member) > 0:
+                continue
         if property_name in ("margin", "padding", "border", "border-width"):
             if value == "none" and property_name == "border":
                 continue
@@ -104,24 +110,56 @@ def check_style(style, member):
             raise unsupported(member)
 
 
-def check_css(payload, member):
+def css_nodes(selector, root, member):
+    selector = selector.strip()
+    if selector == ":root":
+        return [root]
+    if not re.fullmatch(r"[\w\s.#*>:-]+", selector):
+        raise unsupported(member)
+    # ponytail: match subjects conservatively; add ancestor matching if valid books need it.
+    subject = re.split(r"[\s>]+", selector)[-1]
+    match = re.fullmatch(r"(\*|[\w-]+)?((?:[.#][\w-]+)*)(?::{1,2}[\w-]+)?", subject)
+    if not match or not match[1] and not match[2]:
+        raise unsupported(member)
+    filters = re.findall(r"([.#])([\w-]+)", match[2])
+    nodes = [node for node in root.iter() if
+             (match[1] in (None, "*") or node.tag.rsplit("}", 1)[-1] == match[1]) and
+             all(value == node.get("id") if prefix == "#" else value in node.get("class", "").split()
+                 for prefix, value in filters)]
+    if nodes and ":" in selector:
+        raise unsupported(member)
+    return nodes
+
+
+def check_css(payload, member, root):
     try:
         css = re.sub(r"/\*.*?\*/", "", payload.decode("utf-8-sig"), flags=re.DOTALL)
     except UnicodeError as error:
         raise unsupported(member) from error
-    end, targets = 0, set()
-    for match in re.finditer(r"([^{}]+)\{([^{}]*)\}", css):
-        if css[end:match.start()].strip() or not re.fullmatch(r"[\w\s.#,*>-]+", match[1].strip()):
-            raise unsupported(member)
-        check_style(match[2], member)
-        if ("*" in match[1] or re.search(r"(?<![\w.#-])(?:image|rect)(?![\w-])", match[1])) and re.search(
-                r"(?:^|;)\s*(?:width|height|max-width|max-height)\s*:", match[2], flags=re.IGNORECASE):
-            raise unsupported(member)
-        targets.update(re.findall(r"[.#][\w-]+", match[1]))
-        end = match.end()
-    if css[end:].strip():
+    end, stack = 0, []
+    for bracket in re.finditer(r"[{}]", css):
+        if bracket[0] == "{":
+            if stack and not stack[-1][0].startswith("@media"):
+                raise unsupported(member)
+            stack.append((css[end:bracket.start()].strip(), bracket.end()))
+        else:
+            if not stack:
+                raise unsupported(member)
+            selector, start = stack.pop()
+            if re.fullmatch(r"@media\s+[\w\s():.,/%<>=+-]+", selector):
+                if css[end:bracket.start()].strip():
+                    raise unsupported(member)
+            else:
+                nodes = {node for part in selector.split(",") for node in css_nodes(part, root, member)}
+                if nodes:
+                    style = css[start:bracket.start()]
+                    check_style(style, member)
+                    if any(node.tag in (f"{SVG}image", f"{SVG}rect") for node in nodes) and re.search(
+                            r"(?:^|;)\s*(?:width|height|max-width|max-height)\s*:", style, flags=re.IGNORECASE):
+                        raise unsupported(member)
+        end = bracket.end()
+    if stack or css[end:].strip():
         raise unsupported(member)
-    return targets
 
 
 def number(value, member):
@@ -150,22 +188,22 @@ def page(archive, member, resources, load_image):
     for node in root.iter():
         if node.get("style"):
             check_style(node.get("style"), member)
-    targets = set()
     for link in root.findall(".//{*}link"):
         if "stylesheet" in link.get("rel", "").split():
             css_member = reference(member, link.get("href", ""))
             if resources.get(css_member, {}).get("media-type") != "text/css":
                 raise unsupported(member)
-            targets.update(check_css(read(archive, css_member), member))
+            check_css(read(archive, css_member), member, root)
     for style in root.findall(".//{*}style"):
-        targets.update(check_css((style.text or "").encode(), member))
+        check_css((style.text or "").encode(), member, root)
     body = root if root.tag == f"{SVG}svg" else root.find("{*}body")
     if body is None:
         raise unsupported(member)
-    allowed_tags = {"body", "div", "p", "span", "a", "img", "svg", "image", "rect", "title", "desc"}
+    allowed_tags = {"body", "center", "div", "p", "span", "a", "img", "svg", "image", "rect", "title", "desc"}
     allowed_attributes = {"id", "class", "style", "lang", "dir", "role", "aria-label", "aria-hidden", "alt", "title",
                           "src", "href", "{http://www.w3.org/1999/xlink}href", "width", "height", "x", "y", "viewBox",
                           "preserveAspectRatio", "overflow", "version", "fill", "loading", "decoding", EPUB_TYPE,
+                          "kmoetag", "kimageraw",
                           "{http://www.w3.org/XML/1998/namespace}lang"}
     for node in body.iter():
         tag = node.tag.rsplit("}", 1)[-1]
@@ -176,8 +214,7 @@ def page(archive, member, resources, load_image):
     svgs = [node for node in body.iter() if node.tag == f"{SVG}svg"]
     rectangles = [node for node in body.iter() if node.tag == f"{SVG}rect"]
     for shape in images + rectangles:
-        if shape.tag in (f"{SVG}image", f"{SVG}rect") and (shape.get("style") or f"#{shape.get('id')}" in targets
-                or {f".{name}" for name in shape.get("class", "").split()} & targets):
+        if shape.tag in (f"{SVG}image", f"{SVG}rect") and shape.get("style"):
             raise unsupported(member)
     if len(images) > 1 or len(svgs) > 1:
         raise unsupported(member)
@@ -187,7 +224,7 @@ def page(archive, member, resources, load_image):
         if len(bounds) != 4 or min(bounds[2:]) <= 0:
             raise unsupported(member)
         left, top, width, height = bounds
-        if svg.get("preserveAspectRatio", "xMidYMid meet") not in ("xMidYMid meet", "none"):
+        if svg.get("preserveAspectRatio", "xMidYMid meet") not in ("xMidYMid meet", "xMinYMid meet", "xMaxYMid meet", "none"):
             raise unsupported(member)
         if not images and len(rectangles) == 1:
             rectangle = rectangles[0]
@@ -327,8 +364,11 @@ def handle(operation: str, params: dict, book: dict | None, progress):
         if cover_document in members:
             cover_page = book["pages"][members.index(cover_document)]
         elif cover_document:
-            cover_page = page(archive, cover_document, resources, load_image)
-        elif cover_image:
+            if resources.get(cover_document, {}).get("media-type") in IMAGE_TYPES:
+                cover_image = cover_document
+            else:
+                cover_page = page(archive, cover_document, resources, load_image)
+        if cover_page is None and cover_image:
             cover_page = next((candidate for candidate in book["pages"] if candidate["kind"] == "image"
                                and book["assets"][candidate["asset_id"]]["member"] == cover_image
                                and candidate["crop"] == [0, 0, 1, 1]), None) or load_image(cover_image)

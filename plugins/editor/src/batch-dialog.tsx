@@ -4,6 +4,7 @@ import type { Book, HostAPI, RenderResolution } from "../../../sdk/types";
 import { documentRef } from "../../../sdk/types";
 import { t } from "../../../sdk/i18n";
 import { batchSummary, runBatch, type BatchRow } from "../../../sdk/batch";
+import { ExportVariantSelect } from "../../../sdk/export-variant";
 import { applyPreset, type Preset } from "./pages";
 
 export function BatchDialog({
@@ -21,6 +22,8 @@ export function BatchDialog({
   const extensions = [...new Set(importers.flatMap((plugin) => plugin.format!.extensions))];
   const [exporter, setExporter] = useState(() => exporters[0]?.id || "");
   const outputFormat = exporters.find((plugin) => plugin.id === exporter) || exporters[0];
+  const [variantId, setVariantId] = useState("");
+  const variant = outputFormat?.format?.variants?.find((value) => value.id === variantId) || outputFormat?.format?.variants?.[0];
   const dialog = useRef<HTMLDialogElement>(null);
   const abort = useRef(new AbortController());
   const [rows, setRows] = useState<BatchRow[]>(() =>
@@ -106,7 +109,7 @@ export function BatchDialog({
       };
       await runBatch(
         host,
-        { paths, directory, render: allowRendering, dpi, exporter: outputFormat.id },
+        { paths, directory, render: allowRendering, dpi, exporter: outputFormat.id, exportOptions: variant?.options },
         signal,
         (index, row) => {
           setRows((old) => old.map((value) => (value.path === row.path ? row : value)));
@@ -210,7 +213,7 @@ export function BatchDialog({
             aria-label={t("Output format")}
             disabled={!outputFormat}
             value={outputFormat?.id || ""}
-            onChange={(event) => setExporter(event.target.value)}
+            onChange={(event) => { setExporter(event.target.value); setVariantId(""); }}
           >
             {exporters.map((plugin) => (
               <option key={plugin.id} value={plugin.id}>
@@ -220,6 +223,7 @@ export function BatchDialog({
             {!outputFormat && <option value="">{t("No export plugins enabled")}</option>}
           </select>
         </label>
+        <ExportVariantSelect variants={outputFormat?.format?.variants} value={variantId} onChange={setVariantId} />
         <button disabled={!extensions.length} onClick={() => void pick("files")}>
           {t("Add books…")}
         </button>
