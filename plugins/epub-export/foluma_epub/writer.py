@@ -24,7 +24,6 @@ class EpubPage:
     height: int
     image_href: str | None
     image_media_type: str | None
-    image_data: bytes | None
     xhtml_href: str
     item_id: str
     label: str
@@ -36,8 +35,6 @@ class EpubPage:
     crop_height: int | None = None
 
     def load_image_data(self) -> bytes:
-        if self.image_data is not None:
-            return self.image_data
         if self.image_data_loader is not None:
             return self.image_data_loader()
         raise ValueError(f"Page {self.label} has no image payload")

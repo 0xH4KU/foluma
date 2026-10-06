@@ -15,6 +15,7 @@ import type {
 } from "../sdk/types";
 import { documentRef } from "../sdk/types";
 import { Icon } from "../sdk/icons";
+import { createActionRunner } from "../sdk/actions";
 import {
   connect,
   createHost,
@@ -168,6 +169,16 @@ function App() {
     exportBook,
     openProject,
   } = useDocumentActions(host, dpi, editorAvailable, setTab);
+  const projectAction = useMemo(() => createActionRunner(host), [host]);
+  const createProject = async (method: "series.create" | "series.migrate", params: Record<string, unknown>) => {
+    if (!(await replaceAllowed())) throw new Error(t("Project creation cancelled"));
+    const created = await projectAction(async () => {
+      await rpc(method, params);
+      setTab("series");
+      setOutput("");
+    }, false);
+    if (!created) throw new Error(t("Project creation cancelled"));
+  };
   const exportSelected = () => {
     if (seriesSelection.canExport) seriesExport.current?.();
   };
@@ -348,36 +359,15 @@ function App() {
           <ProjectCreator
             host={host}
             initialName={series?.name || ""}
-            migrate
             close={() => setCreatingProject(null)}
-            create={async (parent, name) => {
-              if (!(await replaceAllowed())) throw new Error(t("Project creation cancelled"));
-              host.setBusy?.(true);
-              try {
-                await rpc("series.migrate", { parent, name });
-                setTab("series");
-                setOutput("");
-              } finally {
-                host.setBusy?.(false);
-              }
-            }}
+            create={(parent, name) => createProject("series.migrate", { parent, name })}
           />
         ) : (
           <ProjectWizard
             host={host}
             initialPaths={creatingProject.paths}
             close={() => setCreatingProject(null)}
-            create={async (settings) => {
-              if (!(await replaceAllowed())) throw new Error(t("Project creation cancelled"));
-              host.setBusy?.(true);
-              try {
-                await rpc("series.create", { ...settings });
-                setTab("series");
-                setOutput("");
-              } finally {
-                host.setBusy?.(false);
-              }
-            }}
+            create={(settings) => createProject("series.create", settings)}
           />
         ))}
       <Toolbar

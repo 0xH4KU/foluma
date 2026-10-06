@@ -46,7 +46,6 @@ def export_epub(book: dict, path: str, progress=lambda *_: None, *, layout: str 
                 height=page["height"],
                 image_href=None if blank else f"images/{page['asset_id']}.{asset['ext']}",
                 image_media_type=None if blank else media_type_for_ext(asset["ext"]),
-                image_data=None,
                 xhtml_href=f"pages/{i:06d}.xhtml",
                 item_id=f"page-{page['id']}",
                 label=t("Page {0}", i),

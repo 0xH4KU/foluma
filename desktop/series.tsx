@@ -11,13 +11,11 @@ import { BookInformationDialog, type InformationChange } from "./book-informatio
 export function ProjectCreator({
   host,
   initialName,
-  migrate,
   create,
   close,
 }: {
   host: HostAPI;
   initialName: string;
-  migrate: boolean;
   create: (parent: string, name: string) => Promise<void>;
   close: () => void;
 }) {
@@ -39,9 +37,7 @@ export function ProjectCreator({
         if (!working) close();
       }}
     >
-      <h1 id="project-dialog-title">
-        {t(migrate ? "Save series as folder project" : "New project")}
-      </h1>
+      <h1 id="project-dialog-title">{t("Save series as folder project")}</h1>
       <p>{t("A new folder will hold your source copies, groups and saved edits.")}</p>
       <form
         onSubmit={(event) => {

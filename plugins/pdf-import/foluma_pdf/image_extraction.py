@@ -27,17 +27,7 @@ def _image_from_xref(doc, xref: int, index: int) -> ImageStream | None:
         if ext == "jpeg":
             filter_name = "DCTDecode"
         elif ext == "png":
-            return ImageStream(
-                index=index,
-                width=extracted["width"],
-                height=extracted["height"],
-                bits_per_component=8,
-                color_space=b"/DeviceRGB",
-                filter_name="PNG",
-                decode_parms=None,
-                data=extracted["image"],
-                xref=xref,
-            )
+            return _png_image(extracted, xref, index)
         else:
             raise PdfImageError(f"Unsupported extracted image extension for xref {xref}: {ext}")
 
@@ -54,17 +44,15 @@ def _image_from_xref(doc, xref: int, index: int) -> ImageStream | None:
             filter_name=filter_name,
             decode_parms=_image_decode_parms(doc, xref),
             data=doc.xref_stream_raw(xref),
-            xref=xref,
         )
 
     if filter_name in {"JBIG2Decode"}:
-        return _decoded_image_from_xref(doc, xref, index)
+        return _png_image(doc.extract_image(xref), xref, index)
 
     raise PdfImageError(f"Unsupported image filter for xref {xref}: {filter_name}")
 
 
-def _decoded_image_from_xref(doc, xref: int, index: int) -> ImageStream:
-    extracted = doc.extract_image(xref)
+def _png_image(extracted: dict, xref: int, index: int) -> ImageStream:
     ext = extracted["ext"]
     if ext != "png":
         raise PdfImageError(f"Unsupported extracted image extension for xref {xref}: {ext}")
@@ -77,7 +65,6 @@ def _decoded_image_from_xref(doc, xref: int, index: int) -> ImageStream:
         filter_name="PNG",
         decode_parms=None,
         data=extracted["image"],
-        xref=xref,
     )
 
 
@@ -97,12 +84,6 @@ def _xref_object(doc, xref: int, key: str) -> bytes | None:
     return value.encode("latin1")
 
 
-def _normalize_pdf_object(obj: bytes | None) -> bytes | None:
-    if obj is None:
-        return None
-    return obj.strip()
-
-
 def _image_decode_parms(doc, xref: int) -> bytes | None:
     value = _xref_object(doc, xref, "DecodeParms")
     if value and value.startswith(b"["):
@@ -118,9 +99,9 @@ def _image_decode_parms(doc, xref: int) -> bytes | None:
 
 
 def _normalize_xref_color_space(doc, color_space: bytes | None) -> bytes | None:
-    color_space = _normalize_pdf_object(color_space)
     if color_space is None:
         return None
+    color_space = color_space.strip()
     match = re.match(rb"\[\s*/Indexed\s*/DeviceRGB\s+(\d+)\s+(\d+)\s+(\d+)\s+R\s*\]", color_space)
     if not match:
         return color_space

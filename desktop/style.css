@@ -471,10 +471,6 @@ main {
 .source-list button {
   font-size: 11px;
 }
-.empty-source {
-  color: var(--muted);
-  font-size: 11px;
-}
 .list-footer {
   height: 27px;
   min-height: 27px;
@@ -512,15 +508,6 @@ main {
 .cover-stage span {
   color: var(--muted);
   font-size: 11px;
-}
-.no-cover {
-  flex-direction: column;
-  gap: 10px;
-}
-.no-cover .icon {
-  width: 36px;
-  height: 36px;
-  opacity: 0.45;
 }
 .output-settings {
   padding: 12px;
@@ -713,14 +700,8 @@ main {
 .bordered {
   border: 1px solid var(--line);
 }
-.muted {
-  font-size: 11px;
-  color: var(--muted);
-  margin: 12px 0;
-}
 .catalog-row {
   display: grid;
-  grid-template-columns: 1fr 75px 60px;
   gap: 16px;
   align-items: center;
   background: #fff;
@@ -903,7 +884,6 @@ main {
   background: #f3f5f7;
 }
 .series-selection span {
-  margin-left: auto;
   font-size: 11px;
   color: var(--muted);
 }
@@ -930,18 +910,6 @@ main {
 .series-table td {
   padding: 9px 12px;
   border-bottom: 1px solid var(--line);
-}
-.series-table th:first-child {
-  width: 55px;
-}
-.series-table th:nth-child(3) {
-  width: 65px;
-}
-.series-table th:nth-child(4) {
-  width: 100px;
-}
-.series-table th:last-child {
-  width: 32%;
 }
 .series-table td small {
   display: block;
@@ -1021,9 +989,6 @@ main {
 .project-order button {
   padding: 3px 7px;
   margin-right: 3px;
-}
-.series-table th:last-child {
-  width: auto;
 }
 .project-dialog::backdrop {
   background: #0005;

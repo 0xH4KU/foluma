@@ -81,6 +81,24 @@ class IntegrationTests(unittest.TestCase):
                 with self.assertRaisesRegex(PdfImageError, "no payload data"):
                     _image_from_xref(doc, xref, 1)
 
+    def test_png_extraction_paths_share_decoding_and_reject_unsupported_payloads(self):
+        payload = io.BytesIO()
+        Image.new("RGB", (240, 320), "navy").save(payload, "PNG")
+        extracted = {"ext": "png", "width": 240, "height": 320, "image": payload.getvalue()}
+        with fitz.open(self.pdf) as doc:
+            xref = doc[0].get_images()[0][0]
+            get_key = doc.xref_get_key
+            for filter_value in ("[/DCTDecode /FlateDecode]", "/JBIG2Decode"):
+                with patch.object(doc, "xref_get_key", side_effect=lambda ref, key:
+                                  ("name", filter_value) if key == "Filter" else get_key(ref, key)):
+                    with patch.object(doc, "extract_image", return_value=extracted) as decode:
+                        image = _image_from_xref(doc, xref, 1)
+                        self.assertEqual(image_to_epub_member(image), ("png", payload.getvalue()))
+                        decode.assert_called_once_with(xref)
+                    with patch.object(doc, "extract_image", return_value=extracted | {"ext": "webp"}):
+                        with self.assertRaises(PdfImageError):
+                            _image_from_xref(doc, xref, 1)
+
     def test_composed_rotated_and_blank_pages_require_consent(self):
         complex_pdf = self.root / "composed.pdf"
         with fitz.open(self.pdf) as doc:

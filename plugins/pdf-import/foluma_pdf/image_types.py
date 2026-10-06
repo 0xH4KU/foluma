@@ -17,7 +17,6 @@ class ImageStream:
     filter_name: str
     decode_parms: bytes | None
     data: bytes
-    xref: int | None = None
 
     def __post_init__(self):
         if self.data is None:
