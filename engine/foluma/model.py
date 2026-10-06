@@ -10,6 +10,12 @@ import uuid
 from .i18n import t
 
 
+class EngineError(ValueError):
+    def __init__(self, message: str, data=None):
+        super().__init__(message)
+        self.data = data
+
+
 def new_id() -> str:
     return str(uuid.uuid4())
 
@@ -39,6 +45,14 @@ def validate_crop(crop) -> None:
 
 
 INFORMATION_FIELDS = ("title", "author", "language", "direction", "cover_only")
+REVIEW_EXTENSION_ID = "org.foluma.editor"  # Shared API 1 review contract; preserve existing projects and plugins.
+
+
+def review_page_ids(book: dict) -> set[str]:
+    data = book["extensions"].get(REVIEW_EXTENSION_ID, {})
+    marks = data.get("review", []) if isinstance(data, dict) else []
+    pages = {page["id"] for page in book["pages"]}
+    return {mark for mark in marks if isinstance(mark, str) and mark in pages} if isinstance(marks, list) else set()
 
 
 def validate_metadata(meta: dict) -> None:

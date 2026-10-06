@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Book, ExportVariant, HostAPI, Metadata, RenderResolution, Series, SeriesItem } from "../sdk/types";
 import { ExportVariantSelect } from "../sdk/export-variant";
 import { documentRef } from "../sdk/types";
 import { t } from "../sdk/i18n";
 import { flushMetadata, type MetadataDraft } from "./metadata";
+import { createActionRunner } from "../sdk/actions";
 
 export type MetadataEditor = {
   draft: Partial<Metadata>;
@@ -92,6 +93,7 @@ export function useDocumentActions(
   const [metadataDraft, setMetadataDraft] = useState<Partial<Metadata>>({});
   const [savingInformation, setSavingInformation] = useState(0);
   const [working, setWorking] = useState(false);
+  const execute = useMemo(() => createActionRunner(host, setWorking), [host]);
   const [output, setOutput] = useState("");
   useEffect(
     () =>
@@ -118,18 +120,12 @@ export function useDocumentActions(
   };
   const run = useCallback(
     async (action: () => Promise<unknown>, commit = true) => {
-      setWorking(true);
-      host.notify("");
-      try {
+      await execute(async () => {
         if (commit) await commitInformation();
         await action();
-      } catch (error) {
-        host.report(error);
-      } finally {
-        setWorking(false);
-      }
+      });
     },
-    [host, commitInformation],
+    [execute, commitInformation],
   );
   const saveBook = useCallback(async () => {
     await commitInformation();
@@ -188,48 +184,50 @@ export function useDocumentActions(
         await host.contextMenu?.(
           candidates.map((plugin) => ({
             text: t("Import {0}", plugin.format!.name),
-            action: () => void run(() => importBook(path, plugin.id), false),
+            action: () => void importBook(path, plugin.id),
           })),
-        );
+        ).catch(host.report);
         return;
       }
-      const provider = candidates[0];
-      if (!(await replaceAllowed(t("Import book")))) return;
-      const picked =
-        path ||
-        (await host.pickFile({
-          extensions: provider.format!.extensions,
-          title: t("Import {0}", provider.format!.name),
-        }));
-      if (typeof picked !== "string") return;
-      try {
-        await host.task<Book>({ operation: "import", plugin_id: provider.id, path: picked });
-      } catch (error) {
-        const data = (error as { data?: { kind: string; pages: number[] } }).data;
-        if (data?.kind !== "render_required") throw error;
-        if (
-          !(await host.confirm(
-            t(
-              "{0} pages require rendering (pages {1}{2}).\n\nRender these pages as PNG using {3}? Other pages will keep their original images.",
-              data.pages.length,
-              data.pages.slice(0, 20).join(", "),
-              data.pages.length > 20 ? "…" : "",
-              dpi === "auto" ? t("Auto resolution") : `${dpi} DPI`,
-            ),
-            t("Some pages require rendering"),
-          ))
-        )
-          return;
-        await host.task<Book>({
-          operation: "import",
-          plugin_id: provider.id,
-          path: picked,
-          render: true,
-          dpi,
-        });
-      }
-      setTab("convert");
-      setOutput("");
+      await run(async () => {
+        const provider = candidates[0];
+        if (!(await replaceAllowed(t("Import book")))) return;
+        const picked =
+          path ||
+          (await host.pickFile({
+            extensions: provider.format!.extensions,
+            title: t("Import {0}", provider.format!.name),
+          }));
+        if (typeof picked !== "string") return;
+        try {
+          await host.task<Book>({ operation: "import", plugin_id: provider.id, path: picked });
+        } catch (error) {
+          const data = (error as { data?: { kind: string; pages: number[] } }).data;
+          if (data?.kind !== "render_required") throw error;
+          if (
+            !(await host.confirm(
+              t(
+                "{0} pages require rendering (pages {1}{2}).\n\nRender these pages as PNG using {3}? Other pages will keep their original images.",
+                data.pages.length,
+                data.pages.slice(0, 20).join(", "),
+                data.pages.length > 20 ? "…" : "",
+                dpi === "auto" ? t("Auto resolution") : `${dpi} DPI`,
+              ),
+              t("Some pages require rendering"),
+            ))
+          )
+            return;
+          await host.task<Book>({
+            operation: "import",
+            plugin_id: provider.id,
+            path: picked,
+            render: true,
+            dpi,
+          });
+        }
+        setTab("convert");
+        setOutput("");
+      }, false);
     },
     [host, replaceAllowed, dpi, run],
   );
@@ -257,23 +255,23 @@ export function useDocumentActions(
       setOutput("");
     }, false);
   const saveProject = () => run(saveBook);
-  const exportBook = (pluginId?: string) =>
-    run(async () => {
-      const candidates = (host.getFormats?.() || []).filter(
-        (plugin) => plugin.format?.direction === "export" && (!pluginId || plugin.id === pluginId),
-      );
+  const exportBook = async (pluginId?: string): Promise<void> => {
+    const candidates = (host.getFormats?.() || []).filter(
+      (plugin) => plugin.format?.direction === "export" && (!pluginId || plugin.id === pluginId),
+    );
+    if (candidates.length > 1) {
+      await host.contextMenu?.(
+        candidates.map((plugin) => ({
+          text: t("Export {0}", plugin.format!.name),
+          action: () => void exportBook(plugin.id),
+        })),
+      ).catch(host.report);
+      return;
+    }
+    await run(async () => {
       if (!candidates.length) {
         setTab("plugins");
         host.notify(t("Install and enable an export plugin to export books"));
-        return;
-      }
-      if (candidates.length > 1) {
-        await host.contextMenu?.(
-          candidates.map((plugin) => ({
-            text: t("Export {0}", plugin.format!.name),
-            action: () => void exportBook(plugin.id),
-          })),
-        );
         return;
       }
       const provider = candidates[0];
@@ -309,6 +307,7 @@ export function useDocumentActions(
       setOutput(result.path);
       host.notify(t("{0} exported", provider.format!.name));
     });
+  };
   const openProject = () =>
     run(async () => {
       if (!(await replaceAllowed(t("Open project")))) return;

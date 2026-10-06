@@ -19,6 +19,13 @@ export type BatchOptions = {
   exportOptions?: Record<string, unknown>;
 };
 
+export function batchStateLabel(state: BatchRow["state"]): string {
+  return t({
+    pending: "Pending", working: "Processing", completed: "Exported",
+    failed: "Failed", cancelled: "Cancelled", skipped: "Skipped",
+  }[state]);
+}
+
 export function batchSummary(rows: BatchRow[]): string {
   return t(
     "{0} exported · {1} failed · {2} cancelled or skipped",

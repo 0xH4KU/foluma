@@ -1,9 +1,9 @@
-import React, { useEffect, useImperativeHandle, useRef, useState } from "react";
+import React, { useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import type { HostAPI, RenderResolution, Series, SeriesItem } from "../sdk/types";
 import { t } from "../sdk/i18n";
-import { batchSummary, runBatch, type BatchRow } from "../sdk/batch";
-import { ExportVariantSelect } from "../sdk/export-variant";
+import { createActionRunner } from "../sdk/actions";
+import { SeriesExportPanel, SeriesExportResult, useSeriesExport } from "./series-export";
 import { moveBefore } from "../sdk/order";
 import { formatBytes } from "./storage";
 import { BookInformationDialog, type InformationChange } from "./book-information-dialog";
@@ -220,12 +220,7 @@ export function SeriesWorkspace({
 }) {
   const formats = host.getFormats?.() || [];
   const importers = formats.filter((plugin) => plugin.format?.direction === "import");
-  const exporters = formats.filter((plugin) => plugin.format?.direction === "export");
   const extensions = [...new Set(importers.flatMap((plugin) => plugin.format!.extensions))];
-  const [exporter, setExporter] = useState(() => exporters[0]?.id || "");
-  const outputFormat = exporters.find((plugin) => plugin.id === exporter) || exporters[0];
-  const [variantId, setVariantId] = useState("");
-  const variant = outputFormat?.format?.variants?.find((value) => value.id === variantId) || outputFormat?.format?.variants?.[0];
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [group, setGroup] = useState("all");
   const [groupDialog, setGroupDialog] = useState<{ previous?: string } | null>(null);
@@ -235,17 +230,9 @@ export function SeriesWorkspace({
   const [information, setInformation] = useState<{ visible: string[]; selected: string[] } | null>(
     null,
   );
-  const [render, setRender] = useState(false);
-  const [running, setRunning] = useState(false);
-  const [finished, setFinished] = useState(false);
-  const [progress, setProgress] = useState<{ title: string; index: number; total: number } | null>(
-    null,
-  );
-  const [rows, setRows] = useState<Record<string, BatchRow>>({});
   const [moving, setMoving] = useState<{ item: SeriesItem; position: number } | null>(null);
   const moveDialog = useRef<HTMLDialogElement>(null);
-  const working = useRef(false);
-  const abort = useRef(new AbortController());
+  const execute = useMemo(() => createActionRunner(host), [host]);
   const removed = group === "removed";
   const activeGroup = group.startsWith("group/") ? group.slice(6) : "";
   const visible = (removed ? series.removed : series.items).filter(
@@ -258,11 +245,18 @@ export function SeriesWorkspace({
         .includes(search.trim().toLocaleLowerCase()),
   );
   const chosen = visible.filter((item) => selected.has(item.id));
-  const canExport = !removed && chosen.length > 0 && !!series.output_directory && !!outputFormat;
+  const run = async (action: () => Promise<unknown>, reportError = true) => {
+    if (busy) return false;
+    return execute(async () => {
+      await prepare();
+      await action();
+    }, reportError);
+  };
+  const batch = useSeriesExport({ series, host, busy, removed, dpi, chosen, run });
+  const { canExport, exportBooks } = batch;
   useEffect(() => {
     selectionChanged({ count: chosen.length, canExport });
   }, [chosen.length, canExport, selectionChanged]);
-  useEffect(() => () => abort.current.abort(), []);
   useEffect(() => {
     if (moving) moveDialog.current?.showModal();
   }, [!!moving]);
@@ -272,24 +266,6 @@ export function SeriesWorkspace({
     const ids = new Set([...series.items, ...series.removed].map((item) => item.id));
     setSelected((old) => new Set([...old].filter((id) => ids.has(id))));
   }, [series]);
-  const run = async (action: () => Promise<unknown>, reportError = true) => {
-    if (busy || working.current) return false;
-    working.current = true;
-    host.notify("");
-    host.setBusy?.(true);
-    try {
-      await prepare();
-      await action();
-      return true;
-    } catch (error) {
-      if (!reportError) throw error;
-      host.report(error);
-      return false;
-    } finally {
-      working.current = false;
-      host.setBusy?.(false);
-    }
-  };
   const chooseGroup = (value: string) => {
     setGroup(value);
     setSelected(new Set());
@@ -419,60 +395,6 @@ export function SeriesWorkspace({
     }, false);
     if (!applied) throw new Error(t("Complete or cancel the current background task first"));
   };
-  const exportBooks = async (items = chosen, allowRendering = render, retrying = false) => {
-    if (
-      removed ||
-      busy ||
-      working.current ||
-      !items.length ||
-      !series.output_directory ||
-      !outputFormat
-    )
-      return;
-    const cohort = items.map((item) => ({ id: item.id, path: item.path, title: item.title }));
-    working.current = true;
-    host.notify("");
-    host.setBusy?.(true);
-    setFinished(false);
-    setRunning(true);
-    abort.current = new AbortController();
-    setRows((old) => ({
-      ...(retrying ? old : {}),
-      ...Object.fromEntries(
-        cohort.map((item) => [item.id, { path: item.path, state: "pending" as const }]),
-      ),
-    }));
-    try {
-      await prepare();
-      host.setOutputDirectory?.(series.output_directory);
-      await runBatch(
-        host,
-        {
-          paths: cohort.map((item) => item.path),
-          entries: cohort,
-          directory: series.output_directory,
-          render: allowRendering,
-          dpi,
-          exporter: outputFormat.id,
-          exportOptions: variant?.options,
-        },
-        abort.current.signal,
-        (index, row) => {
-          setRows((old) => ({ ...old, [cohort[index].id]: row }));
-          if (row.state === "working")
-            setProgress({ title: cohort[index].title, index: index + 1, total: cohort.length });
-        },
-      );
-    } catch (error) {
-      host.report(error);
-    } finally {
-      setRunning(false);
-      setFinished(true);
-      setProgress(null);
-      working.current = false;
-      host.setBusy?.(false);
-    }
-  };
   useImperativeHandle(exportCommand, () => () => {
     void exportBooks();
   });
@@ -506,15 +428,6 @@ export function SeriesWorkspace({
       }
       setMoving(null);
     });
-  const retry = series.items.filter((item) => rows[item.id] && rows[item.id].state !== "completed");
-  const labels = {
-    pending: t("Pending"),
-    working: t("Processing"),
-    completed: t("Exported"),
-    failed: t("Failed"),
-    cancelled: t("Cancelled"),
-    skipped: t("Skipped"),
-  };
   return (
     <section className="series-workspace" hidden={hidden}>
       {information && (
@@ -879,7 +792,6 @@ export function SeriesWorkspace({
           </thead>
           <tbody>
             {visible.map((item, index) => {
-              const row = rows[item.id];
               return (
                 <tr key={item.id} className={item.id === series.current_id ? "current-volume" : ""}>
                   <td>
@@ -947,47 +859,7 @@ export function SeriesWorkspace({
                     )}
                     {item.review_count === null && <small>{t("Open to check page marks")}</small>}
                   </td>
-                  <td aria-live="polite">
-                    {row && row.state !== "completed"
-                      ? labels[row.state]
-                      : item.exported
-                        ? t("Exported")
-                        : item.needs_export
-                          ? t("Needs re-export")
-                          : "—"}
-                    {row?.error && (
-                      <small className="series-error">
-                        {row.renderRequired
-                          ? t("{0} pages need rendering before export", row.renderRequired.length)
-                          : row.error}
-                      </small>
-                    )}
-                    {!removed && row?.state === "failed" && (
-                      <button
-                        disabled={busy}
-                        onClick={() => {
-                          if (row.renderRequired) setRender(true);
-                          void exportBooks([item], !!row.renderRequired || render, true);
-                        }}
-                      >
-                        {t(
-                          row.renderRequired
-                            ? "Allow rendering and retry this book"
-                            : "Retry this book",
-                        )}
-                      </button>
-                    )}
-                    {(row?.output || item.output) && (
-                      <button
-                        className="export-link"
-                        onClick={() =>
-                          void revealItemInDir(row?.output || item.output!).catch(host.report)
-                        }
-                      >
-                        {t("Show file")}
-                      </button>
-                    )}
-                  </td>
+                  <SeriesExportResult item={item} host={host} busy={busy} removed={removed} batch={batch} />
                   {series.managed && !removed && (
                     <td className="project-order">
                       <button
@@ -1050,103 +922,7 @@ export function SeriesWorkspace({
           </div>
         )}
       </div>
-      {!removed && (
-        <>
-          {running && progress && (
-            <p className="batch-summary" role="status">
-              {t("Book {0} of {1}: {2}", progress.index, progress.total, progress.title)}
-            </p>
-          )}
-          {finished && (
-            <p className="batch-summary" role="status">
-              {batchSummary(Object.values(rows))}
-            </p>
-          )}
-          {!!series.items.length && (
-            <div className="series-export">
-              <label className="output-directory">
-                {t("Output folder")}
-                <button
-                  className="output-folder"
-                  disabled={busy}
-                  title={series.output_directory}
-                  onClick={() =>
-                    void run(async () => {
-                      const directory = await host.pickFile({
-                        directory: true,
-                        title: t("Choose output folder"),
-                      });
-                      if (typeof directory === "string") {
-                        await host.rpc("series.output", { directory });
-                        host.setOutputDirectory?.(directory);
-                      }
-                    })
-                  }
-                >
-                  {series.output_directory || t("Choose output folder…")}
-                </button>
-              </label>
-              <label>
-                {t("Output format")}
-                <select
-                  aria-label={t("Output format")}
-                  disabled={busy || !outputFormat}
-                  value={outputFormat?.id || ""}
-                  onChange={(event) => { setExporter(event.target.value); setVariantId(""); }}
-                >
-                  {exporters.map((plugin) => (
-                    <option key={plugin.id} value={plugin.id}>
-                      {plugin.format!.name}
-                    </option>
-                  ))}
-                  {!outputFormat && <option value="">{t("No export plugins enabled")}</option>}
-                </select>
-              </label>
-              <ExportVariantSelect variants={outputFormat?.format?.variants} value={variantId}
-                onChange={setVariantId} disabled={busy} />
-              <label>
-                <input
-                  type="checkbox"
-                  checked={render}
-                  disabled={busy}
-                  onChange={(event) => setRender(event.target.checked)}
-                />
-                {t("Allow rendering complex pages")} (
-                {dpi === "auto" ? t("Auto resolution") : t("{0} DPI", dpi)})
-              </label>
-              {running ? (
-                <button
-                  onClick={() => {
-                    abort.current.abort();
-                    void host.cancelTask?.().catch(host.report);
-                  }}
-                >
-                  {t("Cancel batch")}
-                </button>
-              ) : (
-                <>
-                  <button
-                    disabled={busy || !retry.length || !series.output_directory || !outputFormat}
-                    onClick={() => void exportBooks(retry, render, true)}
-                  >
-                    {t("Retry remaining")}
-                  </button>
-                  <button
-                    className="primary"
-                    disabled={busy || !canExport}
-                    onClick={() => void exportBooks()}
-                  >
-                    {t("Export {0} selected books", chosen.length)}
-                  </button>
-                </>
-              )}
-              {!series.output_directory && (
-                <small>{t("Choose an output folder to enable export.")}</small>
-              )}
-            </div>
-          )}
-        </>
-      )}
+      {!removed && <SeriesExportPanel series={series} busy={busy} dpi={dpi} batch={batch} />}
     </section>
   );
 }

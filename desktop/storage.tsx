@@ -1,6 +1,7 @@
-import {useEffect, useState} from "react";
+import {useEffect, useMemo, useState} from "react";
 import type {HostAPI} from "../sdk/types";
 import {t} from "../sdk/i18n";
+import {createActionRunner} from "../sdk/actions";
 
 type Storage = {used: number; limit: number; freed: number};
 
@@ -18,6 +19,7 @@ export function StorageSettings({host, busy, prepare, refreshPreviews}: {
   const [choice, setChoice] = useState("5");
   const [custom, setCustom] = useState("5");
   const [working, setWorking] = useState(false);
+  const execute = useMemo(() => createActionRunner(host, setWorking), [host]);
   useEffect(() => {
     let active = true;
     host.rpc<Storage>("storage.info").then(value => {
@@ -30,9 +32,8 @@ export function StorageSettings({host, busy, prepare, refreshPreviews}: {
     return () => {active = false;};
   }, [host]);
   const update = async (method: "storage.clear" | "storage.configure", limit?: number) => {
-    if (busy || working) return;
-    setWorking(true); host.setBusy?.(true);
-    try {
+    if (busy) return;
+    await execute(async () => {
       await prepare();
       const value = await host.rpc<Storage>(method, limit === undefined ? {} : {limit: Math.round(limit * 1_000_000_000)});
       setStorage(value);
@@ -40,8 +41,7 @@ export function StorageSettings({host, busy, prepare, refreshPreviews}: {
         refreshPreviews();
         host.notify(t("Cache cleared · {0} freed", formatBytes(value.freed)));
       } else host.notify(t("Cache limit saved"));
-    } catch (error) {host.report(error);}
-    finally {setWorking(false); host.setBusy?.(false);}
+    });
   };
   return <article className="settings-row storage-settings"><div><h2>{t("Storage")}</h2>
     <p>{t("Preview cache only. PDFs, saved edits and imported images are kept.")}</p>

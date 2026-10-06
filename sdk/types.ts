@@ -23,6 +23,7 @@ export type Book = {
   dirty: boolean; can_undo: boolean; can_redo: boolean;
 };
 export type Changes = {pages?: Page[]; metadata?: Partial<Metadata>; extension?: {id: string; data: unknown}};
+export type ReviewData = {review: string[]; [key: string]: unknown};
 export type Task = {
   id: string; state: "running" | "completed" | "cancelled" | "failed"; operation: string;
   document_id: string | null; revision: number | null;

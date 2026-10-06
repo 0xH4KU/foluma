@@ -10,14 +10,6 @@ def extract_int(dictionary: bytes, key: bytes) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def _extract_object(dictionary: bytes, key: bytes) -> bytes | None:
-    match = re.search(rb"/" + re.escape(key) + rb"\s*", dictionary)
-    if not match:
-        return None
-    pos = match.end()
-    return _read_pdf_object(dictionary, pos)
-
-
 def _read_pdf_object(data: bytes, pos: int) -> bytes:
     while pos < len(data) and data[pos] in b" \t\r\n":
         pos += 1

@@ -13,7 +13,7 @@ from .model import image_page, new_id
 from .storage import check_sources, copy_asset, preview_path
 
 
-def load_asset(book: dict, asset_id: str, *, compression_level: int = 6) -> bytes:
+def load_asset(book: dict, asset_id: str) -> bytes:
     asset = book["assets"][asset_id]
     if asset["kind"] != "file":
         raise ValueError(t("Open this legacy project with its import plugin enabled to save its images first"))
@@ -38,7 +38,7 @@ def preview(book: dict, page_id: str, size: int, directory: Path) -> str:
                 "RGB", (max(1, round(page["width"] * scale)), max(1, round(page["height"] * scale))), "white"
             )
         else:
-            with Image.open(io.BytesIO(load_asset(book, page["asset_id"], compression_level=0))) as original:
+            with Image.open(io.BytesIO(load_asset(book, page["asset_id"]))) as original:
                 if original.size != (page["width"], page["height"]):
                     raise ValueError(t("Asset dimensions do not match the project. Please import again."))
                 image = original.crop(crop_box(page))

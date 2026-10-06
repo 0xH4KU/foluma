@@ -14,11 +14,11 @@ from zipfile import ZIP_DEFLATED, ZipFile
 from . import __version__
 from .cache import PreviewCache
 from .i18n import messages, t
-from .model import Session, information_patch, new_id, review_unchanged, validate
+from .model import EngineError, Session, information_patch, new_id, review_unchanged, validate
 from .plugins import Plugins, platform_id, unpack
-from .series import FolderProject, Series, pending_review_count, preview_inputs
+from .series import FolderProject, Series, preview_inputs
 from .storage import atomic_json, contained, copy_asset, digest, open_project, parse_json, save_project
-from .worker import EngineError, job_info
+from .worker import job_info
 from .workers import Workers
 
 
@@ -60,7 +60,7 @@ class Engine:
                     if "project" in location
                     else Series(data, location["paths"], extensions)
                 )
-                identifier = self.series.state["current_id"]
+                identifier = self.series.current_id
                 if identifier:
                     session = self.series.load(self.series.item(identifier))
                     if session:
@@ -313,27 +313,15 @@ class Engine:
         ):
             return self.modify_series(method, p)
         if method == "series.review":
-            item = self.series.item(p["id"])
-            if type(p.get("reviewed")) is not bool or item["revision"] is None:
-                raise ValueError(t("Open this book before marking it reviewed"))
-            session = self.session if self.series.current(self.session) is item else self.series.load(item)
-            marks = pending_review_count(session.book) if session else 0
-            if p["reviewed"] and marks and p.get("allow_pending") is not True:
-                raise EngineError(
-                    t("{0} pages still need attention. Confirm before marking this book reviewed.", marks),
-                    {"kind": "pending_review", "pages": marks},
-                )
-            item["reviewed_revision"] = item["revision"] if p["reviewed"] else None
+            self.series.review(p["id"], p.get("reviewed"), p.get("allow_pending"), self.session)
         elif method == "series.output":
-            directory = Path(p["directory"]).resolve(strict=True)
-            if not directory.is_dir():
-                raise ValueError(t("Choose an output folder"))
-            self.series.state["output_directory"] = str(directory)
+            self.series.set_output(p["directory"])
         elif method == "series.configure":
-            return self.configure_series(p)
+            results = self.series.configure(p, self.session, lambda book: self.notify("document.changed", book))
+            self.series_changed()
+            return results
         else:
             raise ValueError(t("Unsupported operation: {0}", method))
-        self.series.save()
         return self.series_changed()
 
     def open_series(self, method: str, p: dict):
@@ -374,7 +362,7 @@ class Engine:
             )
             if previous:
                 project.import_series(previous)
-        current = project.state["current_id"]
+        current = project.current_id
         session = project.load(project.item(current)) if current else None
         if session:
             self.prepare_session(session)
@@ -421,61 +409,6 @@ class Engine:
                 self.notify("document.changed", self.session.snapshot() if self.session else None)
         state = self.series_changed()
         return state | {"summary": summary} if summary is not None else state
-
-    def configure_series(self, p: dict):
-        changes = information_patch(p.get("metadata", {}), allow_empty=True)
-        identifiers = p.get("ids")
-        if not isinstance(identifiers, list) or not identifiers or not all(isinstance(i, str) for i in identifiers):
-            raise ValueError(t("Select books first"))
-        items = [self.series.item(i) for i in dict.fromkeys(identifiers)]
-        books = p.get("books", [])
-        if not isinstance(books, list):
-            raise ValueError(t("Invalid book information plan"))
-        planned = {}
-        for book in books:
-            if (
-                not isinstance(book, dict)
-                or book.get("id") not in identifiers
-                or book["id"] in planned
-                or "base_revision" in book
-                and book["base_revision"] is not None
-                and (type(book["base_revision"]) is not int or book["base_revision"] < 0)
-            ):
-                raise ValueError(t("Invalid book information plan"))
-            planned[book["id"]] = {"metadata": information_patch(book.get("metadata", {}), allow_empty=True)}
-            if "base_revision" in book:
-                planned[book["id"]]["base_revision"] = book["base_revision"]
-        patches = {
-            item["id"]: information_patch(changes | planned.get(item["id"], {}).get("metadata", {})) for item in items
-        }
-        results = []
-        for item in items:
-            try:
-                patch = patches[item["id"]]
-                plan = planned.get(item["id"], {})
-                session = self.session if self.series.current(self.session) is item else self.series.load(item)
-                revision = session.book["revision"] if session else item["revision"]
-                if "base_revision" in plan and plan["base_revision"] != revision:
-                    raise ValueError(t("Document changed. Please retry with the latest revision."))
-                if session:
-                    before = session.book
-                    session.apply(session.book["id"], session.book["revision"], {"metadata": patch})
-                    self.series.remember(item, session, review_unchanged(before, session.book))
-                    if session is self.session:
-                        self.notify("document.changed", session.snapshot())
-                else:
-                    item["settings"].update(patch)
-                    item.setdefault("metadata", {}).update(patch)
-                    if "title" in patch:
-                        item["title"] = patch["title"]
-                    self.series.save()
-                results.append({"id": item["id"], "error": None})
-            except Exception as error:
-                if self.session and self.series.current(self.session) is item:
-                    self.notify("document.changed", self.session.snapshot())
-                results.append({"id": item["id"], "error": str(error)})
-        self.series_changed()
-        return results
 
     def bundle(self, method: str, p: dict) -> dict:
         """Opaque plugin JSON plus embedded file assets; interpretation belongs to the plugin."""
@@ -647,14 +580,8 @@ class Engine:
                     raise EngineError(t("Task cancelled"))
                 publish(staged, target, overwrite)
                 result["path"] = str(target)
-                if operation == "export" and self.series:
-                    item = next(
-                        (item for item in self.series.state["items"] if item["document_id"] == book["id"]), None
-                    )
-                    if item:
-                        item.update(exported_revision=book["revision"], output=str(target))
-                        self.series.save()
-                        self.series_changed()
+                if operation == "export" and self.series and self.series.mark_exported(book, target):
+                    self.series_changed()
                 job.update(state="completed", result=result)
         return result
 
@@ -705,13 +632,7 @@ class Engine:
                         if entry:
                             if p.get("background") and self.series.current(self.session) is entry:
                                 session = self.session
-                            if not saved and entry["settings"]:
-                                session.apply(
-                                    session.book["id"], session.book["revision"], {"metadata": entry["settings"]}
-                                )
-                            if not p.get("background"):
-                                self.series.state["current_id"] = entry["id"]
-                            self.series.remember(entry, session)
+                            self.series.open_book(entry, session, imported=not saved, activate=not p.get("background"))
                             self.series_changed()
                         if p.get("background"):
                             if session is not self.session:

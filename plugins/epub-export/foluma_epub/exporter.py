@@ -62,7 +62,7 @@ def export_epub(book: dict, path: str, progress=lambda *_: None, *, layout: str 
     cover = next(p for p in book["pages"] if p["id"] == meta["cover_id"])
     cover_png = None
     if cover["crop"] != [0, 0, 1, 1]:
-        with Image.open(io.BytesIO(load_asset(book, cover["asset_id"], compression_level=0))) as image:
+        with Image.open(io.BytesIO(load_asset(book, cover["asset_id"]))) as image:
             buffer = io.BytesIO()
             image.crop(crop_box(cover)).save(buffer, "PNG")
             cover_png = buffer.getvalue()

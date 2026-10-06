@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import type { Book, HostAPI, RenderResolution } from "../../../sdk/types";
 import { documentRef } from "../../../sdk/types";
 import { t } from "../../../sdk/i18n";
-import { batchSummary, runBatch, type BatchRow } from "../../../sdk/batch";
+import { batchStateLabel, batchSummary, runBatch, type BatchRow } from "../../../sdk/batch";
+import { createActionRunner } from "../../../sdk/actions";
 import { ExportVariantSelect } from "../../../sdk/export-variant";
 import { applyPreset, type Preset } from "./pages";
 
@@ -36,6 +37,7 @@ export function BatchDialog({
     () => host.getExportPreferences?.().dpi || "auto",
   );
   const [running, setRunning] = useState(false);
+  const execute = useMemo(() => createActionRunner(host, setRunning), [host]);
   const [finished, setFinished] = useState(false);
   const [progress, setProgress] = useState<{ index: number; total: number; name: string } | null>(
     null,
@@ -79,69 +81,56 @@ export function BatchDialog({
     }
   };
   const start = async (only?: BatchRow, allowRendering = render) => {
-    if (running || !outputFormat) return;
-    const paths = (only ? [only] : rows.filter((row) => row.state !== "completed")).map(
-      (row) => row.path,
-    );
-    setRows((old) =>
-      old.map((row) => (paths.includes(row.path) ? { path: row.path, state: "pending" } : row)),
-    );
-    setRunning(true);
-    setFinished(false);
-    abort.current = new AbortController();
-    host.setBusy?.(true);
-    host.notify("");
-    host.setOutputDirectory?.(directory);
-    try {
-      const signal = abort.current.signal;
-      const prepare = async (book: Book) => {
-        const bundle = await host.rpc<{
-          payload: Preset;
-          asset_ids: Record<string, string>;
-          document: Book;
-        }>("bundle.read", { ...documentRef(book), path: preset, plugin: "org.foluma.editor" });
-        if (signal.aborted)
-          throw Object.assign(new Error(t("Task cancelled")), { cancelled: true });
-        return host.apply(
-          bundle.document,
-          applyPreset(bundle.document, bundle.payload, bundle.asset_ids),
-        );
-      };
-      await runBatch(
-        host,
-        { paths, directory, render: allowRendering, dpi, exporter: outputFormat.id, exportOptions: variant?.options },
-        signal,
-        (index, row) => {
-          setRows((old) => old.map((value) => (value.path === row.path ? row : value)));
-          if (row.state === "working")
-            setProgress({
-              index: index + 1,
-              total: paths.length,
-              name: row.path.split(/[\\/]/).pop() || row.path,
-            });
-        },
-        preset ? prepare : undefined,
+    if (!outputFormat) return;
+    await execute(async () => {
+      const paths = (only ? [only] : rows.filter((row) => row.state !== "completed")).map(
+        (row) => row.path,
       );
-    } catch (error) {
-      host.report(error);
-    } finally {
-      setRunning(false);
-      setFinished(true);
-      setProgress(null);
-      host.setBusy?.(false);
-    }
+      setRows((old) =>
+        old.map((row) => (paths.includes(row.path) ? { path: row.path, state: "pending" } : row)),
+      );
+      setFinished(false);
+      abort.current = new AbortController();
+      host.setOutputDirectory?.(directory);
+      try {
+        const signal = abort.current.signal;
+        const prepare = async (book: Book) => {
+          const bundle = await host.rpc<{
+            payload: Preset;
+            asset_ids: Record<string, string>;
+            document: Book;
+          }>("bundle.read", { ...documentRef(book), path: preset, plugin: "org.foluma.editor" });
+          if (signal.aborted)
+            throw Object.assign(new Error(t("Task cancelled")), { cancelled: true });
+          return host.apply(
+            bundle.document,
+            applyPreset(bundle.document, bundle.payload, bundle.asset_ids),
+          );
+        };
+        await runBatch(
+          host,
+          { paths, directory, render: allowRendering, dpi, exporter: outputFormat.id, exportOptions: variant?.options },
+          signal,
+          (index, row) => {
+            setRows((old) => old.map((value) => (value.path === row.path ? row : value)));
+            if (row.state === "working")
+              setProgress({
+                index: index + 1,
+                total: paths.length,
+                name: row.path.split(/[\\/]/).pop() || row.path,
+              });
+          },
+          preset ? prepare : undefined,
+        );
+      } finally {
+        setFinished(true);
+        setProgress(null);
+      }
+    });
   };
   const cancel = () => {
     abort.current.abort();
     void host.cancelTask?.().catch(host.report);
-  };
-  const labels = {
-    pending: t("Pending"),
-    working: t("Processing"),
-    completed: t("Exported"),
-    failed: t("Failed"),
-    cancelled: t("Cancelled"),
-    skipped: t("Skipped"),
   };
   return (
     <dialog
@@ -241,7 +230,7 @@ export function BatchDialog({
               <tr key={row.path}>
                 <td title={row.path}>{row.path.split(/[\\/]/).pop()}</td>
                 <td>
-                  {labels[row.state]}
+                  {batchStateLabel(row.state)}
                   {row.output && (
                     <button
                       title={row.output}

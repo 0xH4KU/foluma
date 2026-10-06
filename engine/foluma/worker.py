@@ -6,13 +6,8 @@ import time
 from pathlib import Path
 
 from .i18n import messages, t
+from .model import EngineError as EngineError
 from .storage import parse_json
-
-
-class EngineError(ValueError):
-    def __init__(self, message: str, data=None):
-        super().__init__(message)
-        self.data = data
 
 
 def job_info(job: dict) -> dict:

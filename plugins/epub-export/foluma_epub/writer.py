@@ -60,19 +60,14 @@ def write_epub_from_pages(
     author: str | None = None,
     language: str = "zh-Hant",
     overwrite: bool = False,
-    apple_books: bool = False,
-    pair_first_two_pages: bool = False,
     cover_item_id: str | None = None,
     exclude_cover_from_reading: bool = False,
-    counts: dict[str, int] | None = None,
     reading_direction: str = "rtl",
     cover_png: bytes | None = None,
     layout: str = "general",
 ) -> dict[str, int]:
     if layout not in ("general", "spread"):
         raise ValueError("EPUB layout must be 'general' or 'spread'")
-    if layout == "spread" and apple_books:
-        raise ValueError("Two-page layout cannot use single-page spread settings")
     if reading_direction not in {"rtl", "ltr"}:
         raise ValueError("Reading direction must be 'rtl' or 'ltr'")
     if epub_path.exists() and not overwrite:
@@ -94,8 +89,6 @@ def write_epub_from_pages(
             identifier,
             pages,
             reading_pages,
-            apple_books,
-            pair_first_two_pages,
             author,
             language,
             cover_id,
@@ -109,9 +102,7 @@ def write_epub_from_pages(
         temp_path.unlink(missing_ok=True)
         raise
 
-    result = dict(counts or {})
-    result["total"] = len(reading_pages)
-    return result
+    return {"total": len(reading_pages)}
 
 
 def _temporary_epub_path(epub_path: Path) -> Path:
@@ -127,8 +118,6 @@ def _write_epub_zip(
     identifier: str,
     pages: list[EpubPage],
     reading_pages: list[EpubPage],
-    apple_books: bool,
-    pair_first_two_pages: bool,
     author: str | None,
     language: str,
     cover_id: str | None,
@@ -142,8 +131,6 @@ def _write_epub_zip(
     viewport = Counter(page_sizes or [(reading_pages[0].width, reading_pages[0].height)]).most_common(1)[0][0]
     # Count actual reading pages, including blanks, after removing a bookshelf-only cover.
     sides = ("left", "right") if reading_direction == "rtl" else ("right", "left")
-    if pair_first_two_pages:
-        sides = sides[::-1]
     page_sides = {page.item_id: sides[i % 2] for i, page in enumerate(reading_pages)} if layout == "spread" else {}
     cover_href = (
         "images/cover.png"
@@ -164,8 +151,6 @@ def _write_epub_zip(
                 identifier,
                 pages,
                 reading_pages,
-                apple_books,
-                pair_first_two_pages,
                 author,
                 language,
                 cover_id,
@@ -259,8 +244,6 @@ def _content_opf(
     identifier: str,
     pages: list[EpubPage],
     reading_pages: list[EpubPage],
-    apple_books: bool = False,
-    pair_first_two_pages: bool = False,
     author: str | None = None,
     language: str = "zh-Hant",
     cover_item_id: str | None = None,
@@ -297,18 +280,13 @@ def _content_opf(
             '\n    <item id="cover-art" href="images/cover.png" media-type="image/png" properties="cover-image"/>'
         )
     xhtml_items = "\n".join(_xhtml_manifest_item(page) for page in reading_pages)
-    spread = "none" if apple_books else "auto"
     if page_sides:
         spine_items = "\n".join(
             f'    <itemref idref="{page.item_id}" properties="rendition:page-spread-{page_sides[page.item_id]}"/>'
             for page in reading_pages
         )
-    elif apple_books:
-        spine_items = "\n".join(
-            f'    <itemref idref="{page.item_id}" properties="rendition:page-spread-center"/>' for page in reading_pages
-        )
     else:
-        spine_items = "\n".join(_spine_itemref(page, pair_first_two_pages, reading_direction) for page in reading_pages)
+        spine_items = "\n".join(f'    <itemref idref="{page.item_id}"/>' for page in reading_pages)
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <package version="3.0" unique-identifier="bookid" prefix="rendition: http://www.idpf.org/vocab/rendition/#" xmlns="http://www.idpf.org/2007/opf">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
@@ -324,7 +302,7 @@ def _content_opf(
     <meta property="schema:accessMode">visual</meta>
     <meta property="rendition:layout">pre-paginated</meta>
     <meta property="rendition:orientation">auto</meta>
-    <meta property="rendition:spread">{spread}</meta>
+    <meta property="rendition:spread">auto</meta>
   </metadata>
   <manifest>
     <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
@@ -378,14 +356,6 @@ def _reading_pages(
     if not exclude_cover_from_reading or cover_item_id is None:
         return pages
     return [page for page in pages if page.item_id != cover_item_id]
-
-
-def _spine_itemref(page: EpubPage, pair_first_two_pages: bool, reading_direction: str) -> str:
-    if pair_first_two_pages and not page.is_blank and page.index in {1, 2}:
-        sides = ("right", "left") if reading_direction == "rtl" else ("left", "right")
-        side = sides[page.index - 1]
-        return f'    <itemref idref="{page.item_id}" properties="rendition:page-spread-{side}"/>'
-    return f'    <itemref idref="{page.item_id}"/>'
 
 
 def _nav_xhtml(

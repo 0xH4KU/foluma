@@ -1,8 +1,10 @@
 import { getLocale, setLocale, subscribeLocale, t } from "../../../sdk/i18n.ts";
-import React, { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import type { Book, Changes, HostAPI } from "../../../sdk/types";
 import { documentRef } from "../../../sdk/types";
+import { createActionRunner } from "../../../sdk/actions";
+import { REVIEW_EXTENSION_ID, reviewData } from "../../../sdk/review";
 import {
   applyPreset,
   createPreset,
@@ -96,6 +98,7 @@ function Editor({ host, book }: { host: HostAPI; book: Book | null }) {
     };
   }, []);
   const [busy, setBusy] = useState(false);
+  const execute = useMemo(() => createActionRunner(host, setBusy), [host]);
   const [batch, setBatch] = useState(false);
   const [batchPaths, setBatchPaths] = useState<string[]>([]);
   useEffect(
@@ -124,17 +127,7 @@ function Editor({ host, book }: { host: HostAPI; book: Book | null }) {
     previousBook.current = book;
   }, [book?.id, book?.revision]);
   const run = async (action: () => Promise<unknown>) => {
-    if (busy) return;
-    setBusy(true);
-    host.setBusy?.(true);
-    try {
-      await action();
-    } catch (error) {
-      host.report(error);
-    } finally {
-      setBusy(false);
-      host.setBusy?.(false);
-    }
+    await execute(action);
   };
   if (!book)
     return (
@@ -148,12 +141,8 @@ function Editor({ host, book }: { host: HostAPI; book: Book | null }) {
   const ids = selected.size ? selected : new Set(current ? [current.id] : []);
 
   const splitRatio = Number(ratio) / 100;
-  const editorData = book.extensions["org.foluma.editor"] as { review?: string[] } | undefined;
-  const flags = new Set(
-    Array.isArray(editorData?.review)
-      ? editorData.review.filter((id) => book.pages.some((page) => page.id === id))
-      : [],
-  );
+  const editorData = reviewData(book);
+  const flags = new Set(editorData.review);
   const update = (changes: Changes) => {
     if (changes.pages && flags.size && !changes.extension) {
       const marked = book.pages.filter((page) => flags.has(page.id));
@@ -169,7 +158,7 @@ function Editor({ host, book }: { host: HostAPI; book: Book | null }) {
         .map((page) => page.id);
       changes = {
         ...changes,
-        extension: { id: "org.foluma.editor", data: { ...editorData, review } },
+        extension: { id: REVIEW_EXTENSION_ID, data: { ...editorData, review } },
       };
     }
     return run(() => host.apply(book, changes));
@@ -230,7 +219,7 @@ function Editor({ host, book }: { host: HostAPI; book: Book | null }) {
       else next.add(id);
     });
     void update({
-      extension: { id: "org.foluma.editor", data: { ...editorData, review: [...next] } },
+      extension: { id: REVIEW_EXTENSION_ID, data: { ...editorData, review: [...next] } },
     });
   };
   const nextFlag = () => {

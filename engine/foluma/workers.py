@@ -12,8 +12,9 @@ import threading
 from pathlib import Path
 
 from .i18n import t
+from .model import EngineError
 from .storage import atomic_json, parse_json
-from .worker import EngineError, job_info
+from .worker import job_info
 
 
 def worker_command(request: Path, plugin: Path | None = None) -> list[str]:

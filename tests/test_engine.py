@@ -74,6 +74,13 @@ class IntegrationTests(unittest.TestCase):
             export_epub(self.book, str(path))
         self.assertEqual(path.read_bytes(), original)
 
+    def test_pdf_extraction_rejects_missing_image_payload(self):
+        with fitz.open(self.pdf) as doc:
+            xref = doc[0].get_images()[0][0]
+            with patch.object(doc, "xref_stream_raw", return_value=None):
+                with self.assertRaisesRegex(PdfImageError, "no payload data"):
+                    _image_from_xref(doc, xref, 1)
+
     def test_composed_rotated_and_blank_pages_require_consent(self):
         complex_pdf = self.root / "composed.pdf"
         with fitz.open(self.pdf) as doc:

@@ -14,7 +14,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from .i18n import t
-from .model import INFORMATION_FIELDS, Session, information_patch, new_id
+from .model import (
+    INFORMATION_FIELDS,
+    EngineError,
+    Session,
+    information_patch,
+    new_id,
+    review_page_ids,
+    review_unchanged,
+)
 from .storage import atomic_json, contained, digest, open_project, owned_files, parse_json, save_project
 
 
@@ -71,13 +79,6 @@ def preview_inputs(paths: list[str], extensions=()) -> dict:
             }
         )
     return {"books": books, "folders_skipped": folders_skipped}
-
-
-def pending_review_count(book: dict) -> int:
-    data = book["extensions"].get("org.foluma.editor", {})
-    marks = data.get("review", []) if isinstance(data, dict) else []
-    pages = {page["id"] for page in book["pages"]}
-    return len({mark for mark in marks if isinstance(mark, str) and mark in pages}) if isinstance(marks, list) else 0
 
 
 class Series:
@@ -142,6 +143,10 @@ class Series:
     def save(self):
         atomic_json(self.path, self.state)
 
+    @property
+    def current_id(self) -> str | None:
+        return self.state["current_id"]
+
     def item(self, identifier: str) -> dict:
         for item in self.state["items"]:
             if (
@@ -173,7 +178,7 @@ class Series:
             revision=session.book["revision"],
             title=session.book["metadata"]["title"],
             page_count=len(session.book["pages"]),
-            review_count=pending_review_count(session.book),
+            review_count=len(review_page_ids(session.book)),
             metadata={key: session.book["metadata"][key] for key in INFORMATION_FIELDS},
         )
         if reviewed and preserve_review:
@@ -187,12 +192,103 @@ class Series:
             return next((item for item in self.state["items"] if item["document_id"] == session.book["id"]), None)
         return None
 
+    def open_book(self, item: dict, session: Session, *, imported=False, activate=True):
+        if imported and item["settings"]:
+            session.apply(session.book["id"], session.book["revision"], {"metadata": item["settings"]})
+        if activate:
+            self.state["current_id"] = item["id"]
+        self.remember(item, session)
+
+    def review(self, identifier: str, reviewed: bool, allow_pending=False, current: Session | None = None):
+        item = self.item(identifier)
+        if type(reviewed) is not bool or item["revision"] is None:
+            raise ValueError(t("Open this book before marking it reviewed"))
+        session = current if self.current(current) is item else self.load(item)
+        marks = len(review_page_ids(session.book)) if session else 0
+        if reviewed and marks and allow_pending is not True:
+            raise EngineError(
+                t("{0} pages still need attention. Confirm before marking this book reviewed.", marks),
+                {"kind": "pending_review", "pages": marks},
+            )
+        item["reviewed_revision"] = item["revision"] if reviewed else None
+        self.save()
+
+    def set_output(self, directory: str):
+        path = Path(directory).resolve(strict=True)
+        if not path.is_dir():
+            raise ValueError(t("Choose an output folder"))
+        self.state["output_directory"] = str(path)
+        self.save()
+
+    def mark_exported(self, book: dict, path: Path) -> bool:
+        item = next((item for item in self.state["items"] if item["document_id"] == book["id"]), None)
+        if item is None:
+            return False
+        item.update(exported_revision=book["revision"], output=str(path))
+        self.save()
+        return True
+
+    def configure(self, p: dict, current: Session | None = None, on_change=lambda *_: None):
+        changes = information_patch(p.get("metadata", {}), allow_empty=True)
+        identifiers = p.get("ids")
+        if not isinstance(identifiers, list) or not identifiers or not all(isinstance(i, str) for i in identifiers):
+            raise ValueError(t("Select books first"))
+        items = [self.item(i) for i in dict.fromkeys(identifiers)]
+        books = p.get("books", [])
+        if not isinstance(books, list):
+            raise ValueError(t("Invalid book information plan"))
+        planned = {}
+        for book in books:
+            if (
+                not isinstance(book, dict)
+                or book.get("id") not in identifiers
+                or book["id"] in planned
+                or "base_revision" in book
+                and book["base_revision"] is not None
+                and (type(book["base_revision"]) is not int or book["base_revision"] < 0)
+            ):
+                raise ValueError(t("Invalid book information plan"))
+            planned[book["id"]] = {"metadata": information_patch(book.get("metadata", {}), allow_empty=True)}
+            if "base_revision" in book:
+                planned[book["id"]]["base_revision"] = book["base_revision"]
+        patches = {
+            item["id"]: information_patch(changes | planned.get(item["id"], {}).get("metadata", {})) for item in items
+        }
+        results = []
+        for item in items:
+            try:
+                patch = patches[item["id"]]
+                plan = planned.get(item["id"], {})
+                session = current if self.current(current) is item else self.load(item)
+                revision = session.book["revision"] if session else item["revision"]
+                if "base_revision" in plan and plan["base_revision"] != revision:
+                    raise ValueError(t("Document changed. Please retry with the latest revision."))
+                if session:
+                    before = session.book
+                    session.apply(session.book["id"], session.book["revision"], {"metadata": patch})
+                    self.remember(item, session, review_unchanged(before, session.book))
+                    if session is current:
+                        on_change(session.snapshot())
+                else:
+                    item["settings"].update(patch)
+                    item.setdefault("metadata", {}).update(patch)
+                    if "title" in patch:
+                        item["title"] = patch["title"]
+                    self.save()
+                results.append({"id": item["id"], "error": None})
+            except Exception as error:
+                if current and self.current(current) is item:
+                    on_change(current.snapshot())
+                results.append({"id": item["id"], "error": str(error)})
+        return results
+
+
     def snapshot(self) -> dict:
         for item in self.state["items"]:
             if "review_count" not in item or "metadata" not in item:
                 try:
                     saved = self.load(item) if item["document_id"] else None
-                    item["review_count"] = pending_review_count(saved.book) if saved else 0
+                    item["review_count"] = len(review_page_ids(saved.book)) if saved else 0
                     item["metadata"] = (
                         {key: saved.book["metadata"][key] for key in INFORMATION_FIELDS}
                         if saved
@@ -517,7 +613,7 @@ class FolderProject(Series):
                         revision=book["revision"],
                         title=book["metadata"]["title"],
                         page_count=len(book["pages"]),
-                        review_count=pending_review_count(book),
+                        review_count=len(review_page_ids(book)),
                         metadata={key: book["metadata"][key] for key in INFORMATION_FIELDS},
                     )
         return {"added": len(self.state["items"]) - before, "skipped": skipped, "folders_skipped": folders_skipped}

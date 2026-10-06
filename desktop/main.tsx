@@ -256,7 +256,7 @@ function App() {
           const paths = payload.paths;
           if (latest.current.series?.managed && latest.current.tab === "series") dropFiles(paths);
           else if (paths.length === 1 && /\.[a-z0-9]+$/i.test(paths[0]))
-            void run(() => importBookRef.current(paths[0]), false);
+            void importBookRef.current(paths[0]);
           else if (paths.length) void run(() => openFolder(paths), false);
         }
       })
@@ -323,7 +323,7 @@ function App() {
       if (key === "o") {
         event.preventDefault();
         if (event.shiftKey) void openProject();
-        else void run(() => importBook(), false);
+        else void importBook();
       }
       if (key === "e") {
         event.preventDefault();
@@ -390,7 +390,7 @@ function App() {
         exportingSeries={tab === "series"}
         selectedBooks={selectedBooks}
         canExport={seriesSelection.canExport}
-        onImport={() => void run(() => importBook(), false)}
+        onImport={() => void importBook()}
         onNewProject={() => void run(() => openFolder(), false)}
         onOpenProject={openProject}
         onCloseProject={closeProject}
@@ -469,7 +469,7 @@ function App() {
                 <button
                   className="primary"
                   disabled={!ready || !!busy}
-                  onClick={() => void run(() => importBook())}
+                  onClick={() => void importBook()}
                 >
                   {t(importers.length ? "Import book…" : "Install import plugin")}
                 </button>

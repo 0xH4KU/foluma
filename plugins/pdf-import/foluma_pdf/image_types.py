@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 
 
@@ -17,13 +16,9 @@ class ImageStream:
     color_space: bytes | None
     filter_name: str
     decode_parms: bytes | None
-    data: bytes | None
+    data: bytes
     xref: int | None = None
-    data_loader: Callable[[], bytes] | None = None
 
-    def load_data(self) -> bytes:
-        if self.data is not None:
-            return self.data
-        if self.data_loader is not None:
-            return self.data_loader()
-        raise PdfImageError(f"Image {self.index} has no payload data")
+    def __post_init__(self):
+        if self.data is None:
+            raise PdfImageError(f"Image {self.index} has no payload data")

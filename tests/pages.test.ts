@@ -13,6 +13,7 @@ import {
   spreadPages,
 } from "../plugins/editor/src/pages.ts";
 import { moveBefore } from "../sdk/order.ts";
+import { REVIEW_EXTENSION_ID, reviewData } from "../sdk/review.ts";
 
 function fixture(): Book {
   const pages: Page[] = [1, 2, 3, 4].map((n) => ({
@@ -51,6 +52,18 @@ function fixture(): Book {
     project_path: null,
   };
 }
+
+test("the shared review contract reads legacy storage, removes stale marks and preserves other extension data", () => {
+  const book = fixture();
+  book.extensions["org.foluma.editor"] = { review: ["page-1", "page-1", "gone", {}, 1], extra: "keep" };
+  assert.deepEqual(reviewData(book), { review: ["page-1"], extra: "keep" });
+  book.pages = book.pages.slice(1);
+  assert.deepEqual(reviewData(book).review, []);
+  for (const value of [null, [], "invalid", { review: "invalid" }]) {
+    book.extensions[REVIEW_EXTENSION_ID] = value;
+    assert.deepEqual(reviewData(book).review, []);
+  }
+});
 
 test("split, restore and leading preview gap preserve page identity", () => {
   const book = fixture(),
