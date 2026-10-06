@@ -10,6 +10,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 from foluma.plugins import platform_id
 
 root = Path(__file__).resolve().parents[1]
+release_version = json.loads((root / "src-tauri/tauri.conf.json").read_text())["version"]
 parser = argparse.ArgumentParser()
 parser.add_argument("--development", action="store_true", help="Use local Python for development packages in build/ only")
 parser.add_argument("--formats-only", action="store_true")
@@ -65,7 +66,7 @@ for manifest_path in sorted((root / "plugins").glob("*/manifest.json")):
         manifest
         | {
             "sha256": sha256,
-            "url": f"https://github.com/0xH4KU/foluma/releases/download/v{manifest['version']}/{name}",
+            "url": f"https://github.com/0xH4KU/foluma/releases/download/v{release_version}/{name}",
         }
     )
     print(f"{output}\nSHA-256: {sha256}")

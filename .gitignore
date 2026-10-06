@@ -4,6 +4,7 @@ __pycache__/
 *.pyc
 *.egg-info/
 .ruff_cache/
+.pytest_cache/
 dist/
 build/
 target/
@@ -11,3 +12,4 @@ target/
 artifacts/
 .env
 test-results/
+src-tauri/gen/schemas/
