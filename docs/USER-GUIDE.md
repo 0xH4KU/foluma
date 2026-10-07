@@ -68,8 +68,11 @@ The desktop layout uses a toolbar, workspace sidebar, page list, preview, inspec
 
 - Switch between list, thumbnail, and spread views. Drag one or several pages to reorder them, or use the context menu. **Shift+F10** opens the same menu from the keyboard.
 - Insert images or blank pages, split spreads with a preview guide, restore splits, and manage covers and reading direction.
+- Use **Rotate selected images 90° clockwise** in page properties or the context menu. It rotates all selected image pages by a quarter turn; two clicks correct an upside-down image and four return to the original orientation. Rotation is saved with projects and presets and supports undo/redo. Splitting follows the displayed orientation. EPUB, PDF and CBZ exports retain the rotation; rotated source images are encoded as lossless PNGs for export, while the project's original files and **Export originals** remain unchanged.
 - Navigate by complete spreads with left/right keys in the selected reading direction; use up/down in the page list for individual pages, or enter a preview page number to jump directly. Previews show both the current page number and original PDF page number; selection, view mode, scroll position, and zoom are saved per book. Newly inserted images are selected immediately.
 - Mark pages for attention and jump to the next mark.
+- Mark a spread by selecting a page, then Option-clicking an adjacent image page (Alt on Windows/Linux), or select two adjacent image pages and use **Mark selected pages as a spread** in the context menu. A book icon identifies marked pages. Option-click the same pair again or choose **Remove spread mark** to clear it. Marks are saved with the project and support undo/redo.
+- Open **Blank suggestions…** to see each marked spread's current pairing and the ranges where blank pages can align them. A compact independent window opens beside the main window when screen space permits; drag its title bar anywhere, including outside the app or onto another display, and resize it as needed. Click a reference position to select that page in the main editor, then use the existing blank-before/after actions or B / Shift+B. Previews and suggestions update after edits, undo/redo and changes to reading or cover settings. Suggestions use the current page order and leading-blank preview setting; source page numbers are only labels. Removed, separated or excluded marked pages require correction or removal of the mark before recommendations are shown. Closing the tool window keeps the book open.
 - Use **Presets → Apply preset to PDFs…** to apply a portable layout preset to books with matching page structures and export them separately.
 
 **Simulate leading blank** previews the page pairing used by readers such as Apple Books. It does not insert a blank into the document or exported EPUB.
@@ -86,6 +89,12 @@ The desktop layout uses a toolbar, workspace sidebar, page list, preview, inspec
 Windows and Linux use Ctrl in place of ⌘ for the document shortcuts.
 
 ## Image handling and performance
+
+**Preferences → Background processing** controls project preparsing and concurrent export. Both are enabled by default, with two tasks each; concurrency is configurable from 1 to 8. Turning concurrent export off processes one book at a time. Opening a project or adding books starts preparsing unread books and saves the results in their existing book projects. Later opens reuse these saved pages and images. Opening a book already being preparsed joins the same task and gives queued work priority. Complex PDF pages wait for explicit rendering consent; a failure in one book does not stop the rest.
+
+The bottom-left status bar shows preparation and export activity. Click it to see queued/running tasks, page progress, errors and individual cancellation. Batch cancellation cancels all tasks started by that batch. Background work permits editing and switching books. Each export uses a snapshot taken when that export is submitted; edits made afterward still require another export. Concurrent exports reserve distinct filenames and retain the existing protection for source and destination files.
+
+Use **Open in new window** beside a project book to edit several books simultaneously. Reopening the same book window focuses the existing window. Each window keeps its document, selection, zoom and scroll; windows displaying the same document share revisions and undo/redo. Blank-suggestion tools stay attached to their originating book and select pages in their originating editor. Closing a book window keeps the main workspace open. Closing the main workspace or switching projects first checks and saves pending changes in the other book windows. Close a book's windows before removing or relinking it.
 
 Supported full-page images are extracted directly, preserving their original image data. Pages with text, rotation, compositing, or other unsupported content require confirmation before rendering to PNG.
 

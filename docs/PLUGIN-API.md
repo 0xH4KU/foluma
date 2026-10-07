@@ -66,7 +66,9 @@ Review marks are a shared document contract: `ReviewData` in `sdk/types.ts`, wit
 | `bundle.write` | Document reference + `plugin`, `path`, opaque `payload`, file `asset_ids`, `overwrite` |
 | `bundle.read` | Document reference + `plugin`, `path`; returns payload, remapped asset IDs and snapshot |
 
-`host.task(params)` waits for completion, exposes progress in the main toolbar and rejects failures/cancellation. There is one foreground job at a time; thumbnail processes have a separate bounded queue. Tasks are bound to the initiating document and revision. Exports use that immutable snapshot; imported image and worker results are applied only if the document still matches.
+`host.task(params, signal?)` waits for completion, exposes progress in the bottom-left status bar and rejects failures/cancellation. The optional `AbortSignal` cancels this specific queued/running task. Parsing and export have separate bounded queues, configured through `processing.get` / `processing.configure` (`preparse`, `parse_concurrency`, `parallel_export`, `export_concurrency`; defaults true/2/true/2, counts 1–8). Foreground work has a separate slot; thumbnail processes retain their separate bounded queue. Task state includes `queued`, `running`, `completed`, `failed` and `cancelled`. `task.list` returns task summaries without document results. Tasks are bound to the initiating document and revision. Exports use that immutable snapshot; imported image and worker results are applied only if the document still matches. `host.getExportPreferences()` also supplies the current batch concurrency. `host.cancelTask(id?)` cancels a specific task, or the most recent task owned by the calling window.
+
+Managed projects automatically preparse unsaved books with rendering disabled. Concurrent `series.open` requests for the same entry share work; explicit rendering authorization queues a separate attempt if the existing attempt does not allow rendering. `document.changed` carries updates for a specific document; `document.activated` changes the main window's active document. Bound windows filter notifications by document ID. `document.get` accepts optional `document_id`; `document.retain` accepts `document_id` and `window_id`, and `document.release` accepts an optional `window_id`. Window retention preserves a shared session and undo/redo while batch releases free only unretained background sessions. Native window destruction releases its retention automatically.
 
 | Operation | Extra parameters |
 | --- | --- |
@@ -76,6 +78,12 @@ Review marks are a shared document contract: `ReviewData` in `sdk/types.ts`, wit
 | `images.import` | Document reference + image `paths`, zero-based insertion `position` |
 | `images.export` | Document reference + `page_ids`, `.zip` `path`, `overwrite`; full original images |
 | `plugin` | Document reference + active `plugin_id`, opaque `input` |
+
+## Plugin tool windows
+
+The optional `host.openWindow({plugin, view, title, width, height})` opens or focuses a native tool window for that active UI plugin, view, document and originating window. Its `mount` entry receives the same document host API with `host.view` set to the requested view. The host loads only active installed UI entry points; document changes continue through the shared engine and revision checks. Tools stay bound to their originating document when the main editor switches books. Tool windows initially use free space beside their parent, may be dragged outside it, and close independently. Older hosts without this method can retain an inline fallback.
+
+`host.selectPage(id)` requests selection in the originating editor and focuses its window; editors receive the request through `host.onPageSelect(listener)`. Requests are checked against that editor's document. `host.closeWindow()` closes the calling tool window. API 1 remains compatible because these methods are optional.
 
 ## Format plugins
 

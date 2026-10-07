@@ -12,11 +12,14 @@ import {
   isPair,
   navigatePage,
   restorePages,
+  rotatePages,
   splitPages,
 } from "./pages";
 import { moveBefore } from "../../../sdk/order";
 import type { Preset } from "./pages";
 import { BatchDialog } from "./batch-dialog";
+import { SpreadSuggestions } from "./spread-suggestions";
+import { setSpreadMarks, spreadMarks, toggleSpreadMark } from "./spreads";
 import type { ViewState } from "./thumbnails";
 import { EditorToolbar, PagePanel, PreviewPanel, Inspector } from "./editor-panels";
 import "./editor.css";
@@ -54,12 +57,33 @@ function EditorHost({ host }: { host: HostAPI }) {
   useSyncExternalStore(subscribeLocale, getLocale);
   const [book, setBook] = useState<Book | null>(host.getDocument());
   useEffect(() => host.subscribe(setBook), [host]);
-  return <Editor key={book?.id || "empty"} host={host} book={book} />;
+  return host.view === "spreads"
+    ? <SpreadTool key={book?.id || "empty"} host={host} book={book} />
+    : <Editor key={book?.id || "empty"} host={host} book={book} />;
+}
+
+function SpreadTool({ host, book }: { host: HostAPI; book: Book | null }) {
+  const [, refresh] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const execute = useMemo(() => createActionRunner(host, setBusy), [host]);
+  useEffect(() => {
+    const changed = () => refresh(value => value + 1);
+    window.addEventListener("storage", changed);
+    return () => window.removeEventListener("storage", changed);
+  }, []);
+  if (!book) return <p>{t("Open a book first")}</p>;
+  return <div className="spread-tool"><SpreadSuggestions book={book} host={host} gap={readView(book).gap} busy={busy}
+    select={id => void host.selectPage?.(id).catch(host.report)}
+    unmark={ids => void execute(() => host.apply(book, setSpreadMarks(book, spreadMarks(book).filter(pair => !pair.some(id => ids.includes(id))))))}
+    close={() => void host.closeWindow?.().catch(host.report)} /></div>;
 }
 
 function Editor({ host, book }: { host: HostAPI; book: Book | null }) {
   const [initial] = useState(() => readView(book));
   const previousBook = useRef(book);
+  const editor = useRef<HTMLDivElement>(null);
+  const requestedSelect = useRef<(id: string) => void>(() => {});
+  useEffect(() => host.onPageSelect?.(id => { requestedSelect.current(id); editor.current?.focus(); }), [host]);
   const [selected, setSelected] = useState<Set<string>>(new Set(initial.selected));
   const [focus, setFocus] = useState<string | null>(initial.focus);
   const anchor = useRef<string | null>(null);
@@ -100,6 +124,7 @@ function Editor({ host, book }: { host: HostAPI; book: Book | null }) {
   const [busy, setBusy] = useState(false);
   const execute = useMemo(() => createActionRunner(host, setBusy), [host]);
   const [batch, setBatch] = useState(false);
+  const [suggestions, setSuggestions] = useState(false);
   const [batchPaths, setBatchPaths] = useState<string[]>([]);
   useEffect(
     () =>
@@ -143,6 +168,8 @@ function Editor({ host, book }: { host: HostAPI; book: Book | null }) {
   const splitRatio = Number(ratio) / 100;
   const editorData = reviewData(book);
   const flags = new Set(editorData.review);
+  const marks = spreadMarks(book);
+  const spreadIds = new Set(marks.flat());
   const update = (changes: Changes) => {
     if (changes.pages && flags.size && !changes.extension) {
       const marked = book.pages.filter((page) => flags.has(page.id));
@@ -163,8 +190,20 @@ function Editor({ host, book }: { host: HostAPI; book: Book | null }) {
     }
     return run(() => host.apply(book, changes));
   };
+  const markSpread = (selection = ids) => {
+    if (busy) return;
+    try { void update(toggleSpreadMark(book, selection)); }
+    catch (error) { host.report(error); }
+  };
+  const clearSpreads = (selection: Set<string>) =>
+    void update(setSpreadMarks(book, marks.filter((pair) => !pair.some((id) => selection.has(id)))));
   const select = (id: string, event?: React.MouseEvent) => {
-    if (event?.shiftKey && anchor.current) {
+    if (event?.altKey && current) {
+      const pair = current.id === id ? new Set(ids) : new Set([current.id, id]);
+      markSpread(pair);
+      setSelected(pair);
+      anchor.current = id;
+    } else if (event?.shiftKey && anchor.current) {
       const a = book.pages.findIndex((p) => p.id === anchor.current),
         b = book.pages.findIndex((p) => p.id === id);
       setSelected(
@@ -182,6 +221,7 @@ function Editor({ host, book }: { host: HostAPI; book: Book | null }) {
     }
     setFocus(id);
   };
+  requestedSelect.current = select;
   const remove = (selection = ids) =>
     run(async () => {
       if (
@@ -322,9 +362,15 @@ function Editor({ host, book }: { host: HostAPI; book: Book | null }) {
     setSelected(selection);
     setFocus(id);
     anchor.current = id;
+    let canMark = false;
+    try { toggleSpreadMark(book, selection); canMark = true; } catch { /* Disabled for invalid selections. */ }
+    if (marks.some((pair) => selection.size === 2 && pair.every((id) => selection.has(id)))) canMark = false;
     void host
       .contextMenu(
         [
+          { text: t("Mark selected pages as a spread"), enabled: canMark, action: () => markSpread(selection) },
+          { text: t("Remove spread mark"), enabled: marks.some((pair) => pair.some((id) => selection.has(id))), action: () => clearSpreads(selection) },
+          { text: t("Rotate selected images 90° clockwise"), enabled: book.pages.some((page) => selection.has(page.id) && page.kind === "image"), action: () => void update(rotatePages(book, selection)) },
           {
             text: t("Split selected pages"),
             enabled: book.pages.some((p) => selection.has(p.id) && p.kind === "image" && !p.split),
@@ -384,6 +430,7 @@ function Editor({ host, book }: { host: HostAPI; book: Book | null }) {
   return (
     <div
       className="editor"
+      ref={editor}
       tabIndex={-1}
       onKeyDown={(event) => {
         if ((event.target as HTMLElement).matches("input,select,textarea") || busy) return;
@@ -449,6 +496,8 @@ function Editor({ host, book }: { host: HostAPI; book: Book | null }) {
           }}
         />
       )}
+      {suggestions && <SpreadSuggestions book={book} host={host} gap={gap} busy={busy} select={select}
+        unmark={(pair) => clearSpreads(new Set(pair))} close={() => setSuggestions(false)} />}
       <EditorToolbar
         book={book}
         ids={ids}
@@ -457,6 +506,11 @@ function Editor({ host, book }: { host: HostAPI; book: Book | null }) {
         readPreset={readPreset}
         writePreset={writePreset}
         openBatch={() => setBatch(true)}
+        suggestions={suggestions}
+        openSuggestions={() => {
+          if (host.openWindow) void run(() => host.openWindow!({plugin: "org.foluma.editor", view: "spreads", title: t("Blank suggestions"), width: 360, height: 480}));
+          else setSuggestions((open) => !open);
+        }}
       />
       <div className="editor-columns">
         <PagePanel
@@ -472,6 +526,7 @@ function Editor({ host, book }: { host: HostAPI; book: Book | null }) {
           contextMenu={contextMenu}
           gap={gap}
           flags={flags}
+          spreadIds={spreadIds}
           initialScroll={initial.scroll}
           update={update}
           setSelected={setSelected}

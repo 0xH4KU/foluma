@@ -16,6 +16,21 @@ export function parseRange(text: string, pages: Page[]): string[] {
   return [...chosen].sort((a, b) => a - b).map((i) => pages[i].id);
 }
 
+export function pageSize(page: Page): [number, number] {
+  const width = page.width * (page.crop?.[2] || 1), height = page.height * (page.crop?.[3] || 1);
+  return (page.rotation || 0) % 180 ? [height, width] : [width, height];
+}
+
+export function rotatePages(book: Book, ids: Set<string>): Changes {
+  return { pages: book.pages.map((page) => {
+    if (page.kind !== "image" || !ids.has(page.id)) return page;
+    const rotated = { ...page }, angle = ((page.rotation || 0) + 90) % 360 as Page["rotation"];
+    if (angle) rotated.rotation = angle;
+    else delete rotated.rotation;
+    return rotated;
+  }) };
+}
+
 export function splitPages(book: Book, ids: Set<string>, ratio = 0.5): Changes {
   if (!Number.isFinite(ratio) || ratio < 0.05 || ratio > 0.95)
     throw new Error(t("Split position must be between 5% and 95%"));
@@ -23,17 +38,29 @@ export function splitPages(book: Book, ids: Set<string>, ratio = 0.5): Changes {
   const pages = book.pages.flatMap((page) => {
     if (!ids.has(page.id) || page.kind === "blank" || page.split) return [page];
     const [x, y, w, h] = page.crop!;
+    let leftCrop: Page["crop"] = [x, y, w * ratio, h];
+    let rightCrop: Page["crop"] = [x + w * ratio, y, w * (1 - ratio), h];
+    if (page.rotation === 90) {
+      leftCrop = [x, y + h * (1 - ratio), w, h * ratio];
+      rightCrop = [x, y, w, h * (1 - ratio)];
+    } else if (page.rotation === 180) {
+      leftCrop = [x + w * (1 - ratio), y, w * ratio, h];
+      rightCrop = [x, y, w * (1 - ratio), h];
+    } else if (page.rotation === 270) {
+      leftCrop = [x, y, w, h * ratio];
+      rightCrop = [x, y + h * ratio, w, h * (1 - ratio)];
+    }
     const group = crypto.randomUUID();
     const left: Page = {
       ...page,
       id: crypto.randomUUID(),
-      crop: [x, y, w * ratio, h],
+      crop: leftCrop,
       split: { group, original: page, side: "left" },
     };
     const right: Page = {
       ...page,
       id: crypto.randomUUID(),
-      crop: [x + w * ratio, y, w * (1 - ratio), h],
+      crop: rightCrop,
       split: { group, original: page, side: "right" },
     };
     const pair = book.metadata.direction === "rtl" ? [right, left] : [left, right];
@@ -70,10 +97,14 @@ export function restorePages(book: Book, ids: Set<string>): Changes {
   return { pages, metadata: { cover_id: cover } };
 }
 
-export function spreadGroups(book: Book, gap: boolean): (Page | null)[][] {
-  const reading = book.pages.filter(
+export function readingPages(book: Book): Page[] {
+  return book.pages.filter(
     (p) => !book.metadata.cover_only || p.id !== book.metadata.cover_id,
   );
+}
+
+export function spreadGroups(book: Book, gap: boolean): (Page | null)[][] {
+  const reading = readingPages(book);
   const display: (Page | null)[] = gap && reading.length ? [null, ...reading] : reading;
   const groups: (Page | null)[][] = [];
   const cover = book.pages.find((p) => p.id === book.metadata.cover_id);
@@ -113,12 +144,12 @@ export function navigatePage(
 
 export function insertBlankPage(book: Book, page: Page | undefined, before: boolean): Changes {
   const pages = [...book.pages];
-  const crop = page?.crop || [0, 0, 1, 1];
+  const [width, height] = page ? pageSize(page) : [1200, 1600];
   const blank: Page = {
     id: crypto.randomUUID(),
     kind: "blank",
-    width: Math.max(1, Math.round((page?.width || 1200) * crop[2])),
-    height: Math.max(1, Math.round((page?.height || 1600) * crop[3])),
+    width: Math.max(1, Math.round(width)),
+    height: Math.max(1, Math.round(height)),
   };
   const index = page ? book.pages.indexOf(page) : -1;
   pages.splice(index < 0 ? 0 : index + (before ? 0 : 1), 0, blank);
@@ -132,10 +163,12 @@ type PresetPage =
       source_page?: number;
       asset_id?: string;
       crop: [number, number, number, number];
+      rotation?: Page["rotation"];
       split?: {
         group: string;
         side: "left" | "right";
         original_crop: [number, number, number, number];
+        original_rotation?: Page["rotation"];
       };
     };
 export type Preset = {
@@ -157,11 +190,13 @@ export function createPreset(book: Book): { payload: Preset; asset_ids: string[]
       source_page: sourcePage,
       asset_id: sourcePage ? undefined : page.asset_id,
       crop: page.crop!,
+      rotation: page.rotation,
       split: page.split
         ? {
             group: page.split.group,
             side: page.split.side,
             original_crop: page.split.original.crop!,
+            original_rotation: page.split.original.rotation,
           }
         : undefined,
     };
@@ -207,6 +242,7 @@ export function applyPreset(book: Book, payload: Preset, remap: Record<string, s
       kind: "image",
       asset_id: assetId,
       crop: item.crop,
+      ...(item.rotation ? { rotation: item.rotation } : {}),
       width: asset.width,
       height: asset.height,
       source_page: item.kind === "source" ? item.source_page : null,
@@ -216,7 +252,7 @@ export function applyPreset(book: Book, payload: Preset, remap: Record<string, s
       if (!group) {
         group = {
           id: crypto.randomUUID(),
-          original: { ...page, id: crypto.randomUUID(), crop: item.split.original_crop },
+          original: { ...page, id: crypto.randomUUID(), crop: item.split.original_crop, rotation: item.split.original_rotation || 0 },
         };
         groups.set(item.split.group, group);
       }

@@ -2,6 +2,21 @@
 
 Environment: macOS arm64, Python 3.14.4, PyMuPDF 1.28.2, Pillow 12.3.0, Node 25.8.2, Rust 1.98.1. The app uses a bundled interpreter; the end user does not need these development tools.
 
+## Background processing and book windows, 2026-10-07
+
+The current source passes 51 Python integration tests, 26 TypeScript/SDK tests, strict TypeScript/Vite builds, Ruff and the macOS debug app build. New checks cover bounded/shared parsing, authorized rendering queued behind an unapproved parse, cancellation before publishing staged imports, parallel export name reservation, immutable export revisions, serial-export preferences, signal-scoped cancellation, retained window sessions and cancellation of peer-window closing.
+
+Native checks used a separate `Foluma Check.app` identifier and isolated data directory with four generated twelve-page PDFs:
+
+- Three books preparse automatically; the complex fourth book waits for rendering consent. Confirming rendering changes the bottom-left preparation summary from 3/4 to 4/4. Restart reuses all four saved books.
+- Both processing options are enabled with concurrency 2 by default; saving concurrency 3 persists after leaving and reopening Preferences.
+- Two books open in independent windows. Inserting a blank in the first changes its page count to 13 while the second remains at 12. Switching the main window to another book preserves the first window's selection and undo state; undo returns it to 12. The blank-suggestion tool remains bound to its originating book/window and closes independently.
+- Batch export visibly runs two exports simultaneously, keeps book navigation available and reports two successful outputs. Both EPUB archives pass ZIP integrity checks; later edits correctly require re-export.
+- Quitting with uncommitted author input in a secondary window saves that input and closes all test windows. Targeted quit, close-response and page-selection listeners are scoped to their receiving windows; global Tauri listeners otherwise receive targeted events in every window.
+- Closing a project with its main blank-suggestion tool open closes the tool, releases its document retention and returns to the empty workspace. Cancelled peer closing preserves remaining windows and their document retention; restart uses the same peer-save checks.
+
+These UI checks used the development engine and plugin packages in a locally signed debug app; they do not establish release notarization or frozen-engine packaging.
+
 ## Automated
 
 `npm run test:engine` runs thirty-nine integration tests using real generated PDFs: exact JPEG stream retention; lossless Flate pixels; PDF physical order; composed/rotated/blank page handling; explicit raster consent; split crop and cropped cover output; validated EPUB structure; monotonic revisions and atomic rejected edits; undo/redo; project round-trip, embedded images, unknown extension state and source relinking; portable asset bundles; plugin installation, SHA checks, ZIP traversal rejection, restart/safe mode/removal/reinstallation, native worker execution; first-launch bundled editor installation respecting disable/removal/existing profiles; cancellation preserving an existing output; atomic completed-task results; live language installation/disable/removal/reinstallation, safe-mode fallback and invalid language packages; JSON-RPC startup/EOF handling. Series checks cover natural sorting, lazy loading, independent edits, shared settings, review/export revision tracking, restart restoration and missing sources. An injected autosave failure preserves the old project and current dirty document, blocks switching and permits a later successful save. PDF performance regressions cover resource lookup without pixel hashing, temporary versus export compression, singleton filter arrays, rejection of oversized images before extraction, and worker phase timings. Format-plugin checks cover independent defaults, removal without automatic reinstallation, legacy migration with preserved edits, generic input/output suffixes, ambiguous providers and source-independent saved books.

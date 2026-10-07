@@ -3,7 +3,7 @@ import type { Book, Changes, HostAPI, Page } from "../../../sdk/types";
 import { t } from "../../../sdk/i18n";
 import { Icon } from "../../../sdk/icons";
 import { moveBefore } from "../../../sdk/order";
-import { isPair, navigatePage, parseRange, restorePages, spreadPages } from "./pages";
+import { isPair, navigatePage, pageSize, parseRange, restorePages, rotatePages, spreadPages } from "./pages";
 import { PageImage, Thumbnails, type ViewState } from "./thumbnails";
 
 type SelectPage = (id: string, event?: React.MouseEvent) => void;
@@ -17,6 +17,8 @@ export function EditorToolbar({
   readPreset,
   writePreset,
   openBatch,
+  suggestions,
+  openSuggestions,
 }: {
   book: Book;
   ids: Set<string>;
@@ -25,6 +27,8 @@ export function EditorToolbar({
   readPreset: () => Promise<void>;
   writePreset: () => Promise<void>;
   openBatch: () => void;
+  suggestions: boolean;
+  openSuggestions: () => void;
 }) {
   return (
     <div className="editor-toolbar">
@@ -35,6 +39,7 @@ export function EditorToolbar({
         </span>
       </div>
       <div className="toolbar-actions">
+        <button aria-expanded={suggestions} onClick={openSuggestions}>{t("Blank suggestions…")}</button>
         <button
           title={t("Undo ⌘Z")}
           disabled={busy || !book.can_undo}
@@ -86,6 +91,7 @@ export function PagePanel({
   contextMenu,
   gap,
   flags,
+  spreadIds,
   initialScroll,
   rememberScroll,
   update,
@@ -104,6 +110,7 @@ export function PagePanel({
   contextMenu: (id: string, at: { x: number; y: number }) => void;
   gap: boolean;
   flags: Set<string>;
+  spreadIds: Set<string>;
   initialScroll: number;
   rememberScroll: (top: number) => void;
   update: Update;
@@ -184,6 +191,7 @@ export function PagePanel({
         context={contextMenu}
         gap={gap}
         flags={flags}
+        spreadIds={spreadIds}
         initialScroll={initialScroll}
         rememberScroll={rememberScroll}
         move={(moving, before) => void update({ pages: moveBefore(book.pages, moving, before) })}
@@ -193,6 +201,7 @@ export function PagePanel({
         {t(" selected · Shift / ⌘ to select multiple")}
         <br />
         {t("Drag to reorder · Right-click for actions")}
+        <br />{t("Option-click another page to mark a spread")}
       </div>
     </aside>
   );
@@ -255,8 +264,7 @@ export function PreviewPanel({
     return () => observer.disconnect();
   }, []);
   const displayed = spread ? spreadPages(book, current?.id || null, gap) : current ? [current] : [];
-  const aspect = (page: Page) =>
-    (page.width * (page.crop?.[2] || 1)) / (page.height * (page.crop?.[3] || 1));
+  const aspect = (page: Page) => { const [width, height] = pageSize(page); return width / height; };
   const aspects = displayed.map((page) => (page ? aspect(page) : current ? aspect(current) : 1));
   const totalAspect = aspects.reduce((sum, value) => sum + value, 0) || 1;
   const previewHeight =
@@ -528,7 +536,11 @@ export function Inspector({
                   ? t("Split · {0} half", current.split.side === "left" ? t("left") : t("right"))
                   : t("Full page")}
             </dd>
+            <dt>{t("Rotation")}</dt>
+            <dd>{current?.rotation || 0}°</dd>
           </dl>
+          <button className="full-width" disabled={!book.pages.some((page) => ids.has(page.id) && page.kind === "image")}
+            onClick={() => void update(rotatePages(book, ids))}>{t("Rotate selected images 90° clockwise")}</button>
         </section>
         <details className="inspector-actions">
           <summary>{t("Insert pages")}</summary>

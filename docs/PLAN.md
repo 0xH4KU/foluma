@@ -10,7 +10,7 @@ Accepted direction: a new independent repository, macOS first, portable architec
 - Plugin packages contain a versioned manifest and either optional web/native code or a data-only language catalog. Code plugins are trusted local code, not an OS sandbox; lifecycle changes take effect on restart. Language packages install, disable and remove immediately, with English built in as the default and fallback.
 - The editor uses the public host API and ships as a separate plugin package inside the app. A fresh profile installs it offline by default; existing settings, including disable/removal, are respected. It includes preview, reader-style leading blank-page pairing, reorder, insert/delete, split/restore, covers, original image export, presets and undo/redo.
 - New .mteproj directory format references original PDFs with fingerprints, embeds inserted/generated assets, preserves unknown plugin state, supports source relinking. No legacy project compatibility.
-- Future: format plugins and spread analysis; OCR/translation/typesetting use stable page IDs, original/derived assets and namespaced plugin state.
+- Future: OCR/translation/typesetting use stable page IDs, original/derived assets and namespaced plugin state. Image-based automatic spread diagnosis has been abandoned in favor of manual marks in the editor.
 
 ## Delivery checks
 
@@ -37,19 +37,29 @@ Accepted direction: a new independent repository, macOS first, portable architec
 
 Series scanning currently includes PDFs immediately inside the selected folder. Each volume uses the existing `.mteproj` format and export queue. Preset copying remains an advanced editor tool for documents with known matching structures.
 
-## Pending work — usage discussion, 2026-09-27
+## Manual spread marks and blank suggestions, 2026-10-06
 
-- [ ] **Spread analysis and insertion suggestions — separate optional plugin, explicitly deferred.** Most input spreads already consist of two separate single pages and need blank-page insertion to correct left/right pairing. Some arrive as complete landscape images; the user normally splits these into two pages for reader compatibility. Keep this assistant out of the base editor's required workflow.
+- Automatic image-based spread diagnosis is abandoned: the editor's facing thumbnails already support fast visual inspection.
+- [x] Option-click or use the context menu to mark two adjacent image pages as a spread. Store the relationship by stable page IDs in the editor's existing extension data; saving and undo/redo retain it.
+- [x] Calculate blank-insertion ranges across all manually marked spreads using the current order, existing blanks, cover placement and leading-blank preview setting. One insertion can align several marks; each volume is independent.
+- [x] Show current spread previews and reference positions in a compact independent native window, initially outside the main window when screen space permits. The title bar supports dragging beyond the app and onto other displays. Users choose the actual insertion point and use the existing blank-page actions; previews update after edits. Closing the tool keeps the main editor open.
+- [x] Flag missing, separated, excluded or conflicting marked pages and suspend recommendations until those relationships are corrected or removed. Never insert inside a marked spread.
 
-The deferred spread plugin should follow this sequence:
+This prototype extends the existing page-editor plugin; it adds no image analysis dependency, independent plugin or automatic blank insertion.
 
-1. Use computer vision or another suitable method to propose candidate page pairs. The algorithm/technology is not selected yet. Existing split-page provenance can supply known pairs.
-2. Show adjacent-page previews in a candidate list. Let the user explicitly confirm true positives and reject false positives; retain those decisions with the book's stable page IDs.
-3. Plan across the whole book using the confirmed pairs, reading direction, cover handling and the chosen reader's initial page-pairing behavior. An inserted blank changes all subsequent pairing, so evaluate the combined result rather than fixing each candidate independently.
-4. Suggest insertion boundaries between identified pages, with a before/after preview and the affected downstream spreads. Preserve visual continuity: do not insert a blank inside a confirmed spread or silently override the user's existing edits. If constraints conflict or continuity is uncertain, flag the location for manual review.
-5. Keep analysis and insertion separate. Suggestions must not automatically modify the book; apply only user-approved changes and support undo. Each volume has its own candidates and plan, without assuming shared spread locations across the series.
+## Page rotation, 2026-10-06
 
-The intended benefit is less manual inspection and page-parity bookkeeping while retaining human control over image continuity and final quality. The spread assistant remains future work; folder-based series editing is implemented independently of detection.
+- [x] Rotate selected image pages clockwise in 90-degree steps from page properties or the context menu. Preserve source assets and stable page IDs; retain rotation in saved projects, undo/redo and layout presets.
+- [x] Render previews in the selected orientation, split in visual coordinates and size inserted blanks to match rotated pages.
+- [x] Normalize rotated images once in the engine's export staging pipeline so all format exporters receive correctly oriented lossless PNG assets and transformed crops. Keep document edits and original-image exports untouched.
+
+## Background processing and book windows, 2026-10-07
+
+- [x] Preparse managed projects on open/add, enabled by default; persist ordinary book projects and join/promote existing tasks when a book is opened. Require consent for complex PDF rendering.
+- [x] Bound parsing and export independently (default 2, configurable 1–8); allow serial export and disable preparsing through Preferences. Keep editing and book switching available during background work.
+- [x] Stage imports away from the document lock, publish only after cancellation/project checks, reserve parallel export filenames and keep immutable export revisions.
+- [x] Show aggregate activity and individual progress/cancellation in the bottom-left status bar.
+- [x] Open project books in independent native editor windows, filter document events, retain shared sessions/undo state and bind tools to their originating document/window. Check pending edits before closing other windows or switching projects.
 
 UI direction: traditional desktop tooling inspired by calibre, with labeled icon commands, a dense page table, sidebar navigation, book/page properties and a fixed status bar. The editor supports both list and thumbnail views without changing the document model or core/plugin boundary.
 

@@ -6,17 +6,20 @@ import {
   createPreset,
   insertBlankPage,
   navigatePage,
+  pageSize,
   parseRange,
   restorePages,
+  rotatePages,
   splitPages,
   spreadGroups,
   spreadPages,
 } from "../plugins/editor/src/pages.ts";
 import { moveBefore } from "../sdk/order.ts";
 import { REVIEW_EXTENSION_ID, reviewData } from "../sdk/review.ts";
+import { setSpreadMarks, spreadMarks, spreadRecommendations, toggleSpreadMark } from "../plugins/editor/src/spreads.ts";
 
-function fixture(): Book {
-  const pages: Page[] = [1, 2, 3, 4].map((n) => ({
+function fixture(count = 4): Book {
+  const pages: Page[] = Array.from({ length: count }, (_, index) => index + 1).map((n) => ({
     id: `page-${n}`,
     kind: "image",
     asset_id: `asset-${n}`,
@@ -36,7 +39,7 @@ function fixture(): Book {
         { kind: "pdf", width: 1200, height: 1600, source_page: p.source_page, ext: "jpg" },
       ]),
     ),
-    sources: { source: { path: "/test.pdf", page_count: 4, sha256: "hash" } },
+    sources: { source: { path: "/test.pdf", page_count: count, sha256: "hash" } },
     extensions: {},
     metadata: {
       title: "書",
@@ -227,4 +230,110 @@ test("blank insertion preserves source identities and matches a cropped page's d
   assert.equal(after[1].id, page.id);
   assert.equal(after[2].kind, "blank");
   assert.deepEqual(book, original);
+});
+
+test("manual spread marks preserve review data, validate selections and toggle by stable IDs", () => {
+  const book = fixture();
+  book.extensions[REVIEW_EXTENSION_ID] = { review: ["page-1"], extra: "keep" };
+  const original = structuredClone(book);
+  const changes = toggleSpreadMark(book, new Set(["page-3", "page-2"]));
+  book.extensions[REVIEW_EXTENSION_ID] = changes.extension!.data;
+  assert.deepEqual(spreadMarks(book), [["page-2", "page-3"]]);
+  assert.deepEqual(reviewData(book).review, ["page-1"]);
+  assert.equal(reviewData(book).extra, "keep");
+  assert.deepEqual(book.pages, original.pages);
+  assert.throws(() => toggleSpreadMark(book, new Set(["page-1", "page-2"])));
+  assert.throws(() => toggleSpreadMark(book, new Set(["page-1", "page-4"])));
+  assert.throws(() => toggleSpreadMark(book, new Set(["page-1", "missing"])));
+  const removed = toggleSpreadMark(book, new Set(["page-3", "page-2"]));
+  book.extensions[REVIEW_EXTENSION_ID] = removed.extension!.data;
+  assert.deepEqual(spreadMarks(book), []);
+  book.extensions[REVIEW_EXTENSION_ID] = { spreads: [["page-2", "page-3"], ["page-3", "page-2"], [], ["page-1", "page-1"], [1, 2]] };
+  assert.deepEqual(spreadMarks(book), [["page-2", "page-3"]]);
+});
+
+test("quarter-turn rotations preserve source images, split in visual coordinates and travel with presets", () => {
+  for (const direction of ["rtl", "ltr"] as const) {
+    const original = fixture();
+    original.metadata.direction = direction;
+    let book = structuredClone(original);
+    for (const angle of [90, 180, 270, 0] as const) {
+      book = { ...book, pages: rotatePages(book, new Set(["page-2"])).pages! };
+      assert.equal(book.pages[1].rotation || 0, angle);
+      assert.deepEqual(pageSize(book.pages[1]), angle % 180 ? [1600, 1200] : [1200, 1600]);
+      const blank = insertBlankPage(book, book.pages[1], true).pages![1];
+      assert.deepEqual([blank.width, blank.height], pageSize(book.pages[1]));
+      const split = { ...book, pages: splitPages(book, new Set(["page-2"]), 0.4).pages! };
+      const halves = split.pages.filter((page) => page.split);
+      const left = halves.find((page) => page.split!.side === "left")!;
+      const right = halves.find((page) => page.split!.side === "right")!;
+      const [width, height] = pageSize(book.pages[1]);
+      assert.deepEqual(pageSize(left), [width * 0.4, height]);
+      assert.deepEqual(pageSize(right), [width * 0.6, height]);
+      assert.deepEqual(restorePages(split, new Set([left.id])).pages, book.pages);
+      const preset = createPreset(split);
+      const restored = { ...original, pages: applyPreset(original, preset.payload, {}).pages! };
+      assert.equal(restored.pages[1].rotation || 0, angle);
+      assert.equal(restorePages(restored, new Set([restored.pages[1].id])).pages![1].rotation || 0, angle);
+    }
+    assert.deepEqual(book.pages, original.pages, "four quarter turns restore the original page data");
+    assert.deepEqual(book.assets, original.assets);
+    const blankBook = { ...original, pages: insertBlankPage(original, original.pages[0], true).pages! };
+    assert.equal(rotatePages(blankBook, new Set([blankBook.pages[0].id])).pages![0], blankBook.pages[0]);
+  }
+});
+
+test("one blank can fix multiple marked spreads and every suggested boundary agrees with the actual preview", () => {
+  const book = fixture(65);
+  book.extensions[REVIEW_EXTENSION_ID] = setSpreadMarks(book, [["page-17", "page-18"], ["page-60", "page-61"]]).extension!.data;
+  assert.equal(spreadRecommendations(book, true).suggestions.length, 2, "original page numbers alone do not determine parity");
+  book.pages = insertBlankPage(book, book.pages[39], false).pages!;
+  const original = structuredClone(book);
+  const plan = spreadRecommendations(book, true);
+  assert.deepEqual(plan.suggestions, [{ from: "page-1", to: "page-17" }]);
+  assert.ok(plan.spreads.every((spread) => !spread.aligned && !spread.problem));
+  for (let boundary = 0; boundary <= 16; boundary++) {
+    const edited = { ...book, pages: insertBlankPage(book, book.pages[boundary], true).pages! };
+    assert.equal(spreadRecommendations(edited, true).suggestions.length, 0);
+    assert.ok(spreadRecommendations(edited, true).spreads.every((spread) => spread.aligned));
+    for (const ids of spreadMarks(edited))
+      assert.ok(spreadGroups(edited, true).some((group) => ids.every((id) => group.some((page) => page?.id === id))));
+  }
+  assert.deepEqual(book, original, "recommendations must not modify the document");
+  for (const direction of ["rtl", "ltr"] as const)
+    for (const cover_only of [false, true])
+      for (const gap of [false, true]) {
+        const target = fixture(8);
+        target.metadata = { ...target.metadata, direction, cover_only };
+        target.extensions[REVIEW_EXTENSION_ID] = setSpreadMarks(target, [["page-2", "page-3"], ["page-5", "page-6"]]).extension!.data;
+        for (const location of ["from", "to"] as const) {
+          const edited = structuredClone(target);
+          for (const suggestion of spreadRecommendations(target, gap).suggestions)
+            edited.pages = insertBlankPage(edited, edited.pages.find((page) => page.id === suggestion[location]), true).pages!;
+          assert.ok(spreadRecommendations(edited, gap).spreads.every((spread) => spread.aligned));
+          for (const ids of spreadMarks(edited))
+            assert.ok(spreadGroups(edited, gap).some((group) => ids.every((id) => group.some((page) => page?.id === id))));
+        }
+      }
+});
+
+test("invalidated spread relationships stay removable and suppress unsafe recommendations", () => {
+  const book = fixture();
+  book.extensions[REVIEW_EXTENSION_ID] = setSpreadMarks(book, [["page-2", "page-3"]]).extension!.data;
+  book.pages = insertBlankPage(book, book.pages[2], true).pages!;
+  assert.ok(spreadRecommendations(book, true).spreads[0].problem);
+  assert.deepEqual(spreadRecommendations(book, true).suggestions, []);
+  book.pages = book.pages.filter((page) => page.id !== "page-2");
+  assert.ok(spreadRecommendations(book, true).spreads[0].problem);
+  book.extensions[REVIEW_EXTENSION_ID] = toggleSpreadMark(book, new Set(["page-2", "page-3"])).extension!.data;
+  assert.deepEqual(spreadMarks(book), []);
+  const cover = fixture();
+  cover.metadata.cover_only = true;
+  assert.throws(() => toggleSpreadMark(cover, new Set(["page-1", "page-2"])));
+  cover.extensions[REVIEW_EXTENSION_ID] = setSpreadMarks(cover, [["page-1", "page-2"]]).extension!.data;
+  assert.ok(spreadRecommendations(cover, true).spreads[0].problem);
+  cover.metadata.cover_only = false;
+  cover.extensions[REVIEW_EXTENSION_ID] = setSpreadMarks(cover, [["page-1", "page-2"], ["page-2", "page-3"]]).extension!.data;
+  assert.ok(spreadRecommendations(cover, true).spreads.every((spread) => spread.problem));
+  assert.deepEqual(spreadRecommendations(cover, true).suggestions, []);
 });

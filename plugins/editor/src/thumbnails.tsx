@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import type { Book, HostAPI, Page } from "../../../sdk/types";
 import { t } from "../../../sdk/i18n";
+import { Icon } from "../../../sdk/icons";
 import { spreadGroups } from "./pages";
 
 export type ViewState = {
@@ -36,6 +37,7 @@ export function PageImage({
     book.id,
     page.id,
     page.crop,
+    page.rotation,
     size,
     asset?.path,
     book.sources[asset?.source_id || ""]?.path,
@@ -113,6 +115,7 @@ export function Thumbnails({
   context,
   gap,
   flags,
+  spreadIds,
   initialScroll,
   rememberScroll,
 }: {
@@ -127,6 +130,7 @@ export function Thumbnails({
   context: (id: string, at: { x: number; y: number }) => void;
   gap: boolean;
   flags: Set<string>;
+  spreadIds: Set<string>;
   initialScroll: number;
   rememberScroll: (top: number) => void;
 }) {
@@ -267,7 +271,7 @@ export function Thumbnails({
         rememberScroll(top);
       }}
       onPointerDown={(e) => {
-        if (busy || e.button !== 0) return;
+        if (busy || e.button !== 0 || e.altKey) return;
         const id = (e.target as HTMLElement).closest<HTMLElement>("[data-page-id]")?.dataset.pageId;
         if (id)
           drag.current = {
@@ -344,6 +348,7 @@ export function Thumbnails({
                     positions.get(page.id),
                     page.id === book.metadata.cover_id ? t(", cover") : "",
                   ) + (flags.has(page.id) ? ` · ${t("Page needs attention")}` : "")
+                    + (spreadIds.has(page.id) ? ` · ${t("Marked spread")}` : "")
                 }
                 aria-pressed={selected.has(page.id)}
                 draggable={false}
@@ -371,6 +376,7 @@ export function Thumbnails({
                           : t("Insert images")}
                     </span>
                     <span className="page-state">
+                      {spreadIds.has(page.id) && <span className="spread-mark-inline" title={t("Marked spread")}><Icon name="book" /></span>}
                       {flags.has(page.id)
                         ? t("Review")
                         : page.id === book.metadata.cover_id
@@ -389,6 +395,7 @@ export function Thumbnails({
                     <span className="thumb-image">
                       <PageImage book={book} page={page} host={host} />
                       {page.id === book.metadata.cover_id && <em>{t("Cover")}</em>}
+                      {spreadIds.has(page.id) && <span className="spread-mark" title={t("Marked spread")}><Icon name="book" /></span>}
                       {flags.has(page.id) && (
                         <b className="review-flag" title={t("Needs review")}>
                           !

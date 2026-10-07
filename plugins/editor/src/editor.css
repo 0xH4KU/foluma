@@ -87,6 +87,7 @@ small {
   height: 15px;
 }
 .editor {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -880,6 +881,72 @@ small {
   align-self: center;
   font-size: 11px;
 }
+
+.spread-mark {
+  position: absolute;
+  bottom: 2px;
+  right: 2px;
+  display: flex;
+  background: var(--accent);
+  color: white;
+  padding: 2px;
+  border-radius: 2px;
+}
+.spread-mark .icon, .spread-mark-inline .icon { width: 12px; height: 12px; }
+.spread-mark-inline { display: inline-flex; vertical-align: middle; margin-right: 3px; }
+.spread-suggestions {
+  position: absolute;
+  inset: 43px 10px auto auto;
+  margin: 0;
+  z-index: 6;
+  width: min(640px, calc(100% - 218px));
+  max-height: calc(100% - 53px);
+  overflow: auto;
+  padding: 12px;
+  color: var(--ink);
+  background: var(--side);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  box-shadow: 0 5px 18px #0003;
+}
+.spread-suggestions > header, .spread-suggestion > header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.spread-suggestions > header { position: sticky; top: -12px; background: var(--side); padding: 5px 0; z-index: 1; }
+.spread-suggestions strong { font-size: 12px; }
+.spread-suggestion-summary { margin: 12px 0; padding: 10px; background: var(--hover); }
+.spread-suggestion-summary > div { margin-top: 8px; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; font-size: 11px; }
+.spread-suggestion-summary button { white-space: normal; text-align: left; }
+.spread-suggestion { padding: 10px 0; border-top: 1px solid var(--line); }
+.spread-suggestion > header > span { font-size: 11px; }
+.spread-suggestion-previews { display: flex; gap: 12px; margin-top: 8px; }
+.spread-suggestion-pair { display: flex; flex: 1; min-width: 0; gap: 1px; }
+.spread-suggestion-page, .spread-suggestion-gap { flex: 1; min-width: 0; padding: 4px; white-space: normal; background: #e4e5e7; }
+.spread-suggestion-page.marked { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.spread-suggestion-page > span { display: flex; align-items: center; justify-content: center; height: 135px; }
+.spread-suggestion-page img, .spread-suggestion-page .blank-image { max-width: 100%; max-height: 100%; object-fit: contain; }
+.spread-suggestion-page small { display: block; margin-top: 4px; }
+.spread-suggestion-gap { display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 10px; }
+.spread-tool { height: 100%; background: var(--side); }
+.spread-tool .spread-suggestions {
+  position: static;
+  width: 100%;
+  max-height: 100%;
+  height: 100%;
+  padding: 10px;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.spread-tool .spread-suggestions > header { display: none; }
+.spread-tool .spread-suggestion-page > span { height: 85px; }
+.spread-tool .spread-suggestion-previews { gap: 7px; }
+.spread-tool .spread-suggestion-page { padding: 2px; }
+.spread-tool .spread-suggestion-page small { font-size: 9px; }
 .preset-menu summary {
   cursor: pointer;
   padding: 5px 7px;
