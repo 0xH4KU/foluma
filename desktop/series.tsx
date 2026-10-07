@@ -4,6 +4,7 @@ import type { HostAPI, RenderResolution, Series, SeriesItem } from "../sdk/types
 import { t } from "../sdk/i18n";
 import { createActionRunner } from "../sdk/actions";
 import { SeriesExportPanel, SeriesExportResult, useSeriesExport } from "./series-export";
+import { openBookWindow } from "./tool-windows";
 import { moveBefore } from "../sdk/order";
 import { formatBytes } from "./storage";
 import { BookInformationDialog, type InformationChange } from "./book-information-dialog";
@@ -813,6 +814,10 @@ export function SeriesWorkspace({
                     >
                       {item.title}
                     </button>
+                    {!removed && <button className="open-book-window" disabled={busy || item.changed || item.missing}
+                      onClick={() => void prepare().then(() => openBookWindow(item, series.id)).catch(host.report)}>
+                      {t("Open in new window")}
+                    </button>}
                     <small>
                       {item.group || t("Ungrouped")} · {item.path.split(/[\\/]/).pop()}
                       {item.missing

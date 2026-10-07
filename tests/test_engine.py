@@ -734,7 +734,7 @@ class IntegrationTests(unittest.TestCase):
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             job = engine.call("task.get", {"id": identifier})
-            if job["state"] != "running":
+            if job["state"] not in ("queued", "running"):
                 return job
             time.sleep(0.02)
         self.fail("job did not finish")

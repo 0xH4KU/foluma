@@ -1,6 +1,6 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "windows": ["main"],
-  "permissions": ["core:default", "core:window:allow-destroy", "dialog:default", "opener:default"]
+  "windows": ["main", "book-*", "tool-*"],
+  "permissions": ["core:default", "core:window:allow-destroy", "core:window:allow-close", "core:window:allow-set-focus", "core:window:allow-set-position", "core:window:allow-show", "core:webview:allow-create-webview-window", "dialog:default", "opener:default"]
 }

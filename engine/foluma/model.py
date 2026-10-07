@@ -130,6 +130,9 @@ def validate(book: dict) -> None:
         seen.add(page["id"])
         if page.get("kind") not in ("image", "blank"):
             raise ValueError(t("A compatible plugin is required to process this page"))
+        rotation = page.get("rotation", 0)
+        if type(rotation) is not int or rotation not in (0, 90, 180, 270) or (rotation and page["kind"] != "image"):
+            raise ValueError(t("Rotation must be 0, 90, 180 or 270 degrees for image pages."))
         for name in ("width", "height"):
             if type(page.get(name)) is not int or not 0 < page[name] <= 100000:
                 raise ValueError(t("Invalid page size"))
@@ -157,6 +160,8 @@ def validate(book: dict) -> None:
                 ):
                     raise ValueError(t("Split page has no valid original page"))
                 validate_crop(original.get("crop"))
+                if type(original.get("rotation", 0)) is not int or original.get("rotation", 0) not in (0, 90, 180, 270):
+                    raise ValueError(t("Invalid original page rotation"))
     images = [p["id"] for p in book["pages"] if p["kind"] == "image"]
     if meta.get("cover_id") not in images:
         meta["cover_id"] = images[0] if images else None

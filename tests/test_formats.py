@@ -13,6 +13,7 @@ from unittest.mock import patch
 from zipfile import ZipFile, ZipInfo
 
 import pymupdf as fitz
+from foluma.media import crop_box, export_images, page_image, preview
 from foluma.model import new_id
 from foluma.plugins import Plugins, platform_id
 from foluma.service import Engine
@@ -40,13 +41,14 @@ class FormatPluginTests(unittest.TestCase):
         if hasattr(self, "engine"):
             self.engine.close()
         self.engine = Engine(self.profile)
+        self.engine.call("processing.configure", {"preparse": False})
         self.addCleanup(self.engine.close)
         return self.engine
 
     def task(self, operation, expected_state="completed", **params):
         job = self.engine.call("task.start", {"operation": operation, **params})
         deadline = time.monotonic() + 15
-        while job["state"] == "running" and time.monotonic() < deadline:
+        while job["state"] in ("queued", "running") and time.monotonic() < deadline:
             time.sleep(0.01)
             job = self.engine.call("task.get", {"id": job["id"]})
         self.assertEqual(job["state"], expected_state, job)
@@ -64,6 +66,66 @@ class FormatPluginTests(unittest.TestCase):
             archive.writestr(worker, f"#!{sys.executable}\nimport json,sys\nfrom pathlib import Path\n"
                              "request=json.loads(sys.stdin.readline())\n" + program)
         return path
+
+    def test_quarter_turns_preserve_originals_and_match_preview_in_all_export_formats(self):
+        self.assertEqual(crop_box({'width':1,'height':1,'crop':[0.99,0.99,0.01,0.01]}), (0,0,1,1))
+        for identifier in ['org.foluma.export.cbz', 'org.foluma.export.pdf', 'org.foluma.import.epub']:
+            self.engine.plugins.install_bundled(identifier)
+        self.restart()
+        source = self.root / 'asymmetric.png'
+        image = Image.new('RGB', (17, 13))
+        image.putdata([(x * 12, y * 15, (x + y) * 8) for y in range(13) for x in range(17)])
+        image.save(source)
+        original = source.read_bytes()
+        book = self.task('import', path=str(self.pdf))
+        book = self.task('images.import', document_id=book['id'], base_revision=book['revision'], paths=[str(source)], position=1)
+        page_id = book['pages'][1]['id']
+        for angle, transpose in [(90, Image.Transpose.ROTATE_270), (180, Image.Transpose.ROTATE_180), (270, Image.Transpose.ROTATE_90)]:
+            pages = copy.deepcopy(book['pages'])
+            pages[1].update(rotation=angle, crop=[0.13, 0.17, 0.53, 0.41])
+            book = self.engine.call('document.apply', {'document_id':book['id'], 'base_revision':book['revision'], 'changes':{'pages':pages,'metadata':{'cover_id':page_id}}})
+            with image.crop(crop_box(book['pages'][1])).transpose(transpose) as expected:
+                rendered = self.profile / preview(book, page_id, 1024, self.profile / 'previews')
+                with Image.open(rendered) as actual:
+                    self.assertEqual(actual.size, expected.size)
+                    self.assertEqual(actual.tobytes(), expected.tobytes())
+                cbz = self.root / f'rotated-{angle}.cbz'
+                self.task('export', document_id=book['id'], base_revision=book['revision'], path=str(cbz), plugin_id='org.foluma.export.cbz')
+                with ZipFile(cbz) as archive, Image.open(io.BytesIO(archive.read('00002.png'))) as actual:
+                    self.assertEqual(actual.size, expected.size)
+                    self.assertEqual(actual.tobytes(), expected.tobytes())
+                pdf = self.root / f'rotated-{angle}.pdf'
+                self.task('export', document_id=book['id'], base_revision=book['revision'], path=str(pdf), plugin_id='org.foluma.export.pdf')
+                with fitz.open(pdf) as document:
+                    actual = document[1].get_pixmap(alpha=False)
+                    self.assertEqual((actual.width, actual.height), expected.size)
+                    self.assertEqual(actual.samples, expected.tobytes())
+                epub = self.root / f'rotated-{angle}.epub'
+                self.task('export', document_id=book['id'], base_revision=book['revision'], path=str(epub), plugin_id='org.foluma.export.epub')
+                imported = self.task('import', path=str(epub), background=True)
+                with page_image(imported, imported['pages'][1]) as actual:
+                    self.assertEqual(actual.size, expected.size)
+                    self.assertEqual(actual.tobytes(), expected.tobytes())
+            self.assertEqual(source.read_bytes(), original)
+            self.assertEqual(self.engine.call('document.get', {})['pages'], book['pages'])
+        undo = self.engine.call('document.undo', {'document_id':book['id']})
+        self.assertEqual(undo['pages'][1]['rotation'], 180)
+        redo = self.engine.call('document.redo', {'document_id':book['id']})
+        self.assertEqual(redo['pages'][1]['rotation'], 270)
+        project = self.root / 'rotation.mteproj'
+        save_project(self.engine.session.book, project)
+        self.restart()
+        restored = self.engine.call('project.open', {'path':str(project)})
+        self.assertEqual(restored['pages'][1]['rotation'], 270)
+        originals = self.root / 'originals.zip'
+        export_images(restored, [page_id], str(originals))
+        with ZipFile(originals) as archive:
+            self.assertEqual(archive.read('00001.png'), original)
+        for angle in [True, 90.0, -90, 45, None, '90']:
+            pages = copy.deepcopy(restored['pages'])
+            pages[1]['rotation'] = angle
+            with self.assertRaises(ValueError):
+                self.engine.call('document.apply', {'document_id':restored['id'], 'base_revision':restored['revision'], 'changes':{'pages':pages}})
 
     def test_cbz_and_pdf_plugins_are_optional_independent_and_preserve_edited_pages(self):
         identifiers = {"org.foluma.import.cbz", "org.foluma.export.cbz", "org.foluma.export.pdf"}

@@ -2,6 +2,7 @@ export type RenderResolution = "auto" | number;
 export type Page = {
   id: string; kind: "image" | "blank"; width: number; height: number;
   asset_id?: string; crop?: [number, number, number, number]; source_page?: number | null;
+  rotation?: 0 | 90 | 180 | 270;
   split?: { group: string; original: Page; side: "left" | "right" };
 };
 export type Asset = {
@@ -25,11 +26,13 @@ export type Book = {
 export type Changes = {pages?: Page[]; metadata?: Partial<Metadata>; extension?: {id: string; data: unknown}};
 export type ReviewData = {review: string[]; [key: string]: unknown};
 export type Task = {
-  id: string; state: "running" | "completed" | "cancelled" | "failed"; operation: string;
+  id: string; state: "queued" | "running" | "completed" | "cancelled" | "failed"; operation: string;
+  entry_id?: string | null; title?: string; preparse?: boolean;
   document_id: string | null; revision: number | null;
   progress: {done: number; total: number; message: string}; result: unknown;
   error: {message: string; data?: unknown} | null;
 };
+export type ProcessingSettings = {preparse: boolean; parse_concurrency: number; parallel_export: boolean; export_concurrency: number};
 export type ExportVariant = {id: string; name: string; description: string; options: Record<string, unknown>};
 export type Plugin = {
   id: string; name: string; version: string; description?: string; api_version: number;
@@ -51,20 +54,25 @@ export type ProjectSummary = {added?: number; skipped?: number; folders_skipped?
 export type Series = {id: string; name: string; roots: string[]; current_id: string | null; output_directory: string; items: SeriesItem[]; managed: boolean; directory: string; groups: string[]; removed: SeriesItem[]; refreshed_at?: string; summary?: ProjectSummary};
 export interface HostAPI {
   version: 1;
+  view?: string;
+  openWindow?(options: {plugin: string; view: string; title: string; width: number; height: number}): Promise<void>;
+  closeWindow?(): Promise<void>;
+  selectPage?(id: string): Promise<void>;
+  onPageSelect?(listener: (id: string) => void): () => void;
   getLocale?(): import("./i18n").Locale;
   subscribeLocale?(listener: () => void): () => void;
   contextMenu?(items: {text: string; enabled?: boolean; action: () => void}[], at?: {x: number; y: number}): Promise<void>;
   setBusy?(busy: boolean): void;
-  cancelTask?(): Promise<void>;
+  cancelTask?(id?: string): Promise<void>;
   onFileDrop?(listener: (paths: string[]) => void): () => void;
-  getExportPreferences?(): {directory: string; dpi: RenderResolution};
+  getExportPreferences?(): {directory: string; dpi: RenderResolution; concurrency?: number};
   getFormats?(): Plugin[];
   setOutputDirectory?(directory: string): void;
   getDocument(): Book | null;
   subscribe(listener: (book: Book | null) => void): () => void;
   apply(book: Book, changes: Changes): Promise<Book>;
   rpc<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T>;
-  task<T = unknown>(params: Record<string, unknown>): Promise<T>;
+  task<T = unknown>(params: Record<string, unknown>, signal?: AbortSignal): Promise<T>;
   preview(book: Book, page: Page, size?: number, signal?: AbortSignal): Promise<string>;
   pickFile(options: FileOptions): Promise<string | string[] | null>;
   saveFile(name: string, extensions: string[]): Promise<string | null>;

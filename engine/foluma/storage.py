@@ -110,7 +110,7 @@ def write_asset(payload: bytes, directory: Path, extension: str) -> Path:
     return destination
 
 
-def save_project(book: dict, directory: Path) -> None:
+def save_project(book: dict, directory: Path, *, relative_to: Path | None = None) -> None:
     directory = directory.resolve()
     if directory.suffix != ".mteproj":
         raise ValueError(t("Use a .mteproj project name"))
@@ -120,12 +120,16 @@ def save_project(book: dict, directory: Path) -> None:
     data = copy.deepcopy(book)
     for source in data["sources"].values():
         try:
-            source["path"] = os.path.relpath(source["path"], directory)
+            source["path"] = os.path.relpath(source["path"], relative_to or directory)
         except ValueError:
             pass
     for asset in data["assets"].values():
         if asset["kind"] == "file":
-            path = copy_asset(Path(asset["path"]), directory / "assets", asset["ext"])
+            path = Path(asset["path"]).resolve()
+            if path.parent != (directory / "assets").resolve():
+                path = copy_asset(path, directory / "assets", asset["ext"])
+            elif not path.is_file():
+                raise ValueError(t("Project asset is missing: {0}", path.name))
             asset["path"] = path.relative_to(directory).as_posix()
     atomic_json(directory / "project.json", data)
 

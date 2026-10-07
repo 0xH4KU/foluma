@@ -29,7 +29,7 @@ export function createPreviewLoader(load: (book: Book, page: Page, size: number)
     if (signal?.aborted) {reject(signal.reason); return;}
     const asset = book.assets?.[page.asset_id || ""];
     const source = book.sources?.[asset?.source_id || ""];
-    const key = JSON.stringify([book.id,page.id,page.asset_id,page.width,page.height,page.crop,size,asset?.path,source?.path]);
+    const key = JSON.stringify([book.id,page.id,page.asset_id,page.width,page.height,page.crop,page.rotation,size,asset?.path,source?.path]);
     let preview = pending.get(key);
     if (!preview) {
       preview = {size,started: false,load: () => load(book,page,size),waiters: new Set()};

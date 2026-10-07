@@ -3,7 +3,8 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "reac
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { listen } from "@tauri-apps/api/event";
+import { getAllWebviewWindows } from "@tauri-apps/api/webviewWindow";
+import { emitTo, listen } from "@tauri-apps/api/event";
 import type {
   Book,
   HostAPI,
@@ -18,8 +19,10 @@ import { Icon } from "../sdk/icons";
 import { createActionRunner } from "../sdk/actions";
 import {
   connect,
+  bindDocument,
   createHost,
   dropFiles,
+  getTasks,
   resourceUrl,
   rpc,
   setDocument,
@@ -34,6 +37,7 @@ import { PluginManager } from "./plugin-manager";
 import { Toolbar, DocumentBar, Sidebar, StatusBar } from "./shell";
 import { Preferences } from "./preferences";
 import { ProjectWizard } from "./project-wizard";
+import { closeBookWindows } from "./tool-windows";
 import "./style.css";
 
 function PluginWorkspace({
@@ -92,7 +96,7 @@ function PluginWorkspace({
   );
 }
 
-function App() {
+function App({entryId}: {entryId?: string}) {
   const locale = useSyncExternalStore(subscribeLocale, getLocale);
   useEffect(() => {
     document.documentElement.lang = locale.code;
@@ -122,7 +126,7 @@ function App() {
   });
   const selectedBooks = seriesSelection.count;
   const seriesExport = useRef<(() => void) | null>(null);
-  const [job, setJob] = useState<Task | null>(null);
+  const [jobs, setJobs] = useState<Task[]>([]);
   const [ready, setReady] = useState(false);
   const [previewGeneration, setPreviewGeneration] = useState(0);
   const [draggingFiles, setDraggingFiles] = useState(false);
@@ -173,6 +177,7 @@ function App() {
   const createProject = async (method: "series.create" | "series.migrate", params: Record<string, unknown>) => {
     if (!(await replaceAllowed())) throw new Error(t("Project creation cancelled"));
     const created = await projectAction(async () => {
+      if (!(await closeBookWindows())) throw new Error(t("Project creation cancelled"));
       await rpc(method, params);
       setTab("series");
       setOutput("");
@@ -190,7 +195,7 @@ function App() {
       host.report(error);
     }
   };
-  const busy = working || pluginBusy || job?.state === "running";
+  const busy = working || pluginBusy;
   const latest = useRef({ book, busy, series, tab, replaceAllowed });
   latest.current = { book, busy, series, tab, replaceAllowed };
   const importers = plugins.active.filter((plugin) => plugin.format?.direction === "import");
@@ -222,10 +227,11 @@ function App() {
     let mounted = true;
     const stops: (() => void)[] = [
       host.subscribe(setBook),
-      subscribeTask(setJob),
+      subscribeTask(() => setJobs(getTasks())),
       subscribeActivity(setPluginBusy),
       subscribeSeries(setSeries),
     ];
+    const loading = new AbortController();
     const addStop = (fn: () => void) => {
       if (mounted) stops.push(fn);
       else fn();
@@ -241,16 +247,39 @@ function App() {
           series_error: string | null;
         }>("app.info");
         if (mounted) {
-          setDocument(info.document);
+          setJobs(getTasks());
+          let initial = info.document;
+          if (entryId) {
+            const volume = info.series?.items.find(item => item.id === entryId);
+            if (!volume || info.series?.id !== new URLSearchParams(window.location.search).get("project"))
+              throw new Error(t("This book is not in the current series"));
+            try {
+              initial = await host.task<Book>({operation: "series.open", entry_id: entryId, background: true}, loading.signal);
+            } catch (error) {
+              const data = (error as {data?: {kind: string; pages: number[]}}).data;
+              if (data?.kind !== "render_required") throw error;
+              if (!(await host.confirm(t("{0} pages in this book require rendering. Render them as PNG using {1}?",
+                data.pages.length, dpi === "auto" ? t("Auto resolution") : `${dpi} DPI`)))) {
+                await getCurrentWindow().close();
+                return;
+              }
+              initial = await host.task<Book>({operation: "series.open", entry_id: entryId, background: true, render: true, dpi}, loading.signal);
+            }
+            if (!mounted) return;
+            bindDocument(initial.id);
+            initial = await rpc<Book>("document.retain", {document_id: initial.id, window_id: getCurrentWindow().label});
+          }
+          setDocument(initial, initial?.id !== host.getDocument()?.id);
           setPlugins(info.plugins);
           setLocale(info.locale);
-          setSeries(info.series);
+          setSeries(entryId ? await rpc<Series>("series.get") : info.series);
+          setJobs(getTasks());
           setReady(true);
           if (info.series?.output_directory && !host.getExportPreferences?.().directory)
             host.setOutputDirectory?.(info.series.output_directory);
           if (info.series)
             setTab(
-              info.document && info.plugins.active.some((p) => p.id === "org.foluma.editor")
+              initial && info.plugins.active.some((p) => p.id === "org.foluma.editor")
                 ? "org.foluma.editor"
                 : "series",
             );
@@ -265,6 +294,7 @@ function App() {
         setDraggingFiles(payload.type === "enter" || payload.type === "over");
         if (payload.type === "drop" && !latest.current.busy) {
           const paths = payload.paths;
+          if (entryId) {dropFiles(paths); return;}
           if (latest.current.series?.managed && latest.current.tab === "series") dropFiles(paths);
           else if (paths.length === 1 && /\.[a-z0-9]+$/i.test(paths[0]))
             void importBookRef.current(paths[0]);
@@ -273,17 +303,29 @@ function App() {
       })
       .then(addStop);
     let choosingClose = false;
+    const prepareClose = async () => {
+      const active = getTasks().filter(task => ["queued", "running"].includes(task.state) &&
+        (!entryId || task.document_id === latest.current.book?.id && !["export", "images.export"].includes(task.operation)));
+      if ((latest.current.busy || active.length) &&
+          !(await host.confirm(t("A task is running. Closing will cancel it."), t("Close Foluma")))) return false;
+      for (const task of active) await rpc("task.cancel", {id: task.id});
+      if (!(await latest.current.replaceAllowed(t("Close Foluma")))) return false;
+      loading.abort();
+      return true;
+    };
     const close = async (quit: boolean) => {
       if (choosingClose) return;
       choosingClose = true;
       try {
-        if (
-          latest.current.busy
-            ? await host.confirm(t("A task is running. Closing will cancel it."), t("Close Foluma"))
-            : await latest.current.replaceAllowed(t("Close Foluma"))
-        )
+        if (await prepareClose()) {
+          if ((!entryId || quit) && !(await closeBookWindows(quit))) return;
           if (quit) await invoke("quit_app");
-          else await getCurrentWindow().destroy();
+          else {
+            for (const window of await getAllWebviewWindows())
+              if (window.label.startsWith(`tool-${getCurrentWindow().label}__`)) await window.destroy();
+            await getCurrentWindow().destroy();
+          }
+        }
       } catch (error) {
         host.report(error);
       } finally {
@@ -296,9 +338,16 @@ function App() {
         await close(false);
       })
       .then(addStop);
-    listen("app-quit-requested", () => void close(true)).then(addStop);
+    listen("app-quit-requested", () => void close(true), {target: getCurrentWindow().label}).then(addStop);
+    listen<{request: string; parent: string}>("ui-prepare-close", async ({payload}) => {
+      let accepted = false;
+      try {accepted = !choosingClose && await prepareClose();}
+      catch (error) {host.report(error);}
+      await emitTo(payload.parent, "ui-close-prepared", {request: payload.request, accepted});
+    }, {target: getCurrentWindow().label}).then(addStop);
     return () => {
       mounted = false;
+      loading.abort();
       stops.forEach((fn) => fn());
     };
   }, [host]);
@@ -309,11 +358,12 @@ function App() {
   };
   const restart = () =>
     run(async () => {
-      if (await replaceAllowed(t("Restart Foluma"))) await invoke("restart_app");
+      if (await replaceAllowed(t("Restart Foluma")) && await closeBookWindows(true)) await invoke("restart_app");
     }, false);
   const closeProject = () =>
     run(async () => {
       if (!(await replaceAllowed(t("Close project")))) return;
+      if (!(await closeBookWindows())) return;
       await rpc("series.close", { discard: true });
       setDocument(null);
       setSeries(null);
@@ -332,6 +382,7 @@ function App() {
         if (book) void saveProject();
       }
       if (key === "o") {
+        if (entryId) return;
         event.preventDefault();
         if (event.shiftKey) void openProject();
         else void importBook();
@@ -371,6 +422,7 @@ function App() {
           />
         ))}
       <Toolbar
+        documentWindow={!!entryId}
         ready={ready}
         busy={busy}
         book={book}
@@ -398,7 +450,7 @@ function App() {
         series={series}
         book={book}
         volume={volume}
-        nextVolume={nextVolume}
+        nextVolume={entryId ? null : nextVolume}
         busy={busy}
         savingInformation={savingInformation}
         hasMetadataDraft={Object.keys(metadataDraft).length > 0}
@@ -412,7 +464,7 @@ function App() {
       />
       <div className="application-body">
         <Sidebar
-          series={series}
+          series={entryId ? null : series}
           book={book}
           plugins={plugins}
           tab={tab}
@@ -436,21 +488,7 @@ function App() {
               </div>
             </div>
           )}
-          {job?.state === "running" && (
-            <div className="job" role="status">
-              <div>
-                <span>{job.progress.message}</span>
-                <small>
-                  {job.progress.done} / {job.progress.total}
-                </small>
-              </div>
-              <progress value={job.progress.done} max={job.progress.total || 1} />
-              <button onClick={() => void rpc("task.cancel", { id: job.id }).catch(host.report)}>
-                {t("Cancel")}
-              </button>
-            </div>
-          )}
-          {!book && tab === "convert" && (
+          {!entryId && !book && tab === "convert" && (
             <section className="welcome">
               <Icon name="book" />
               <h1>{t("Your workspace for books and pages")}</h1>
@@ -473,7 +511,7 @@ function App() {
               </button>
             </section>
           )}
-          {series && (
+          {!entryId && series && (
             <SeriesWorkspace
               key={series.id}
               series={series}
@@ -560,7 +598,9 @@ function App() {
       <StatusBar
         ready={ready}
         safeMode={plugins.safe_mode}
-        job={job}
+        jobs={jobs.filter(task => !task.preparse || series?.items.some(item => item.id === task.entry_id))}
+        prepared={new Set(series?.items.filter(item => item.document_id).map(item => item.id))}
+        cancel={id => void rpc("task.cancel", {id}).catch(host.report)}
         exportingSeries={tab === "series"}
         selectedBooks={selectedBooks}
         book={book}
@@ -570,4 +610,35 @@ function App() {
   );
 }
 
-createRoot(document.getElementById("root")!).render(<App />);
+function ToolApp({ id }: { id: string }) {
+  const [plugin, setPlugin] = useState<Plugin | null>(null);
+  const [error, setError] = useState("");
+  const host = useMemo(() => createHost(reason => setError(String(reason)), () => {}), []);
+  useEffect(() => {
+    let mounted = true;
+    let stop: (() => void) | undefined;
+    void connect(() => host.report(new Error(t("The document engine stopped. Please restart Foluma."))))
+      .then(async dispose => {
+        if (!mounted) { dispose(); return; }
+        stop = dispose;
+        const info = await rpc<{document: Book | null; plugins: PluginList; locale: Locale}>("app.info");
+        if (!mounted) return;
+        const identifier = new URLSearchParams(window.location.search).get("document");
+        const current = identifier ? await rpc<Book>("document.retain", {document_id: identifier, window_id: getCurrentWindow().label}) : info.document;
+        setDocument(current, current?.id !== host.getDocument()?.id);
+        setLocale(info.locale);
+        const selected = info.plugins.active.find(plugin => plugin.id === id && plugin.ui);
+        if (!selected) throw new Error(t("Plugin is not active"));
+        setPlugin(selected);
+      }).catch(host.report);
+    return () => { mounted = false; stop?.(); };
+  }, [host, id]);
+  return <div className="tool-window">
+    {error && <div className="notice error" role="alert">{error}</div>}
+    {plugin && <PluginWorkspace plugin={plugin} host={host} visible />}
+  </div>;
+}
+
+const tool = new URLSearchParams(window.location.search).get("plugin");
+const entry = new URLSearchParams(window.location.search).get("entry") || undefined;
+createRoot(document.getElementById("root")!).render(tool ? <ToolApp id={tool} /> : <App entryId={entry} />);

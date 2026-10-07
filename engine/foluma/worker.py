@@ -11,7 +11,8 @@ from .storage import parse_json
 
 
 def job_info(job: dict) -> dict:
-    return {key: value for key, value in job.items() if key not in ("process", "cancelled", "opening_over")}
+    return {key: value for key, value in job.items()
+            if not key.startswith("_") and key not in ("process", "cancelled", "opening_over")}
 
 
 def emit(value: dict) -> None:
@@ -69,6 +70,8 @@ def run(path: str) -> None:
             return media.import_images(**params, directory=data / "assets")
         if operation == "images.export":
             return media.export_images(**params, progress=progress)
+        if operation == "images.prepare_export":
+            return media.export_snapshot(**params, progress=progress)
         raise ValueError(t("Unsupported background task"))
 
     execute(operation, handle, request.get("messages", {}))

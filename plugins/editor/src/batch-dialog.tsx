@@ -37,7 +37,7 @@ export function BatchDialog({
     () => host.getExportPreferences?.().dpi || "auto",
   );
   const [running, setRunning] = useState(false);
-  const execute = useMemo(() => createActionRunner(host, setRunning), [host]);
+  const execute = useMemo(() => createActionRunner({...host, setBusy: undefined}, setRunning), [host]);
   const [finished, setFinished] = useState(false);
   const [progress, setProgress] = useState<{ index: number; total: number; name: string } | null>(
     null,
@@ -130,7 +130,6 @@ export function BatchDialog({
   };
   const cancel = () => {
     abort.current.abort();
-    void host.cancelTask?.().catch(host.report);
   };
   return (
     <dialog

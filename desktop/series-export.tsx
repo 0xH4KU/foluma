@@ -26,35 +26,35 @@ export function useSeriesExport({ series, host, busy, removed, dpi, chosen, run 
   const [rows, setRows] = useState<Record<string, BatchRow>>({});
   const abort = useRef(new AbortController());
   useEffect(() => () => abort.current.abort(), []);
-  const canExport = !removed && chosen.length > 0 && !!series.output_directory && !!outputFormat;
+  const canExport = !running && !removed && chosen.length > 0 && !!series.output_directory && !!outputFormat;
   const exportBooks = async (items = chosen, allowRendering = render, retrying = false) => {
-    if (removed || busy || !items.length || !series.output_directory || !outputFormat) return;
+    if (running || removed || busy || !items.length || !series.output_directory || !outputFormat) return;
     const cohort = items.map((item) => ({ id: item.id, path: item.path, title: item.title }));
-    await run(async () => {
-      setFinished(false);
-      setRunning(true);
-      abort.current = new AbortController();
-      setRows((old) => ({
-        ...(retrying ? old : {}),
-        ...Object.fromEntries(cohort.map((item) => [item.id, { path: item.path, state: "pending" as const }])),
-      }));
-      try {
-        host.setOutputDirectory?.(series.output_directory);
-        await runBatch(host, {
-          paths: cohort.map((item) => item.path), entries: cohort,
-          directory: series.output_directory, render: allowRendering, dpi,
-          exporter: outputFormat.id, exportOptions: variant?.options,
-        }, abort.current.signal, (index, row) => {
-          setRows((old) => ({ ...old, [cohort[index].id]: row }));
-          if (row.state === "working")
-            setProgress({ title: cohort[index].title, index: index + 1, total: cohort.length });
-        });
-      } finally {
-        setRunning(false);
-        setFinished(true);
-        setProgress(null);
-      }
-    });
+    if (!(await run(async () => {}))) return;
+    setFinished(false);
+    setRunning(true);
+    abort.current = new AbortController();
+    setRows((old) => ({
+      ...(retrying ? old : {}),
+      ...Object.fromEntries(cohort.map((item) => [item.id, { path: item.path, state: "pending" as const }])),
+    }));
+    try {
+      host.setOutputDirectory?.(series.output_directory);
+      await runBatch(host, {
+        paths: cohort.map((item) => item.path), entries: cohort,
+        directory: series.output_directory, render: allowRendering, dpi,
+        exporter: outputFormat.id, exportOptions: variant?.options,
+      }, abort.current.signal, (index, row) => {
+        setRows((old) => ({ ...old, [cohort[index].id]: row }));
+        if (row.state === "working")
+          setProgress({ title: cohort[index].title, index: index + 1, total: cohort.length });
+      });
+    } catch (error) {host.report(error);}
+    finally {
+      setRunning(false);
+      setFinished(true);
+      setProgress(null);
+    }
   };
   const chooseOutput = () => run(async () => {
     const directory = await host.pickFile({ directory: true, title: t("Choose output folder") });
@@ -65,7 +65,6 @@ export function useSeriesExport({ series, host, busy, removed, dpi, chosen, run 
   });
   const cancel = () => {
     abort.current.abort();
-    void host.cancelTask?.().catch(host.report);
   };
   const retryBook = (item: SeriesItem) => {
     const rendering = !!rows[item.id]?.renderRequired;
@@ -105,7 +104,7 @@ export function SeriesExportPanel({ series, busy, dpi, batch }: {
           {t("Output folder")}
           <button
             className="output-folder"
-            disabled={busy}
+            disabled={busy || running}
             title={series.output_directory}
             onClick={() => void batch.chooseOutput()}
           >
@@ -116,7 +115,7 @@ export function SeriesExportPanel({ series, busy, dpi, batch }: {
           {t("Output format")}
           <select
             aria-label={t("Output format")}
-            disabled={busy || !outputFormat}
+            disabled={busy || running || !outputFormat}
             value={outputFormat?.id || ""}
             onChange={(event) => { setExporter(event.target.value); setVariantId(""); }}
           >
@@ -129,12 +128,12 @@ export function SeriesExportPanel({ series, busy, dpi, batch }: {
           </select>
         </label>
         <ExportVariantSelect variants={outputFormat?.format?.variants} value={variantId}
-          onChange={setVariantId} disabled={busy} />
+          onChange={setVariantId} disabled={busy || running} />
         <label>
           <input
             type="checkbox"
             checked={render}
-            disabled={busy}
+            disabled={busy || running}
             onChange={(event) => setRender(event.target.checked)}
           />
           {t("Allow rendering complex pages")} (

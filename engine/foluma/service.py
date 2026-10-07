@@ -21,6 +21,8 @@ from .storage import atomic_json, contained, copy_asset, digest, open_project, p
 from .worker import job_info
 from .workers import Workers
 
+PROCESSING_DEFAULTS = {"preparse": True, "parse_concurrency": 2, "parallel_export": True, "export_concurrency": 2}
+
 
 def publish(staged: Path, target: Path, overwrite: bool) -> None:
     if overwrite:
@@ -44,6 +46,11 @@ class Engine:
         self.background_sessions: dict[str, Session] = {}
         self.lock = threading.RLock()
         self.jobs: dict[str, dict] = {}
+        self.pending: list[tuple[dict, dict, dict | None]] = []
+        self.threads: set[threading.Thread] = set()
+        self.document_windows: dict[str, str] = {}
+        self.preparse_attempted: set[str] = set()
+        self.export_targets: set[Path] = set()
         self.closing = False
         self.workers = Workers(data, notify)
         self.cache = PreviewCache(data, self.plugins.config.get("preview_cache_limit"))
@@ -68,6 +75,101 @@ class Engine:
                     self.session = session
             except (OSError, ValueError, KeyError, TypeError) as error:
                 self.series_error = str(error)
+        with self.lock:
+            self.schedule_preparse()
+
+    def processing(self) -> dict:
+        stored = self.plugins.config.get("processing", {})
+        if not isinstance(stored, dict):
+            return dict(PROCESSING_DEFAULTS)
+        return {key: stored[key] if key in stored and type(stored[key]) is type(default)
+                and (type(default) is bool or 1 <= stored[key] <= 8) else default
+                for key, default in PROCESSING_DEFAULTS.items()}
+
+    def configure_processing(self, params: dict) -> dict:
+        settings = self.processing() | params
+        if (set(params) - PROCESSING_DEFAULTS.keys()
+                or any(type(settings[key]) is not bool for key in ("preparse", "parallel_export"))
+                or any(type(settings[key]) is not int or not 1 <= settings[key] <= 8
+                       for key in ("parse_concurrency", "export_concurrency"))):
+            raise ValueError(t("Choose a concurrency between 1 and 8"))
+        config = self.plugins.config | {"processing": settings}
+        atomic_json(self.plugins.config_path, config)
+        self.plugins.config = config
+        if not settings["preparse"]:
+            self.cancel_preparse()
+        else:
+            self.schedule_preparse()
+        self.dispatch()
+        self.notify("processing.changed", settings)
+        return settings
+
+    def cancel(self, job: dict) -> None:
+        if job["state"] not in ("queued", "running"):
+            return
+        self.workers.cancel(job)
+        if job["state"] == "queued":
+            job.update(state="cancelled", error={"message": t("Task cancelled"), "data": None})
+            self.notify("task.changed", job_info(job))
+
+    def cancel_preparse(self) -> None:
+        for job in self.jobs.values():
+            if job.get("preparse") and not job.get("_retain"):
+                self.cancel(job)
+        self.pending = [item for item in self.pending if item[0]["state"] == "queued"]
+        self.preparse_attempted.clear()
+
+    def schedule_preparse(self) -> None:
+        if self.closing or not self.series or not self.series.managed or not self.processing()["preparse"]:
+            return
+        for entry in self.series.state["items"]:
+            if (entry.get("removed") or entry.get("changed") or entry["id"] in self.preparse_attempted
+                    or (self.series.project(entry) / "project.json").is_file() or not Path(entry["path"]).is_file()):
+                continue
+            self.preparse_attempted.add(entry["id"])
+            try:
+                self.start({"operation": "series.open", "entry_id": entry["id"], "background": True, "preparse": True})
+            except (OSError, ValueError):
+                # A disabled importer must not prevent opening the rest of the project.
+                continue
+
+    def dispatch(self) -> None:
+        if self.closing:
+            return
+        settings = self.processing()
+        limits = {"parse": settings["parse_concurrency"], "foreground": 1,
+                  "export": settings["export_concurrency"] if settings["parallel_export"] else 1}
+        running = {lane: sum(job["state"] == "running" and job.get("_lane") == lane
+                             for job in self.jobs.values()) for lane in limits}
+        # ponytail: scan the local queue; use a priority heap if projects have thousands of books.
+        self.pending.sort(key=lambda item: bool(item[0].get("preparse") and not item[0].get("_retain")))
+        for item in self.pending[:]:
+            job, params, book = item
+            if job["state"] != "queued":
+                self.pending.remove(item)
+                continue
+            lane = job["_lane"]
+            if running[lane] >= limits[lane]:
+                continue
+            if job.get("entry_id") and any(other["state"] == "running" and other.get("entry_id") == job["entry_id"]
+                                           and other.get("_series") is job["_series"] for other in self.jobs.values()):
+                continue
+            self.pending.remove(item)
+            job["state"] = "running"
+            running[lane] += 1
+            self.notify("task.changed", job_info(job))
+            thread = threading.Thread(target=self.execute, args=(job, params, book), daemon=True)
+            self.threads.add(thread)
+            thread.start()
+
+    def session_for_entry(self, entry: dict) -> Session | None:
+        identifier = entry.get("document_id")
+        return (self.session if self.session and self.session.book["id"] == identifier
+                else self.background_sessions.get(identifier))
+
+    def release_document(self, identifier: str) -> None:
+        if identifier not in self.document_windows.values():
+            self.background_sessions.pop(identifier, None)
 
     def document(self, params: dict, revision: bool = False) -> Session:
         session = (
@@ -119,12 +221,10 @@ class Engine:
                 self.series.remember(item, session, preserve_review)
                 self.series_changed()
             except Exception:
-                if session is self.session:
-                    self.notify("document.changed", session.snapshot())
+                self.notify("document.changed", session.snapshot())
                 raise
         snapshot = session.snapshot()
-        if session is self.session:
-            self.notify("document.changed", snapshot)
+        self.notify("document.changed", snapshot)
         return snapshot
 
     def series_changed(self) -> dict | None:
@@ -163,7 +263,13 @@ class Engine:
                     "locale": self.plugins.locale(),
                     "series": self.series.snapshot() if self.series else None,
                     "series_error": self.series_error,
+                    "processing": self.processing(),
+                    "tasks": [job_info(job) | {"result": None} for job in self.jobs.values()],
                 }
+            if method == "processing.get":
+                return self.processing()
+            if method == "processing.configure":
+                return self.configure_processing(p)
             if method == "app.locale":
                 return self.plugins.set_locale(p["code"]) if "code" in p else self.plugins.locale()
             if method in ("storage.info", "storage.configure", "storage.clear"):
@@ -180,9 +286,11 @@ class Engine:
                 return self.start(p)
             if method == "task.cancel":
                 job = self.jobs[p["id"]]
-                if job["state"] == "running":
-                    self.workers.cancel(job)
+                self.cancel(job)
+                self.dispatch()
                 return True
+            if method == "task.list":
+                return [job_info(job) | {"result": None} for job in self.jobs.values()]
             if method == "task.get":
                 return job_info(self.jobs[p["id"]])
             if method.startswith("plugins."):
@@ -193,7 +301,28 @@ class Engine:
 
     def document_call(self, method: str, p: dict):
         if method == "document.get":
-            return self.session.snapshot() if self.session else None
+            return self.document(p).snapshot() if p.get("document_id") else self.session.snapshot() if self.session else None
+        if method == "document.retain":
+            window = p.get("window_id")
+            if not isinstance(window, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,256}", window):
+                raise ValueError(t("Invalid window ID"))
+            identifier = p.get("document_id")
+            if (self.series and identifier not in self.background_sessions
+                    and (not self.session or self.session.book["id"] != identifier)):
+                entry = next((item for item in self.series.state["items"]
+                              if item["document_id"] == identifier and not item.get("removed")), None)
+                if entry:
+                    loaded = self.series.load(entry)
+                    if loaded:
+                        self.background_sessions[identifier] = loaded
+            session = self.document(p)
+            self.document_windows[window] = session.book["id"]
+            return session.snapshot()
+        if method == "document.release_window":
+            identifier = self.document_windows.pop(p["window_id"], None)
+            if identifier:
+                self.release_document(identifier)
+            return True
         if method == "document.apply":
             session = self.document(p, True)
             before = session.book
@@ -205,14 +334,19 @@ class Engine:
             session.history(p["document_id"], method.endswith("redo"))
             return self.changed(session, review_unchanged(before, session.book))
         if method == "document.release":
-            self.background_sessions.pop(p["document_id"], None)
+            if p.get("window_id"):
+                self.document_windows.pop(p["window_id"], None)
+            self.release_document(p["document_id"])
             return True
         if method == "project.open":
             if (Path(p["path"]) / ".foluma/project.json").is_file():
                 return self.series_call("series.open_project", p)
             session = Session(open_project(Path(p["path"])), p["path"])
             self.prepare_session(session)
+            if self.session and self.session.book["id"] in self.document_windows.values():
+                self.background_sessions[self.session.book["id"]] = self.session
             self.session = session
+            self.notify("document.activated", session.snapshot())
             return self.changed()
         if method == "project.save":
             session = self.document(p, True)
@@ -239,8 +373,6 @@ class Engine:
         raise ValueError(t("Unsupported operation: {0}", method))
 
     def storage_call(self, method: str, p: dict) -> dict:
-        if method != "storage.info" and any(job["state"] == "running" for job in self.jobs.values()):
-            raise ValueError(t("Complete or cancel the current background task first"))
         if method == "storage.configure":
             limit = p.get("limit")
             if type(limit) is not int or not 1_000_000_000 <= limit <= 1_000_000_000_000:
@@ -273,8 +405,20 @@ class Engine:
     def series_call(self, method: str, p: dict):
         if method == "series.get":
             return self.series.snapshot() if self.series else None
-        if any(job["state"] == "running" for job in self.jobs.values()):
-            raise ValueError(t("Complete or cancel the current background task first"))
+        if method not in ("series.preview", "series.review", "series.output", "series.configure"):
+            if any(job["state"] in ("queued", "running") and not job.get("cancelled")
+                   and (not job.get("preparse") or job.get("_retain"))
+                   for job in self.jobs.values()):
+                raise ValueError(t("Complete or cancel the current background task first"))
+            if self.document_windows and method in ("series.close", "series.create", "series.open_project",
+                                                    "series.scan", "series.migrate"):
+                raise ValueError(t("Close book windows before switching projects"))
+            if self.series and method in ("series.remove", "series.delete", "series.relink"):
+                ids = p.get("ids", [p.get("id")])
+                if any(item["id"] in ids and item["document_id"] in self.document_windows.values()
+                       for item in self.series.state["items"]):
+                    raise ValueError(t("Close this book's windows before removing or relinking it"))
+            self.cancel_preparse()
         if method == "series.preview":
             return preview_inputs(p["paths"], self.plugins.extensions("import"))
         if method == "series.close":
@@ -283,7 +427,7 @@ class Engine:
             (self.data / "series/current.json").unlink(missing_ok=True)
             self.series, self.session, self.series_error = None, None, None
             self.background_sessions.clear()
-            self.notify("document.changed", None)
+            self.notify("document.activated", None)
             return self.series_changed()
         if method in ("series.create", "series.open_project", "series.migrate"):
             return self.open_series(method, p)
@@ -317,7 +461,8 @@ class Engine:
         elif method == "series.output":
             self.series.set_output(p["directory"])
         elif method == "series.configure":
-            results = self.series.configure(p, self.session, lambda book: self.notify("document.changed", book))
+            results = self.series.configure(p, self.session, lambda book: self.notify("document.changed", book),
+                                            self.background_sessions)
             self.series_changed()
             return results
         else:
@@ -369,8 +514,12 @@ class Engine:
         project.activate()
         self.series, self.session, self.series_error = project, session, None
         self.background_sessions.clear()
-        self.notify("document.changed", session.snapshot() if session else None)
-        return self.series_changed()
+        self.jobs = {key: job for key, job in self.jobs.items()
+                     if not job.get("preparse") or job["state"] in ("queued", "running")}
+        self.notify("document.activated", session.snapshot() if session else None)
+        snapshot = self.series_changed()
+        self.schedule_preparse()
+        return snapshot
 
     def modify_series(self, method: str, p: dict):
         if not self.series.managed:
@@ -398,16 +547,19 @@ class Engine:
             self.series.relink(p["id"], p["path"])
         elif method == "series.reorder":
             self.series.reorder(p["ids"])
-        self.background_sessions.clear()
-        if self.session:
-            item = self.series.current(self.session)
+        for session in [*self.background_sessions.values(), *([self.session] if self.session else [])]:
+            item = self.series.current(session)
             if item:
                 if item.get("removed"):
-                    self.session = None
+                    self.release_document(session.book["id"])
+                    if session is self.session:
+                        self.session = None
+                        self.notify("document.activated", None)
                 else:
-                    self.series.synchronize(item, self.session)
-                self.notify("document.changed", self.session.snapshot() if self.session else None)
+                    self.series.synchronize(item, session)
+                    self.notify("document.changed", session.snapshot())
         state = self.series_changed()
+        self.schedule_preparse()
         return state | {"summary": summary} if summary is not None else state
 
     def bundle(self, method: str, p: dict) -> dict:
@@ -462,8 +614,7 @@ class Engine:
             return {"payload": value["payload"], "asset_ids": remap, "document": self.changed(session)}
 
     def start(self, p: dict) -> dict:
-        if any(j["state"] == "running" for j in self.jobs.values()):
-            raise ValueError(t("Complete or cancel the current background task first"))
+        p = dict(p)
         operation = p["operation"]
         if operation not in ("import", "series.open", "export", "images.import", "images.export", "plugin"):
             raise ValueError(t("Unsupported background task"))
@@ -478,27 +629,56 @@ class Engine:
             item = self.series.item(p["entry_id"])
             if not (self.series.project(item) / "project.json").is_file():
                 self.plugins.format("import", item["path"], p.get("plugin_id"))
-            if self.series.managed and not (self.series.project(item) / "project.json").is_file():
-                self.series.ensure_source(item)
-            if self.session:
+            if self.session and not p.get("background"):
                 self.changed()
+            for existing in self.jobs.values():
+                if (existing["state"] in ("queued", "running") and not existing.get("cancelled")
+                        and existing.get("entry_id") == item["id"] and existing.get("_series") is self.series
+                        and (not p.get("render") or existing.get("_render"))):
+                    if not p.get("preparse"):
+                        existing["_retain"] = True
+                    if not p.get("background"):
+                        existing["_activate"] = True
+                        existing["opening_over"] = (self.session.book["id"], self.session.book["revision"]) if self.session else None
+                        if existing["state"] == "queued":
+                            existing["_lane"] = "foreground"
+                    self.dispatch()
+                    return job_info(existing)
+            p["_entry"] = item
+            p["_series"] = self.series
         elif operation != "import":
             book = copy.deepcopy(self.document(p, True).book)
         job = {
             "id": new_id(),
             "operation": operation,
-            "state": "running",
+            "state": "queued",
             "cancelled": False,
             "document_id": book["id"] if book else None,
             "revision": book["revision"] if book else None,
             "progress": {"done": 0, "total": 1, "message": t("Preparing")},
             "result": None,
             "error": None,
+            "entry_id": p.get("entry_id"),
+            "title": p.get("_entry", {}).get("title") or (book["metadata"]["title"] if book else Path(p.get("path", "")).name),
+            "preparse": bool(p.get("preparse")),
+            "_retain": not p.get("preparse"),
+            "_render": bool(p.get("render")),
+            "_activate": operation in ("import", "series.open") and not p.get("background"),
+            "_series": self.series,
+            "_lane": "export" if operation in ("export", "images.export") else "parse" if p.get("background") else "foreground",
         }
         job["opening_over"] = (self.session.book["id"], self.session.book["revision"]) if self.session else None
-        self.jobs = {key: value for key, value in list(self.jobs.items())[-19:]}
+        completed = [key for key, value in self.jobs.items()
+                     if value["state"] not in ("queued", "running") and (not value.get("preparse") or value.get("_retain"))]
+        for key in completed[:-19]:
+            if self.jobs[key].get("preparse"):
+                self.jobs[key]["result"] = None
+            else:
+                del self.jobs[key]
         self.jobs[job["id"]] = job
-        threading.Thread(target=self.execute, args=(job, p, book), daemon=True).start()
+        self.pending.append((job, p, book))
+        self.notify("task.changed", job_info(job))
+        self.dispatch()
         return job_info(job)
 
     def run_worker(self, operation: str, params: dict, job: dict | None = None):
@@ -538,67 +718,74 @@ class Engine:
             if provider
             else ".zip"
         )
-        if "directory" in p:
-            directory = Path(p["directory"]).resolve(strict=True)
-            if not directory.is_dir():
-                raise ValueError(t("Choose an output folder"))
-            stem = re.sub(r'[\x00-\x1f<>:"/\\|?*]', "_", book["metadata"]["title"]).strip().rstrip(". ")[:120] or "book"
-            if stem.upper().split(".")[0] in {
-                "CON",
-                "PRN",
-                "AUX",
-                "NUL",
-                *[f"COM{i}" for i in range(1, 10)],
-                *[f"LPT{i}" for i in range(1, 10)],
-            }:
-                stem = f"book-{stem}"
-            target = directory / f"{stem}{expected}"
-            number = 2
-            while target.exists():
-                target = directory / f"{stem} ({number}){expected}"
-                number += 1
-        else:
-            target = Path(p["path"]).resolve()
-        if target.suffix.lower() != expected:
-            raise ValueError(t("Output file must use the {0} extension", expected))
-        protected = {Path(s["path"]).resolve() for s in book["sources"].values()}
-        protected.update(Path(a["path"]).resolve() for a in book["assets"].values() if a["kind"] == "file")
-        if target in protected:
-            raise ValueError(t("Source files cannot be overwritten"))
-        if target.exists() and not overwrite:
-            raise ValueError(t("Destination exists. Choose another name or confirm overwriting."))
-        with tempfile.TemporaryDirectory(prefix=".foluma-", dir=target.parent) as temp:
-            staged = Path(temp) / target.name
-            args = {"book": book, "path": str(staged)}
-            if provider:
-                args.update(plugin_id=provider["id"], options=p.get("options", {}))
-            if operation == "images.export":
-                args["page_ids"] = p["page_ids"]
-            result = self.run_worker(operation, args, job)
+        with self.lock:
+            if "directory" in p:
+                directory = Path(p["directory"]).resolve(strict=True)
+                if not directory.is_dir():
+                    raise ValueError(t("Choose an output folder"))
+                stem = re.sub(r'[\x00-\x1f<>:"/\\|?*]', "_", book["metadata"]["title"]).strip().rstrip(". ")[:120] or "book"
+                if stem.upper().split(".")[0] in {
+                    "CON", "PRN", "AUX", "NUL", *[f"COM{i}" for i in range(1, 10)], *[f"LPT{i}" for i in range(1, 10)],
+                }:
+                    stem = f"book-{stem}"
+                target = directory / f"{stem}{expected}"
+                number = 2
+                while target.exists() or target in self.export_targets:
+                    target = directory / f"{stem} ({number}){expected}"
+                    number += 1
+            else:
+                target = Path(p["path"]).resolve()
+            if target.suffix.lower() != expected:
+                raise ValueError(t("Output file must use the {0} extension", expected))
+            protected = {Path(s["path"]).resolve() for s in book["sources"].values()}
+            protected.update(Path(a["path"]).resolve() for a in book["assets"].values() if a["kind"] == "file")
+            if target in protected:
+                raise ValueError(t("Source files cannot be overwritten"))
+            if target in self.export_targets or target.exists() and not overwrite:
+                raise ValueError(t("Destination exists. Choose another name or confirm overwriting."))
+            self.export_targets.add(target)
+        try:
+            with tempfile.TemporaryDirectory(prefix=".foluma-", dir=target.parent) as temp:
+                staged = Path(temp) / target.name
+                args = {"book": book, "path": str(staged)}
+                if operation == "export" and any(page.get("rotation") for page in book["pages"]):
+                    args["book"] = self.run_worker("images.prepare_export", {"book": book, "directory": str(Path(temp) / "rotated")}, job)
+                if provider:
+                    args.update(plugin_id=provider["id"], options=p.get("options", {}))
+                if operation == "images.export":
+                    args["page_ids"] = p["page_ids"]
+                result = self.run_worker(operation, args, job)
+                with self.lock:
+                    if job["cancelled"]:
+                        raise EngineError(t("Task cancelled"))
+                    publish(staged, target, overwrite)
+                    result["path"] = str(target)
+                    if operation == "export" and self.series is job["_series"] and self.series and self.series.mark_exported(book, target):
+                        self.series_changed()
+                    job.update(state="completed", result=result)
+            return result
+        finally:
             with self.lock:
-                if job["cancelled"]:
-                    raise EngineError(t("Task cancelled"))
-                publish(staged, target, overwrite)
-                result["path"] = str(target)
-                if operation == "export" and self.series and self.series.mark_exported(book, target):
-                    self.series_changed()
-                job.update(state="completed", result=result)
-        return result
+                self.export_targets.discard(target)
 
     def execute(self, job: dict, p: dict, book: dict | None) -> None:
         messages.set(self.plugins.locale()["messages"])
+        temporary = None
         try:
             operation = job["operation"]
             if operation in ("export", "images.export"):
                 result = self.export_job(job, p, book)
             else:
                 saved = None
-                entry = None
+                entry, series = p.get("_entry"), p.get("_series")
                 if operation == "series.open":
-                    entry = self.series.item(p["entry_id"])
-                    saved = self.series.load(entry)
+                    with self.lock:
+                        saved = self.session_for_entry(entry)
+                    saved = saved or series.load(entry)
                     if saved:
                         self.prepare_session(saved, job)
+                    elif series.managed:
+                        series.ensure_source(copy.deepcopy(entry))
                 args = (
                     {
                         "path": entry["path"] if entry else p["path"],
@@ -619,27 +806,57 @@ class Engine:
                     )
                 )
                 result = saved.book if saved else self.run_worker("import" if entry else operation, args, job)
+                if operation in ("import", "series.open"):
+                    session = saved or Session(self.adopt_import(result))
+                    if entry and not saved:
+                        with self.lock:
+                            if job["cancelled"] or self.series is not series:
+                                raise EngineError(t("Task cancelled"))
+                            settings = dict(entry["settings"])
+                        if settings:
+                            session.apply(session.book["id"], session.book["revision"], {"metadata": settings})
+                        # Copy extracted images and checkpoint away from the document lock.
+                        path = series.project(entry)
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        temporary = tempfile.TemporaryDirectory(prefix=".parse-", dir=path.parent, ignore_cleanup_errors=True)
+                        staged = Path(temporary.name) / "book.mteproj"
+                        save_project(session.book, staged, relative_to=path)
                 with self.lock:
                     if job["cancelled"]:
                         raise EngineError(t("Task cancelled"))
                     if operation in ("import", "series.open"):
                         current = (self.session.book["id"], self.session.book["revision"]) if self.session else None
-                        if not p.get("background") and current != job["opening_over"]:
+                        if job["_activate"] and current != job["opening_over"]:
                             raise ValueError(
                                 t("Document changed during import. Please try again; your current work was preserved.")
                             )
-                        session = saved or Session(self.adopt_import(result))
                         if entry:
-                            if p.get("background") and self.series.current(self.session) is entry:
-                                session = self.session
-                            self.series.open_book(entry, session, imported=not saved, activate=not p.get("background"))
+                            if self.series is not series:
+                                raise EngineError(t("Task cancelled"))
+                            latest = self.session_for_entry(entry)
+                            if latest:
+                                session = latest
+                            elif saved and entry["revision"] != session.book["revision"]:
+                                session = series.load(entry)
+                            elif not saved:
+                                staged.rename(path)
+                                session.book = open_project(path)
+                                session.project_path = str(path)
+                                session.saved_revision = session.book["revision"]
+                            if not saved and settings != entry["settings"]:
+                                session.apply(session.book["id"], session.book["revision"], {"metadata": entry["settings"]})
+                            series.open_book(entry, session, activate=job["_activate"],
+                                             persisted=session.saved_revision == session.book["revision"])
                             self.series_changed()
-                        if p.get("background"):
-                            if session is not self.session:
+                        if not job["_activate"]:
+                            if job["_retain"] and session is not self.session:
                                 self.background_sessions[session.book["id"]] = session
                         else:
+                            if self.session and self.session.book["id"] in self.document_windows.values():
+                                self.background_sessions[self.session.book["id"]] = self.session
                             self.background_sessions.pop(session.book["id"], None)
                             self.session = session
+                            self.notify("document.activated", session.snapshot())
                     elif operation == "images.import":
                         session = self.document(p, True)
                         candidate = copy.deepcopy(session.book)
@@ -654,7 +871,10 @@ class Engine:
                     else:
                         session = self.document(p, True)
                         session.apply(p["document_id"], p["base_revision"], result["changes"])
-                    result = self.changed(session)
+                    if job.get("preparse") and not job["_retain"]:
+                        result = None
+                    else:
+                        result = self.changed(session)
             with self.lock:
                 job.update(state="completed", result=result)
         except Exception as exc:
@@ -664,15 +884,26 @@ class Engine:
                     error={"message": str(exc), "data": getattr(exc, "data", None)},
                 )
         finally:
+            if temporary:
+                temporary.cleanup()
             with self.lock:
                 job.pop("process", None)
                 self.notify("task.changed", job_info(job))
+                self.threads.discard(threading.current_thread())
+                self.dispatch()
 
     def close(self) -> None:
         with self.lock:
             self.closing = True
             self.cache.close()
+            for job in self.jobs.values():
+                if job["state"] == "queued":
+                    self.cancel(job)
+            self.pending.clear()
             self.workers.close(self.jobs.values())
+            threads = list(self.threads)
+        for thread in threads:
+            thread.join(timeout=5)
 
 
 def serve(data: Path, safe: bool) -> None:

@@ -6,6 +6,7 @@ import { Icon } from "../sdk/icons";
 type RunAction = (action: () => Promise<unknown>, commit?: boolean) => Promise<void>;
 
 export function Toolbar({
+  documentWindow = false,
   ready,
   busy,
   book,
@@ -22,6 +23,7 @@ export function Toolbar({
   onSaveProject,
   onExport,
 }: {
+  documentWindow?: boolean;
   ready: boolean;
   busy: boolean;
   book: Book | null;
@@ -40,6 +42,7 @@ export function Toolbar({
 }) {
   return (
     <header className="command-bar" aria-label={t("Main toolbar")}>
+      {!documentWindow && <>
       <button
         className="command"
         title={t("Import book (⌘O)")}
@@ -68,6 +71,7 @@ export function Toolbar({
           <span>{t("Close project")}</span>
         </button>
       )}
+      </>}
       <button
         className="command"
         title={t("Save current book project (⌘S)")}
@@ -320,7 +324,9 @@ export function Sidebar({
 export function StatusBar({
   ready,
   safeMode,
-  job,
+  jobs,
+  prepared,
+  cancel,
   exportingSeries,
   selectedBooks,
   book,
@@ -328,24 +334,54 @@ export function StatusBar({
 }: {
   ready: boolean;
   safeMode: boolean;
-  job: Task | null;
+  jobs: Task[];
+  prepared: Set<string>;
+  cancel: (id: string) => void;
   exportingSeries: boolean;
   selectedBooks: number;
   book: Book | null;
   busy: boolean;
 }) {
+  const active = jobs.filter(job => job.state === "running" || job.state === "queued");
+  const parsing = [...new Map(jobs.filter(job => job.preparse).map(job => [job.entry_id, job])).values()];
+  const exports = active.filter(job => job.operation === "export" || job.operation === "images.export");
+  const renderRequired = (job: Task) => (job.error?.data as {kind?: string})?.kind === "render_required" && !prepared.has(job.entry_id || "");
+  const summaries = [];
+  if (parsing.length) {
+    summaries.push(t("Preparse {0}/{1} · {2} running", parsing.filter(job => job.state === "completed" || prepared.has(job.entry_id || "")).length,
+      parsing.length, parsing.filter(job => job.state === "running").length));
+    const waiting = parsing.filter(renderRequired).length;
+    if (waiting) summaries.push(t("{0} need rendering confirmation", waiting));
+  }
+  if (exports.length) summaries.push(t("Export · {0} running · {1} queued",
+    exports.filter(job => job.state === "running").length, exports.filter(job => job.state === "queued").length));
+  if (!summaries.length && active.length) summaries.push(active.find(job => job.state === "running")?.progress.message || t("Queued"));
+  const recent = [...active, ...jobs.filter(job => !active.includes(job)).slice(-20).reverse()];
   return (
     <footer className="statusbar">
       <span className={`status-dot ${ready ? "online" : ""}`} />
-      <span>
+      <details className="task-status">
+      <summary role="status" aria-label={t("Background tasks")}>
         {safeMode
           ? t("Safe mode")
           : !ready
             ? t("Starting engine")
-            : job?.state === "running"
-              ? job.progress.message
+            : summaries.length
+              ? summaries.join(" · ")
               : t("Ready")}
-      </span>
+      </summary>
+      <div className="task-list">
+        <strong>{t("Background tasks")}</strong>
+        {!recent.length && <p>{t("No background tasks")}</p>}
+        {recent.map(job => <article key={job.id}>
+          <div><strong>{job.title || job.operation}</strong><span>{renderRequired(job) ? t("Waiting for rendering confirmation") :
+            job.state === "running" ? job.progress.message : t({queued: "Queued", completed: "Completed", cancelled: "Cancelled", failed: "Failed"}[job.state])}</span></div>
+          {job.state === "running" && <progress aria-label={job.title || job.operation} value={job.progress.done} max={job.progress.total || 1}/>}
+          {(job.state === "queued" || job.state === "running") && <button onClick={() => cancel(job.id)}>{t("Cancel")}</button>}
+          {job.state === "failed" && !renderRequired(job) && <p>{job.error?.message}</p>}
+        </article>)}
+      </div>
+      </details>
       <span className="status-right">
         {exportingSeries
           ? t("{0} selected", selectedBooks)
@@ -358,7 +394,7 @@ export function StatusBar({
             : t("Book workspace")}
         <span>
           {t("Tasks: ")}
-          {busy ? 1 : 0}
+          {active.length || (busy ? 1 : 0)}
         </span>
         <span>{t("Processed locally")}</span>
       </span>

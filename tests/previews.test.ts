@@ -56,3 +56,15 @@ test("previews drop obsolete work, prioritize the current page, share requests a
   assert.equal(await retry,"retry.png");
   assert.deepEqual(started.slice(-2),["retry","retry"]);
 });
+
+test("preview requests for different rotations do not share stale work", async () => {
+  const book = { id: "book" } as Book;
+  const page: Page = {id:"page",kind:"image",asset_id:"asset",width:20,height:30,crop:[0,0,1,1]};
+  const calls: number[] = [];
+  const preview = createPreviewLoader(async (_book, candidate) => {
+    calls.push(candidate.rotation || 0);
+    return `${candidate.rotation || 0}.png`;
+  });
+  assert.deepEqual(await Promise.all([preview(book,page),preview(book,{...page,rotation:90})]), ["0.png","90.png"]);
+  assert.deepEqual(calls,[0,90]);
+});

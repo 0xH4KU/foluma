@@ -45,7 +45,7 @@ Image.new('RGB',(120,160),'red').save(root/'insert.png')
   const output = createInterface({ input: engine.stdout });
   output.on("line", (line) => {
     const message = JSON.parse(line);
-    if (message.method === "document.changed") active = message.params;
+    if (message.method === "document.activated" || message.method === "document.changed" && message.params?.id === active?.id) active = message.params;
     const waiter = pending.get(message.id);
     if (waiter) {
       pending.delete(message.id);
@@ -71,7 +71,7 @@ Image.new('RGB',(120,160),'red').save(root/'insert.png')
       rpc<Book>("document.apply", { ...documentRef(book), changes }),
     task: async <T>(params: Record<string, unknown>): Promise<T> => {
       let job = await rpc<Task>("task.start", params);
-      while (job.state === "running") {
+      while (job.state === "running" || job.state === "queued") {
         await new Promise((resolve) => setTimeout(resolve, 10));
         job = await rpc<Task>("task.get", { id: job.id });
       }
@@ -278,4 +278,36 @@ print(json.dumps(counts))
     output.close();
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("parallel batches bound work and abort every in-flight book before returning", async () => {
+  let active = 0, maximum = 0;
+  const host = {
+    task: async (params: Record<string, unknown>, signal?: AbortSignal) => {
+      active++; maximum = Math.max(maximum, active);
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const abort = () => {clearTimeout(timer); reject(Object.assign(new Error("cancelled"), {cancelled: true}));};
+          const timer = setTimeout(() => {signal?.removeEventListener("abort", abort); resolve();}, 10);
+          signal?.addEventListener("abort", abort, {once: true});
+          if (signal?.aborted) abort();
+        });
+        return params.operation === "import" ? {id: params.path, revision: 0} : {path: `${params.document_id}.epub`};
+      } finally {active--;}
+    },
+    rpc: async () => true,
+    report: (error: unknown) => {throw error;},
+  } as unknown as HostAPI;
+  const options = {paths: ["a", "b", "c", "d"], directory: "/tmp", render: false, dpi: "auto" as const, concurrency: 2};
+  const rows: BatchRow[] = [];
+  await runBatch(host, options, new AbortController().signal, (index, row) => {rows[index] = row;});
+  assert.equal(maximum, 2);
+  assert.deepEqual(rows.map(row => row.state), ["completed", "completed", "completed", "completed"]);
+  const abort = new AbortController();
+  await runBatch(host, options, abort.signal, (index, row) => {
+    rows[index] = row;
+    if (row.state === "completed") abort.abort();
+  });
+  assert.deepEqual(rows.map(row => row.state), ["completed", "cancelled", "skipped", "skipped"]);
+  assert.equal(active, 0);
 });

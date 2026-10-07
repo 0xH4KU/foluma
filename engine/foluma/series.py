@@ -168,11 +168,12 @@ class Series:
             return None
         return Session(open_project(path), str(path))
 
-    def remember(self, item: dict, session: Session, preserve_review=False):
+    def remember(self, item: dict, session: Session, preserve_review=False, persisted=False):
         path = self.project(item)
         reviewed = item["revision"] is not None and item["reviewed_revision"] == item["revision"]
         # ponytail: checkpoint one ordinary project per edit; coalesce writes if large books make this slow.
-        save_project(session.book, path)
+        if not persisted:
+            save_project(session.book, path)
         item.update(
             document_id=session.book["id"],
             revision=session.book["revision"],
@@ -192,12 +193,12 @@ class Series:
             return next((item for item in self.state["items"] if item["document_id"] == session.book["id"]), None)
         return None
 
-    def open_book(self, item: dict, session: Session, *, imported=False, activate=True):
+    def open_book(self, item: dict, session: Session, *, imported=False, activate=True, persisted=False):
         if imported and item["settings"]:
             session.apply(session.book["id"], session.book["revision"], {"metadata": item["settings"]})
         if activate:
             self.state["current_id"] = item["id"]
-        self.remember(item, session)
+        self.remember(item, session, persisted=persisted)
 
     def review(self, identifier: str, reviewed: bool, allow_pending=False, current: Session | None = None):
         item = self.item(identifier)
@@ -228,7 +229,7 @@ class Series:
         self.save()
         return True
 
-    def configure(self, p: dict, current: Session | None = None, on_change=lambda *_: None):
+    def configure(self, p: dict, current: Session | None = None, on_change=lambda *_: None, sessions=None):
         changes = information_patch(p.get("metadata", {}), allow_empty=True)
         identifiers = p.get("ids")
         if not isinstance(identifiers, list) or not identifiers or not all(isinstance(i, str) for i in identifiers):
@@ -256,10 +257,11 @@ class Series:
         }
         results = []
         for item in items:
+            session = None
             try:
                 patch = patches[item["id"]]
                 plan = planned.get(item["id"], {})
-                session = current if self.current(current) is item else self.load(item)
+                session = current if self.current(current) is item else (sessions or {}).get(item["document_id"]) or self.load(item)
                 revision = session.book["revision"] if session else item["revision"]
                 if "base_revision" in plan and plan["base_revision"] != revision:
                     raise ValueError(t("Document changed. Please retry with the latest revision."))
@@ -267,8 +269,7 @@ class Series:
                     before = session.book
                     session.apply(session.book["id"], session.book["revision"], {"metadata": patch})
                     self.remember(item, session, review_unchanged(before, session.book))
-                    if session is current:
-                        on_change(session.snapshot())
+                    on_change(session.snapshot())
                 else:
                     item["settings"].update(patch)
                     item.setdefault("metadata", {}).update(patch)
@@ -277,8 +278,8 @@ class Series:
                     self.save()
                 results.append({"id": item["id"], "error": None})
             except Exception as error:
-                if current and self.current(current) is item:
-                    on_change(current.snapshot())
+                if session:
+                    on_change(session.snapshot())
                 results.append({"id": item["id"], "error": str(error)})
         return results
 
@@ -446,9 +447,11 @@ class FolderProject(Series):
             self.synchronize(item, session)
         return session
 
-    def remember(self, item: dict, session: Session, preserve_review=False):
+    def remember(self, item: dict, session: Session, preserve_review=False, persisted=False):
         self.synchronize(item, session)
-        super().remember(item, session, preserve_review)
+        super().remember(item, session, preserve_review, persisted)
+        if persisted:
+            return
         # Asset files saved by the existing project writer become project-local immediately.
         local = open_project(self.project(item))
         for book in [session.book, *session.undo_stack, *session.redo_stack]:

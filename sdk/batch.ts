@@ -17,6 +17,7 @@ export type BatchOptions = {
   dpi: RenderResolution;
   exporter?: string;
   exportOptions?: Record<string, unknown>;
+  concurrency?: number;
 };
 
 export function batchStateLabel(state: BatchRow["state"]): string {
@@ -47,44 +48,52 @@ export async function runBatch(
   };
   const entries = new Map(options.entries?.map((entry) => [entry.path, entry.id]));
   let stopped = false;
-  for (const [index, path] of options.paths.entries()) {
-    if (signal.aborted || stopped) {
-      update(index, { path, state: "skipped" });
-      continue;
+  let next = 0;
+  const count = options.concurrency ?? host.getExportPreferences?.().concurrency ?? 1;
+  const concurrency = Number.isFinite(count) ? Math.max(1, Math.min(8, Math.trunc(count))) : 1;
+  const worker = async () => {
+    while (next < options.paths.length) {
+      const index = next++, path = options.paths[index];
+      if (signal.aborted || stopped) {
+        update(index, { path, state: "skipped" });
+        continue;
+      }
+      update(index, { path, state: "working" });
+      let book: Book | undefined;
+      try {
+        cancelled();
+        const entry = entries.get(path);
+        book = await host.task<Book>({
+          ...(entry ? { operation: "series.open", entry_id: entry } : { operation: "import", path }),
+          background: true,
+          render: options.render,
+          dpi: options.dpi,
+        }, signal);
+        cancelled();
+        if (prepare) book = await prepare(book);
+        cancelled();
+        const result = await host.task<{ path: string }>({
+          operation: "export",
+          ...documentRef(book),
+          directory: options.directory,
+          plugin_id: options.exporter,
+          options: options.exportOptions,
+        }, signal);
+        update(index, { path, state: "completed", output: result.path });
+      } catch (error) {
+        const aborted = signal.aborted || !!(error as { cancelled?: boolean })?.cancelled;
+        stopped ||= aborted;
+        const data = (error as { data?: { kind?: string; pages?: number[] } })?.data;
+        update(index, {
+          path,
+          state: aborted ? "cancelled" : "failed",
+          error: error instanceof Error ? error.message : String(error),
+          ...(data?.kind === "render_required" ? { renderRequired: data.pages || [] } : {}),
+        });
+      } finally {
+        if (book) await host.rpc("document.release", { document_id: book.id }).catch(host.report);
+      }
     }
-    update(index, { path, state: "working" });
-    let book: Book | undefined;
-    try {
-      cancelled();
-      const entry = entries.get(path);
-      book = await host.task<Book>({
-        ...(entry ? { operation: "series.open", entry_id: entry } : { operation: "import", path }),
-        background: true,
-        render: options.render,
-        dpi: options.dpi,
-      });
-      cancelled();
-      if (prepare) book = await prepare(book);
-      cancelled();
-      const result = await host.task<{ path: string }>({
-        operation: "export",
-        ...documentRef(book),
-        directory: options.directory,
-        plugin_id: options.exporter,
-        options: options.exportOptions,
-      });
-      update(index, { path, state: "completed", output: result.path });
-    } catch (error) {
-      stopped = signal.aborted || !!(error as { cancelled?: boolean })?.cancelled;
-      const data = (error as { data?: { kind?: string; pages?: number[] } })?.data;
-      update(index, {
-        path,
-        state: stopped ? "cancelled" : "failed",
-        error: error instanceof Error ? error.message : String(error),
-        ...(data?.kind === "render_required" ? { renderRequired: data.pages || [] } : {}),
-      });
-    } finally {
-      if (book) await host.rpc("document.release", { document_id: book.id }).catch(host.report);
-    }
-  }
+  };
+  await Promise.all(Array.from({length: Math.min(concurrency, options.paths.length)}, worker));
 }

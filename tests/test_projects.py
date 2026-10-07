@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -34,6 +35,7 @@ class FolderProjectTests(unittest.TestCase):
                 doc.save(self.sources / f'{name}.pdf')
         self.engine = Engine(self.root / 'data')
         self.addCleanup(self.engine.close)
+        self.call('processing.configure', preparse=False)
 
     def call(self, method, **params):
         return self.engine.call(method, params)
@@ -41,7 +43,7 @@ class FolderProjectTests(unittest.TestCase):
     def task(self, operation, **params):
         job = self.call('task.start', operation=operation, **params)
         deadline = time.monotonic() + 15
-        while job['state'] == 'running' and time.monotonic() < deadline:
+        while job['state'] in ('queued', 'running') and time.monotonic() < deadline:
             time.sleep(.01)
             job = self.call('task.get', id=job['id'])
         self.assertEqual(job['state'], 'completed', job)
@@ -51,6 +53,173 @@ class FolderProjectTests(unittest.TestCase):
         state = self.call('series.create', parent=str(self.root), name='漫畫專案')
         self.project = Path(state['directory'])
         return self.call('series.add', paths=[str(self.sources)])
+
+    def test_preparse_shares_foreground_work_reuses_saved_books_and_retains_window_edits(self):
+        self.call('processing.configure', preparse=True, parse_concurrency=2)
+        gate, both_started = threading.Event(), threading.Event()
+        self.addCleanup(gate.set)
+        original = self.engine.run_worker
+        imports = []
+        def blocked(operation, params, job=None):
+            if operation == 'import':
+                with self.engine.lock:
+                    imports.append(params['path'])
+                    if len(imports) == 2:
+                        both_started.set()
+                if not gate.wait(5):
+                    raise AssertionError('preparse did not release its workers')
+            return original(operation, params, job)
+        with patch.object(self.engine, 'run_worker', side_effect=blocked):
+            state = self.create()
+            self.assertTrue(both_started.wait(3))
+            jobs = self.call('task.list')
+            self.assertEqual(sum(job['state'] == 'running' for job in jobs), 2)
+            self.assertEqual(sum(job['state'] == 'queued' for job in jobs), 1)
+            first = state['items'][0]
+            opening = self.call('task.start', operation='series.open', entry_id=first['id'])
+            self.assertEqual(opening['id'], next(job['id'] for job in jobs if job['entry_id'] == first['id']))
+            gate.set()
+            deadline = time.monotonic() + 10
+            while any(job['state'] in ('queued', 'running') for job in self.call('task.list')) and time.monotonic() < deadline:
+                time.sleep(.01)
+            self.assertTrue(all(job['state'] == 'completed' for job in self.call('task.list')))
+        self.assertEqual(len(imports), 3, 'foreground opening must join the existing parse')
+        self.assertEqual(self.call('document.get')['id'], self.call('task.get', id=opening['id'])['result']['id'])
+        self.assertFalse(self.engine.background_sessions, 'unopened preparsed books stay on disk')
+        self.assertTrue(all((self.engine.series.project(item) / 'project.json').is_file() for item in state['items']))
+        book = self.call('document.get')
+        self.call('document.retain', document_id=book['id'], window_id='book-first')
+        book = self.call('document.apply', document_id=book['id'], base_revision=book['revision'], changes={'metadata': {'author': 'First window'}})
+        with patch.object(self.engine, 'run_worker', side_effect=AssertionError('saved books must not be reparsed')):
+            second = self.task('series.open', entry_id=state['items'][1]['id'], background=True)
+            self.call('document.retain', document_id=second['id'], window_id='book-second')
+            third = self.task('series.open', entry_id=state['items'][2]['id'])
+        second = self.call('document.apply', document_id=second['id'], base_revision=second['revision'], changes={'metadata': {'author': 'Second window'}})
+        self.assertEqual(self.call('document.get')['id'], third['id'])
+        self.assertEqual(self.call('document.get', document_id=book['id'])['metadata']['author'], 'First window')
+        self.call('document.release', document_id=second['id'])
+        self.assertEqual(self.call('document.get', document_id=second['id'])['metadata']['author'], 'Second window')
+        restored = self.call('document.undo', document_id=book['id'])
+        self.assertEqual(restored['metadata']['author'], '')
+        self.call('document.release_window', window_id='book-second')
+        self.assertNotIn(second['id'], self.engine.background_sessions)
+        reattached = self.call('document.retain', document_id=second['id'], window_id='book-second')
+        self.assertEqual(reattached['metadata']['author'], 'Second window')
+        self.call('document.release_window', window_id='book-second')
+        self.call('document.release_window', window_id='book-first')
+        complex_pdf = self.sources / 'Needs rendering.pdf'
+        with fitz.open(self.sources / 'Vol.1.pdf') as document:
+            document[0].insert_text((5, 20), 'overlay')
+            document.save(complex_pdf)
+        inspecting, consent = threading.Event(), threading.Event()
+        self.addCleanup(consent.set)
+        def wait_for_consent(operation, params, job=None):
+            if operation == 'import' and not params.get('render'):
+                inspecting.set()
+                if not consent.wait(5):
+                    raise AssertionError('render consent did not release the worker')
+            return original(operation, params, job)
+        with patch.object(self.engine, 'run_worker', side_effect=wait_for_consent):
+            state = self.call('series.add', paths=[str(complex_pdf)])
+            identifier = next(item['id'] for item in state['items'] if item['title'] == 'Needs rendering')
+            self.assertTrue(inspecting.wait(3))
+            authorized = self.call('task.start', operation='series.open', entry_id=identifier, background=True, render=True)
+            self.assertEqual(authorized['state'], 'queued', 'authorized rendering must wait for the same entry rather than share an unapproved parse')
+            consent.set()
+            deadline = time.monotonic() + 10
+            while any(job['state'] in ('queued', 'running') for job in self.call('task.list')) and time.monotonic() < deadline:
+                time.sleep(.01)
+        self.assertEqual(self.call('task.get', id=authorized['id'])['state'], 'completed')
+        failed = next(job for job in self.call('task.list') if job.get('entry_id') == identifier and job.get('preparse'))
+        self.assertEqual(failed['error']['data']['kind'], 'render_required')
+        self.assertEqual(self.call('document.get')['id'], third['id'])
+        self.call('processing.configure', preparse=False)
+        self.task('series.open', entry_id=identifier, render=True)
+        self.call('processing.configure', preparse=True)
+        staged, commit = threading.Event(), threading.Event()
+        self.addCleanup(commit.set)
+        from foluma.storage import save_project
+        def held_save(book, directory, **options):
+            save_project(book, directory, **options)
+            if directory.parent.name.startswith('.parse-'):
+                staged.set()
+                if not commit.wait(5):
+                    raise AssertionError('staged import did not finish')
+        added = self.sources / 'Vol.20.pdf'
+        added.write_bytes((self.sources / 'Vol.1.pdf').read_bytes())
+        with patch('foluma.service.save_project', side_effect=held_save):
+            state = self.call('series.add', paths=[str(added)])
+            entry = next(item for item in state['items'] if item['title'] == 'Vol.20')
+            destination = self.engine.series.project(entry)
+            self.assertTrue(staged.wait(3))
+            self.call('series.close', discard=True)
+            commit.set()
+            deadline = time.monotonic() + 10
+            while any(job['state'] in ('queued', 'running') for job in self.call('task.list')) and time.monotonic() < deadline:
+                time.sleep(.01)
+        self.assertIsNone(self.call('series.get'))
+        self.assertFalse(destination.exists(), 'cancelled staging must not publish into a closed project')
+
+    def test_parallel_exports_reserve_names_keep_snapshots_and_cancel_queued_work(self):
+        state = self.create()
+        book = self.task('series.open', entry_id=state['items'][0]['id'])
+        directory = self.root / 'exports'
+        directory.mkdir()
+        kept = directory / f"{book['metadata']['title']}.epub"
+        kept.write_text('keep me')
+        gate, both_started = threading.Event(), threading.Event()
+        self.addCleanup(gate.set)
+        original = self.engine.run_worker
+        paths = []
+        def blocked(operation, params, job=None):
+            if operation == 'export':
+                with self.engine.lock:
+                    paths.append(params['path'])
+                    if len(paths) == 2:
+                        both_started.set()
+                if not gate.wait(5):
+                    raise AssertionError('exports did not release their workers')
+            return original(operation, params, job)
+        with patch.object(self.engine, 'run_worker', side_effect=blocked):
+            jobs = [self.call('task.start', operation='export', document_id=book['id'], base_revision=book['revision'], directory=str(directory)) for _ in range(3)]
+            self.assertTrue(both_started.wait(3))
+            self.assertEqual(jobs[-1]['state'], 'queued')
+            self.call('task.cancel', id=jobs[-1]['id'])
+            edited = self.call('document.apply', document_id=book['id'], base_revision=book['revision'], changes={'metadata': {'author': 'Edited during export'}})
+            gate.set()
+            deadline = time.monotonic() + 10
+            while any(job['state'] in ('queued', 'running') for job in self.call('task.list')) and time.monotonic() < deadline:
+                time.sleep(.01)
+            finished = [self.call('task.get', id=job['id']) for job in jobs]
+        self.assertEqual([job['state'] for job in finished], ['completed', 'completed', 'cancelled'])
+        self.assertNotEqual(finished[0]['result']['path'], finished[1]['result']['path'])
+        self.assertEqual(kept.read_text(), 'keep me')
+        self.assertEqual(self.call('document.get'), edited)
+        self.assertTrue(self.call('series.get')['items'][0]['needs_export'])
+        for job in finished[:2]:
+            with ZipFile(job['result']['path']) as archive:
+                self.assertIsNone(archive.testzip())
+                self.assertNotIn('Edited during export', archive.read('EPUB/content.opf').decode())
+        for value in (0, 9, True, 2.5):
+            with self.assertRaises(ValueError):
+                self.call('processing.configure', parse_concurrency=value)
+        self.call('processing.configure', parallel_export=False, export_concurrency=3)
+        gate.clear()
+        with patch.object(self.engine, 'run_worker', side_effect=blocked):
+            serial = [self.call('task.start', operation='export', document_id=edited['id'], base_revision=edited['revision'], directory=str(directory)) for _ in range(2)]
+            self.assertEqual([job['state'] for job in serial], ['running', 'queued'])
+            self.call('task.cancel', id=serial[-1]['id'])
+            gate.set()
+            deadline = time.monotonic() + 10
+            while self.call('task.get', id=serial[0]['id'])['state'] in ('queued', 'running') and time.monotonic() < deadline:
+                time.sleep(.01)
+            self.assertEqual(self.call('task.get', id=serial[0]['id'])['state'], 'completed')
+        self.engine.close()
+        restarted = Engine(self.root / 'data')
+        self.addCleanup(restarted.close)
+        self.assertFalse(restarted.call('processing.get', {})['parallel_export'])
+        self.assertEqual(restarted.call('processing.get', {})['export_concurrency'], 3)
+        self.assertEqual(len(paths), 3, 'cancelled queued exports never start a worker')
 
     def test_close_project_preserves_edits_and_stops_startup_restore(self):
         state = self.create()

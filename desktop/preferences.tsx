@@ -1,7 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { HostAPI, Plugin, PluginList, RenderResolution } from "../sdk/types";
+import { useEffect, useState } from "react";
+import type { HostAPI, Plugin, PluginList, ProcessingSettings, RenderResolution } from "../sdk/types";
 import { t, setLocale, type Locale } from "../sdk/i18n";
 import { StorageSettings } from "./storage";
+import { closeBookWindows } from "./tool-windows";
 
 export function Preferences({
   host,
@@ -33,6 +35,22 @@ export function Preferences({
   prepare: () => Promise<void>;
 }) {
   const importers = plugins.active.filter((plugin) => plugin.format?.direction === "import");
+  const [processing, setProcessing] = useState<ProcessingSettings | null>(null);
+  const [savingProcessing, setSavingProcessing] = useState(false);
+  useEffect(() => {
+    let active = true;
+    host.rpc<ProcessingSettings>("processing.get").then(value => {if (active) setProcessing(value);}).catch(host.report);
+    return () => {active = false;};
+  }, [host]);
+  const saveProcessing = async () => {
+    if (!processing || savingProcessing) return;
+    setSavingProcessing(true);
+    try {
+      setProcessing(await host.rpc<ProcessingSettings>("processing.configure", processing));
+      host.notify(t("Processing preferences saved"));
+    } catch (error) {host.report(error);}
+    finally {setSavingProcessing(false);}
+  };
 
   const useLanguage = (code: string) =>
     run(async () => {
@@ -53,6 +71,28 @@ export function Preferences({
       <div className="page-heading">
         <h1>{t("Preferences")}</h1>
       </div>
+      <article className="settings-row">
+        <div>
+          <h2>{t("Background processing")}</h2>
+          <p>{t("Prepare books when a project opens. Saved results are reused; pages requiring rendering wait for your confirmation.")}</p>
+          <p>{t("Exports use the book version at the start of each export. Editing can continue while tasks run.")}</p>
+        </div>
+        <form onSubmit={event => {event.preventDefault(); void saveProcessing();}}>
+          <fieldset disabled={!processing || savingProcessing} className="processing-settings">
+            <label><input type="checkbox" checked={processing?.preparse ?? true}
+              onChange={event => setProcessing(value => value && {...value, preparse: event.target.checked})}/>{t("Preparse project books")}</label>
+            <label>{t("Parsing concurrency")}<input type="number" required min="1" max="8" step="1"
+              value={processing?.parse_concurrency ?? 2}
+              onChange={event => setProcessing(value => value && {...value, parse_concurrency: Number(event.target.value)})}/></label>
+            <label><input type="checkbox" checked={processing?.parallel_export ?? true}
+              onChange={event => setProcessing(value => value && {...value, parallel_export: event.target.checked})}/>{t("Export books concurrently")}</label>
+            <label>{t("Export concurrency")}<input type="number" required min="1" max="8" step="1" disabled={!processing?.parallel_export}
+              value={processing?.export_concurrency ?? 2}
+              onChange={event => setProcessing(value => value && {...value, export_concurrency: Number(event.target.value)})}/></label>
+            <button>{t("Save preferences")}</button>
+          </fieldset>
+        </form>
+      </article>
       {importers.some((plugin) => plugin.format?.rendering) && (
         <article className="settings-row">
           <div>
@@ -132,6 +172,7 @@ export function Preferences({
           onClick={() =>
             void run(async () => {
               if (await replaceAllowed(t("Restart in safe mode"))) {
+                if (!(await closeBookWindows(true))) return;
                 await host.rpc("app.safe_mode");
                 await invoke("restart_app");
               }

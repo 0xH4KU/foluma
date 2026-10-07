@@ -5,6 +5,7 @@ import { documentRef } from "../sdk/types";
 import { t } from "../sdk/i18n";
 import { flushMetadata, type MetadataDraft } from "./metadata";
 import { createActionRunner } from "../sdk/actions";
+import { closeBookWindows } from "./tool-windows";
 
 export type MetadataEditor = {
   draft: Partial<Metadata>;
@@ -94,6 +95,7 @@ export function useDocumentActions(
   const [savingInformation, setSavingInformation] = useState(0);
   const [working, setWorking] = useState(false);
   const execute = useMemo(() => createActionRunner(host, setWorking), [host]);
+  const runExport = useMemo(() => createActionRunner({...host, setBusy: undefined}), [host]);
   const [output, setOutput] = useState("");
   useEffect(
     () =>
@@ -268,7 +270,8 @@ export function useDocumentActions(
       ).catch(host.report);
       return;
     }
-    await run(async () => {
+    await runExport(async () => {
+      await commitInformation();
       if (!candidates.length) {
         setTab("plugins");
         host.notify(t("Install and enable an export plugin to export books"));
@@ -290,11 +293,13 @@ export function useDocumentActions(
         provider.format!.extensions,
       );
       if (!path) return;
+      const exporting = host.getDocument();
+      if (!exporting || exporting.id !== current.id) return;
       const result = await host.task<{ path: string }>({
         operation: "export",
         plugin_id: provider.id,
         options: variant?.options,
-        ...documentRef(host.getDocument()!),
+        ...documentRef(exporting),
         path,
         overwrite: true,
       });
@@ -304,7 +309,7 @@ export function useDocumentActions(
           Math.max(result.path.lastIndexOf("/"), result.path.lastIndexOf("\\")) + 1,
         ),
       );
-      setOutput(result.path);
+      if (host.getDocument()?.id === current.id) setOutput(result.path);
       host.notify(t("{0} exported", provider.format!.name));
     });
   };
@@ -313,6 +318,7 @@ export function useDocumentActions(
       if (!(await replaceAllowed(t("Open project")))) return;
       const path = await host.pickFile({ directory: true, title: t("Choose a project folder") });
       if (typeof path === "string") {
+        if (!(await closeBookWindows())) return;
         const result = await host.rpc<Book | Series>("project.open", { path });
         setTab("managed" in result ? "series" : "convert");
         setOutput("");
