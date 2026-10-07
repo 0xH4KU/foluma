@@ -104,6 +104,19 @@ class Engine:
         self.notify("processing.changed", settings)
         return settings
 
+    def epub_canvas(self, params: dict | None = None) -> list[int]:
+        size = params.get("size") if params is not None else self.plugins.config.get("epub_canvas", [1750, 2480])
+        if (not isinstance(size, list) or len(size) != 2
+                or any(type(value) is not int or not 1 <= value <= 10000 for value in size)):
+            if params is None:
+                return [1750, 2480]
+            raise ValueError(t("EPUB page dimensions must be whole numbers between 1 and 10000"))
+        if params is not None:
+            config = self.plugins.config | {"epub_canvas": list(size)}
+            atomic_json(self.plugins.config_path, config)
+            self.plugins.config = config
+        return list(size)
+
     def cancel(self, job: dict) -> None:
         if job["state"] not in ("queued", "running"):
             return
@@ -270,6 +283,10 @@ class Engine:
                 return self.processing()
             if method == "processing.configure":
                 return self.configure_processing(p)
+            if method == "epub.canvas.get":
+                return self.epub_canvas()
+            if method == "epub.canvas.configure":
+                return self.epub_canvas(p)
             if method == "app.locale":
                 return self.plugins.set_locale(p["code"]) if "code" in p else self.plugins.locale()
             if method in ("storage.info", "storage.configure", "storage.clear"):
@@ -622,7 +639,12 @@ class Engine:
         if operation == "import":
             self.plugins.format("import", p["path"], p.get("plugin_id"))
         elif operation == "export":
-            self.plugins.format("export", p.get("path"), p.get("plugin_id"))
+            provider = self.plugins.format("export", p.get("path"), p.get("plugin_id"))
+            if provider["id"] == "org.foluma.export.epub":
+                options = p.get("options", {})
+                if not isinstance(options, dict):
+                    raise ValueError(t("Format options must be an object"))
+                p["options"] = {"viewport": self.epub_canvas()} | options
         if operation == "series.open":
             if not self.series:
                 raise ValueError(t("Open a series folder first"))

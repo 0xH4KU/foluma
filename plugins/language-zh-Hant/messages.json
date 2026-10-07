@@ -871,5 +871,11 @@
   "Completed": "已完成",
   "Close book windows before switching projects": "切換專案前請先關閉漫畫編輯視窗",
   "Close this book's windows before removing or relinking it": "移除或重新連結這本漫畫前請先關閉它的編輯視窗",
-  "Invalid window ID": "無效的視窗識別碼"
+  "Invalid window ID": "無效的視窗識別碼",
+  "EPUB page size": "EPUB 頁面大小",
+  "Use one page size for EPUB exports. Images keep their proportions.": "EPUB 匯出使用統一的頁面大小，圖片保持原有比例。",
+  "Width (px)": "寬度（px）",
+  "Height (px)": "高度（px）",
+  "EPUB page size saved": "已保存 EPUB 頁面大小",
+  "EPUB page dimensions must be whole numbers between 1 and 10000": "EPUB 頁面寬度與高度必須是 1 到 10000 之間的整數"
 }

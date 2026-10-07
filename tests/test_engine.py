@@ -60,6 +60,7 @@ class IntegrationTests(unittest.TestCase):
         path = self.root / "book.epub"
         export_epub(self.book, str(path))
         with ZipFile(path) as archive:
+            self.assertIn('content="width=1750, height=2480"', archive.read("EPUB/pages/000001.xhtml").decode())
             self.assertEqual(archive.read(f"EPUB/images/{page['asset_id']}.jpg"), self.jpeg)
             xhtml = archive.read("EPUB/pages/000001.xhtml").decode()
             self.assertIn('viewBox="0 0 120 320"', xhtml)

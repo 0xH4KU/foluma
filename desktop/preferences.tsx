@@ -36,10 +36,12 @@ export function Preferences({
 }) {
   const importers = plugins.active.filter((plugin) => plugin.format?.direction === "import");
   const [processing, setProcessing] = useState<ProcessingSettings | null>(null);
+  const [canvas, setCanvas] = useState<[number | string, number | string] | null>(null);
   const [savingProcessing, setSavingProcessing] = useState(false);
   useEffect(() => {
     let active = true;
     host.rpc<ProcessingSettings>("processing.get").then(value => {if (active) setProcessing(value);}).catch(host.report);
+    host.rpc<[number, number]>("epub.canvas.get").then(value => {if (active) setCanvas(value);}).catch(host.report);
     return () => {active = false;};
   }, [host]);
   const saveProcessing = async () => {
@@ -93,6 +95,26 @@ export function Preferences({
           </fieldset>
         </form>
       </article>
+      {plugins.active.some(plugin => plugin.id === "org.foluma.export.epub") && (
+        <article className="settings-row">
+          <div>
+            <h2>{t("EPUB page size")}</h2>
+            <p>{t("Use one page size for EPUB exports. Images keep their proportions.")}</p>
+          </div>
+          <form onSubmit={event => {event.preventDefault(); void run(async () => {
+            setCanvas(await host.rpc<[number, number]>("epub.canvas.configure", {size: canvas?.map(Number)}));
+            host.notify(t("EPUB page size saved"));
+          });}}>
+            <fieldset disabled={busy || !canvas} className="processing-settings epub-canvas-settings">
+              <label>{t("Width (px)")}<input type="number" required min="1" max="10000" step="1"
+                value={canvas?.[0] ?? ""} onChange={event => setCanvas(value => value && [event.target.value, value[1]])}/></label>
+              <label>{t("Height (px)")}<input type="number" required min="1" max="10000" step="1"
+                value={canvas?.[1] ?? ""} onChange={event => setCanvas(value => value && [value[0], event.target.value])}/></label>
+              <button type="submit">{t("Save preferences")}</button>
+            </fieldset>
+          </form>
+        </article>
+      )}
       {importers.some((plugin) => plugin.format?.rendering) && (
         <article className="settings-row">
           <div>

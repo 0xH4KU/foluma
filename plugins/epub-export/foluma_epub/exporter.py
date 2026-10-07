@@ -11,10 +11,11 @@ from foluma.model import validate
 from foluma.storage import check_sources
 from PIL import Image
 
-from .writer import EpubPage, media_type_for_ext, write_epub_from_pages
+from .writer import DEFAULT_VIEWPORT, EpubPage, media_type_for_ext, write_epub_from_pages
 
 
-def export_epub(book: dict, path: str, progress=lambda *_: None, *, layout: str = "general") -> dict:
+def export_epub(book: dict, path: str, progress=lambda *_: None, *, layout: str = "general",
+                viewport: tuple[int, int] = DEFAULT_VIEWPORT) -> dict:
     if layout not in ("general", "spread"):
         raise ValueError(t("Unknown EPUB layout"))
     validate(book)
@@ -78,6 +79,7 @@ def export_epub(book: dict, path: str, progress=lambda *_: None, *, layout: str 
         reading_direction=meta["direction"],
         cover_png=cover_png,
         layout=layout,
+        viewport=viewport,
     )
 
 
@@ -85,4 +87,6 @@ def export_epub(book: dict, path: str, progress=lambda *_: None, *, layout: str 
 def handle(operation: str, params: dict, book: dict | None, progress):
     if operation != "export":
         raise ValueError(t("Unsupported background task"))
-    return export_epub(book, params["path"], progress, layout=params.get("options", {}).get("layout", "general"))
+    options = params.get("options", {})
+    return export_epub(book, params["path"], progress, layout=options.get("layout", "general"),
+                       viewport=options.get("viewport", DEFAULT_VIEWPORT))

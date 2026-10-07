@@ -4,7 +4,6 @@ import html
 import os
 import tempfile
 import uuid
-from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -15,6 +14,8 @@ from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile, ZipInfo
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from .validation import validate_epub_structure
+
+DEFAULT_VIEWPORT = (1750, 2480)
 
 
 @dataclass(frozen=True)
@@ -62,7 +63,11 @@ def write_epub_from_pages(
     reading_direction: str = "rtl",
     cover_png: bytes | None = None,
     layout: str = "general",
+    viewport: tuple[int, int] = DEFAULT_VIEWPORT,
 ) -> dict[str, int]:
+    if (not isinstance(viewport, (list, tuple)) or len(viewport) != 2
+            or any(type(value) is not int or not 1 <= value <= 10000 for value in viewport)):
+        raise ValueError("EPUB page dimensions must be whole numbers between 1 and 10000")
     if layout not in ("general", "spread"):
         raise ValueError("EPUB layout must be 'general' or 'spread'")
     if reading_direction not in {"rtl", "ltr"}:
@@ -90,6 +95,7 @@ def write_epub_from_pages(
             language,
             cover_id,
             reading_direction,
+            viewport,
             cover_png,
             layout,
         )
@@ -119,13 +125,10 @@ def _write_epub_zip(
     language: str,
     cover_id: str | None,
     reading_direction: str,
+    viewport: tuple[int, int],
     cover_png: bytes | None = None,
     layout: str = "general",
 ) -> None:
-    page_sizes = [
-        (page.crop_width or page.width, page.crop_height or page.height) for page in reading_pages if not page.is_blank
-    ]
-    viewport = Counter(page_sizes or [(reading_pages[0].width, reading_pages[0].height)]).most_common(1)[0][0]
     # Count actual reading pages, including blanks, after removing a bookshelf-only cover.
     sides = ("left", "right") if reading_direction == "rtl" else ("right", "left")
     page_sides = {page.item_id: sides[i % 2] for i, page in enumerate(reading_pages)} if layout == "spread" else {}

@@ -23,6 +23,8 @@ The EPUB retains the book title; the two editions have distinct publication iden
 
 EPUB export automatically uses white page padding in light mode and black padding when the reader reports dark mode, in both General and Two-page optimized editions. This changes only the page background: source images, crop bounds, alignment and fixed viewport dimensions remain unchanged. Inserted blank pages remain white. EPUB import accepts the corresponding `:root`, `color-scheme` and background media rules so these books can be edited again.
 
+**Preferences → EPUB page size** sets the canvas used by both EPUB editions, including single-book and batch exports. The default is **1750 × 2480**; width and height can be saved as integers from 1 to 10000. Each export captures this setting when submitted. Images fit proportionally within the canvas without resampling or recompression, and blank pages use the same canvas. Update the EPUB export plugin to **0.1.3** to use this setting.
+
 ### Optional formats
 
 Install these separately from **Plugins → Included packages**, then restart. They are available offline but are not automatically installed; import and export remain independent.

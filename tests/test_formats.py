@@ -428,7 +428,8 @@ class FormatPluginTests(unittest.TestCase):
         self.assertEqual([candidate["kind"] for candidate in restored["pages"]], ["image", "image", "blank", "image"])
         self.assertEqual([candidate.get("crop") for candidate in restored["pages"]],
                          [[0, 0, 1, 1], [0.5, 0, 0.5, 1], None, [0, 0.5, 1, 0.5]])
-        self.assertEqual([(candidate["width"], candidate["height"]) for candidate in restored["pages"]], [(80, 120)] * 4)
+        self.assertEqual([(candidate["width"], candidate["height"]) for candidate in restored["pages"]],
+                         [(80, 120), (80, 120), (1750, 2480), (80, 120)])
         self.assertEqual([candidate["source_page"] for candidate in restored["pages"]], [1, 2, 3, 4])
         self.assertEqual(len({candidate["id"] for candidate in restored["pages"]}), 4)
         self.assertEqual(len(restored["assets"]), 1)
@@ -450,6 +451,56 @@ class FormatPluginTests(unittest.TestCase):
         result = self.task("export", document_id=reopened["id"], base_revision=reopened["revision"],
                            path=str(self.root / "after-removal.epub"))
         self.assertEqual(result["total"], 4)
+
+    def test_epub_canvas_preferences_persist_and_apply_to_all_exports(self):
+        self.assertEqual(self.engine.call("epub.canvas.get", {}), [1750, 2480])
+        book = self.task("import", path=str(self.pdf))
+        page = copy.deepcopy(book["pages"][0])
+        page["crop"] = [0.25, 0, 0.5, 1]
+        book = self.engine.call("document.apply", {"document_id": book["id"], "base_revision": book["revision"],
+            "changes": {"pages": [page, {"id": new_id(), "kind": "blank", "width": 80, "height": 120}]}})
+        original = Path(book["assets"][page["asset_id"]]["path"]).read_bytes()
+        project = self.root / "canvas.mteproj"
+        save_project(self.engine.session.book, project)
+        ns = {"h": "http://www.w3.org/1999/xhtml", "s": "http://www.w3.org/2000/svg"}
+        for size in ([1750, 2480], [875, 1240]):
+            if size != [1750, 2480]:
+                self.engine.call("epub.canvas.configure", {"size": size})
+                self.restart()
+                book = self.engine.call("project.open", {"path": str(project)})
+            self.assertEqual(self.engine.call("epub.canvas.get", {}), size)
+            for layout in ("general", "spread"):
+                result = self.task("export", document_id=book["id"], base_revision=book["revision"],
+                                   directory=str(self.root), options={"layout": layout})
+                with ZipFile(result["path"]) as archive:
+                    for number in (1, 2):
+                        root = ET.fromstring(archive.read(f"EPUB/pages/{number:06d}.xhtml"))
+                        self.assertEqual(root.find(".//h:meta[@name='viewport']", ns).get("content"),
+                                         f"width={size[0]}, height={size[1]}")
+                        svg = root.find(".//s:svg", ns)
+                        self.assertEqual((svg.get("width"), svg.get("height")), tuple(map(str, size)))
+                    self.assertEqual(archive.read(f"EPUB/images/{page['asset_id']}.jpg"), original)
+                    self.assertEqual(svg.get("viewBox"), f"0 0 {size[0]} {size[1]}")
+        for invalid in (None, [], [0, 2480], [1750, 10001], [True, 2480], [1750.5, 2480], ["1750", "2480"]):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "EPUB page dimensions"):
+                self.engine.call("epub.canvas.configure", {"size": invalid})
+        self.assertEqual(self.engine.call("epub.canvas.get", {}), [875, 1240])
+        with patch.object(self.engine, "dispatch"):
+            job = self.engine.call("task.start", {"operation": "export", "document_id": book["id"],
+                "base_revision": book["revision"], "path": str(self.root / "queued.epub")})
+            self.engine.call("epub.canvas.configure", {"size": [900, 1300]})
+            queued = next(params for pending, params, _ in self.engine.pending if pending["id"] == job["id"])
+            self.assertEqual(queued["options"]["viewport"], [875, 1240])
+        self.engine.call("task.cancel", {"id": job["id"]})
+        override = self.task("export", document_id=book["id"], base_revision=book["revision"],
+                             path=str(self.root / "override.epub"), options={"viewport": [600, 900]})
+        with ZipFile(override["path"]) as archive:
+            self.assertIn('content="width=600, height=900"', archive.read("EPUB/pages/000001.xhtml").decode())
+        invalid_path = self.root / "invalid-canvas.epub"
+        failure = self.task("export", expected_state="failed", document_id=book["id"], base_revision=book["revision"],
+                            path=str(invalid_path), options={"viewport": [0, 2480]})
+        self.assertIn("EPUB page dimensions", failure["error"]["message"])
+        self.assertFalse(invalid_path.exists())
 
     def test_epub_export_editions_preserve_content_and_pair_actual_reading_pages(self):
         self.engine.plugins.install_bundled("org.foluma.import.epub")
