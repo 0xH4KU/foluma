@@ -171,8 +171,7 @@ class Series:
         path = self.project(item)
         reviewed = item["revision"] is not None and item["reviewed_revision"] == item["revision"]
         # ponytail: checkpoint one ordinary project per edit; coalesce writes if large books make this slow.
-        if not persisted:
-            save_project(session.book, path)
+        relocated = save_project(session.book, path) if not persisted else {}
         item.update(
             document_id=session.book["id"],
             revision=session.book["revision"],
@@ -184,6 +183,7 @@ class Series:
         if reviewed and preserve_review:
             item["reviewed_revision"] = session.book["revision"]
         self.save()
+        session.relocate_assets(relocated)
         session.project_path = str(path)
         session.saved_revision = session.book["revision"]
 
@@ -449,14 +449,6 @@ class FolderProject(Series):
     def remember(self, item: dict, session: Session, preserve_review=False, persisted=False):
         self.synchronize(item, session)
         super().remember(item, session, preserve_review, persisted)
-        if persisted:
-            return
-        # Asset files saved by the existing project writer become project-local immediately.
-        local = open_project(self.project(item))
-        for book in [session.book, *session.undo_stack, *session.redo_stack]:
-            for identifier, asset in book["assets"].items():
-                if asset["kind"] == "file" and identifier in local["assets"]:
-                    asset["path"] = local["assets"][identifier]["path"]
 
     def ensure_source(self, item: dict):
         path = contained(self.root, Path(item["path"]).relative_to(self.root).as_posix())

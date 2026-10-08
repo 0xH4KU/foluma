@@ -403,6 +403,37 @@ class IntegrationTests(unittest.TestCase):
         self.assertTrue(all(value >= 0 for value in timing["phases"].values()))
         self.assertAlmostEqual(sum(timing["phases"].values()), timing["seconds"], delta=0.01)
 
+    def test_saving_relocates_undo_redo_assets_and_rejects_escaped_asset_directories(self):
+        engine = Engine(self.root / "save-data")
+        self.addCleanup(engine.close)
+        session = engine.session = Session(self.book)
+        for author in ("First", "Second"):
+            session.apply(self.book["id"], session.book["revision"], {"metadata": {"author": author}})
+        session.history(self.book["id"])
+        original_assets = {Path(asset["path"]) for asset in self.book["assets"].values()}
+        project = (self.root / "saved.mteproj").resolve()
+        saved = engine.call("project.save", {"document_id": self.book["id"],
+                            "base_revision": session.book["revision"], "path": str(project)})
+        self.assertTrue(saved["can_undo"] and saved["can_redo"])
+        for book in [session.book, *session.undo_stack, *session.redo_stack]:
+            self.assertTrue(all(Path(asset["path"]).parent == project / "assets" for asset in book["assets"].values()))
+        for path in original_assets:
+            path.unlink()
+        for action in ("document.undo", "document.redo"):
+            restored = engine.call(action, {"document_id": self.book["id"]})
+            for asset_id in restored["assets"]:
+                self.assertEqual(load_asset(restored, asset_id), self.jpeg)
+
+        original_manifest = (project / "project.json").read_bytes()
+        outside = self.root / "outside-assets"
+        (project / "assets").rename(outside)
+        (project / "assets").symlink_to(outside, target_is_directory=True)
+        with self.assertRaises(ValueError):
+            engine.call("project.save", {"document_id": self.book["id"],
+                        "base_revision": session.book["revision"], "path": str(project)})
+        self.assertEqual((project / "project.json").read_bytes(), original_manifest)
+        self.assertTrue(session.snapshot()["dirty"])
+
     def test_atomic_edits_monotonic_history_and_project_roundtrip(self):
         session = Session(self.book)
         identifier = self.book["id"]

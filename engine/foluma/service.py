@@ -369,7 +369,7 @@ class Engine:
         if method == "project.save":
             session = self.document(p, True)
             path = Path(p["path"]).resolve()
-            save_project(session.book, path)
+            session.relocate_assets(save_project(session.book, path))
             session.project_path = str(path)
             session.saved_revision = session.book["revision"]
             return self.changed(session)

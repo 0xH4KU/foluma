@@ -320,6 +320,17 @@ class FolderProjectTests(unittest.TestCase):
         self.assertEqual(restarted.call('processing.get', {})['export_concurrency'], 3)
         self.assertEqual(len(paths), 3, 'cancelled queued exports never start a worker')
 
+    def test_autosave_keeps_local_assets_without_reading_the_project_back(self):
+        state = self.create()
+        book = self.task('series.open', entry_id=state['items'][0]['id'])
+        with patch('foluma.series.open_project', side_effect=AssertionError('autosave reread the entire project')):
+            book = self.call('document.apply', document_id=book['id'], base_revision=book['revision'],
+                             changes={'metadata': {'author': 'Saved author'}})
+        self.assertFalse(book['dirty'])
+        restored = open_project(Path(book['project_path']))
+        self.assertEqual(restored['assets'], book['assets'])
+        self.assertEqual(restored['metadata']['author'], 'Saved author')
+
     def test_close_project_preserves_edits_and_stops_startup_restore(self):
         state = self.create()
         book = self.task('series.open', entry_id=state['items'][0]['id'])

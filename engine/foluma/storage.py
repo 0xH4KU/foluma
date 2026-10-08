@@ -48,7 +48,7 @@ def atomic_json(path: Path, value: object) -> None:
     temp = Path(name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as out:
-            json.dump(value, out, ensure_ascii=False, indent=2, allow_nan=False)
+            out.write(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False))
             out.flush()
             os.fsync(out.fileno())
         os.replace(temp, path)
@@ -128,28 +128,33 @@ def write_asset(payload: bytes, directory: Path, extension: str) -> Path:
     return destination
 
 
-def save_project(book: dict, directory: Path, *, relative_to: Path | None = None) -> None:
+def save_project(book: dict, directory: Path, *, relative_to: Path | None = None) -> dict[str, str]:
     directory = directory.resolve()
     if directory.suffix != ".mteproj":
         raise ValueError(t("Use a .mteproj project name"))
     if directory.exists() and not (directory / "project.json").exists() and any(directory.iterdir()):
         raise ValueError(t("Destination folder is not a Foluma project"))
     directory.mkdir(parents=True, exist_ok=True)
+    assets_directory = contained(directory, "assets")
+    relocated = {}
     data = copy.deepcopy(book)
     for source in data["sources"].values():
         try:
             source["path"] = os.path.relpath(source["path"], relative_to or directory)
         except ValueError:
             pass
-    for asset in data["assets"].values():
+    for identifier, asset in data["assets"].items():
         if asset["kind"] == "file":
             path = Path(asset["path"]).resolve()
-            if path.parent != (directory / "assets").resolve():
-                path = copy_asset(path, directory / "assets", asset["ext"])
+            if path.parent != assets_directory:
+                path = copy_asset(path, assets_directory, asset["ext"]).resolve()
             elif not path.is_file():
                 raise ValueError(t("Project asset is missing: {0}", path.name))
+            if str(path) != asset["path"]:
+                relocated[identifier] = str(path)
             asset["path"] = path.relative_to(directory).as_posix()
     atomic_json(directory / "project.json", data)
+    return relocated
 
 
 def open_project(directory: Path) -> dict:

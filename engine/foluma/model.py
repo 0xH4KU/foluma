@@ -190,7 +190,16 @@ class Session:
         if revision is not None and revision != self.book["revision"]:
             raise ValueError(t("Document changed. Please retry with the latest revision."))
 
-    def apply(self, document_id: str, base_revision: int, changes: dict) -> dict:
+    def relocate_assets(self, paths: dict[str, str]) -> None:
+        if not paths:
+            return
+        for book in [self.book, *self.undo_stack, *self.redo_stack]:
+            for identifier, path in paths.items():
+                asset = book["assets"].get(identifier)
+                if asset and asset["kind"] == "file":
+                    asset["path"] = path
+
+    def apply(self, document_id: str, base_revision: int, changes: dict) -> None:
         self.check(document_id, base_revision)
         if not isinstance(changes, dict) or set(changes) - {"pages", "metadata", "extension"}:
             raise ValueError(t("Unsupported document changes"))
@@ -225,9 +234,8 @@ class Session:
             self.redo_stack.clear()
             candidate["revision"] += 1
             self.book = candidate
-        return self.snapshot()
 
-    def history(self, document_id: str, redo: bool = False) -> dict:
+    def history(self, document_id: str, redo: bool = False) -> None:
         self.check(document_id)
         source, target = (self.redo_stack, self.undo_stack) if redo else (self.undo_stack, self.redo_stack)
         if source:
@@ -236,4 +244,3 @@ class Session:
             previous["revision"] = self.book["revision"] + 1
             target.append(self.book)
             self.book = previous
-        return self.snapshot()
