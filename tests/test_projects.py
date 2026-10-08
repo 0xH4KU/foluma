@@ -1,4 +1,5 @@
 import copy
+import errno
 import io
 import json
 import os
@@ -54,6 +55,73 @@ class FolderProjectTests(unittest.TestCase):
         self.project = Path(state['directory'])
         return self.call('series.add', paths=[str(self.sources)])
 
+    def test_filesystem_without_hard_links_supports_import_move_recovery_and_export(self):
+        with patch('foluma.storage.os.link', side_effect=OSError(errno.ENOTSUP, 'unsupported')):
+            state = self.create()
+            item = state['items'][0]
+            source = self.project / 'Vol.1.pdf'
+            original = source.read_bytes()
+            self.call('series.group', name='番外')
+            with patch.object(self.engine.series, 'save', side_effect=OSError('disk full')):
+                with self.assertRaisesRegex(OSError, 'disk full'):
+                    self.call('series.move', ids=[item['id']], group='番外')
+            self.assertEqual(source.read_bytes(), original)
+            self.assertFalse((self.project / '番外/Vol.1.pdf').exists())
+            self.call('series.move', ids=[item['id']], group='番外')
+            self.call('series.remove', ids=[item['id']])
+            self.call('series.restore', ids=[item['id']])
+            source = self.project / '番外/Vol.1.pdf'
+            self.assertEqual(source.read_bytes(), original)
+            recovery = self.project / '.foluma/removed' / item['id'] / source.name
+            source.rename(recovery)
+            self.call('project.open', path=str(self.project))
+            self.assertEqual(source.read_bytes(), original)
+            book = self.task('series.open', entry_id=item['id'])
+            exported = self.task('export', document_id=book['id'], base_revision=book['revision'],
+                                 path=str(self.root / 'export.epub'))
+            with ZipFile(exported['path']) as archive:
+                self.assertEqual(archive.testzip(), None)
+            self.assertFalse(list(self.project.glob('.import-*')))
+            self.assertEqual((self.sources / 'Vol.1.pdf').read_bytes(), original)
+
+    def test_preparse_renders_complex_pdf_pages_with_auto_and_preserves_original_images(self):
+        path = self.sources / 'Needs rendering.pdf'
+        with fitz.open(self.sources / 'Vol.1.pdf') as document:
+            jpeg = document.extract_image(document[0].get_images()[0][0])['image']
+            document[0].insert_text((5, 20), 'overlay')
+            page = document.new_page(width=40, height=60)
+            xref = page.insert_image(page.rect, stream=jpeg)
+            document.xref_set_key(xref, 'ColorSpace', '/DeviceRGB')
+            document.new_page(width=40, height=60)
+            document.save(path)
+        original = path.read_bytes()
+        self.call('processing.configure', preparse=True, parse_concurrency=2)
+        state = self.create()
+        deadline = time.monotonic() + 10
+        while any(job['state'] in ('queued', 'running') for job in self.call('task.list')) and time.monotonic() < deadline:
+            time.sleep(.01)
+        jobs = self.call('task.list')
+        self.assertEqual(len(jobs), 4)
+        self.assertTrue(all(job['preparse'] and job['state'] == 'completed' for job in jobs), jobs)
+        self.assertIsNone(self.engine.session)
+        self.assertFalse(self.engine.background_sessions)
+        entry = next(item for item in state['items'] if item['title'] == 'Needs rendering')
+        book = open_project(self.engine.series.project(entry))
+        self.assertEqual([page['source_page'] for page in book['pages']], [1, 2, 3])
+        self.assertEqual([(page['width'], page['height']) for page in book['pages']], [(40, 60)] * 3)
+        rendered = book['assets'][book['pages'][0]['asset_id']]
+        self.assertEqual(rendered['ext'], 'png')
+        self.assertAlmostEqual(rendered['derived_from']['dpi'], 72)
+        preserved = book['assets'][book['pages'][1]['asset_id']]
+        self.assertEqual(preserved['ext'], 'jpg')
+        self.assertEqual(Path(preserved['path']).read_bytes(), jpeg)
+        self.assertEqual(book['pages'][2]['kind'], 'blank')
+        self.assertEqual(path.read_bytes(), original)
+        self.assertEqual((self.project / path.name).read_bytes(), original)
+        with patch.object(self.engine, 'run_worker', side_effect=AssertionError('saved books must not be reparsed')):
+            reopened = self.task('series.open', entry_id=entry['id'])
+        self.assertEqual(reopened['id'], book['id'])
+
     def test_preparse_shares_foreground_work_reuses_saved_books_and_retains_window_edits(self):
         self.call('processing.configure', preparse=True, parse_concurrency=2)
         gate, both_started = threading.Event(), threading.Event()
@@ -78,6 +146,8 @@ class FolderProjectTests(unittest.TestCase):
             first = state['items'][0]
             opening = self.call('task.start', operation='series.open', entry_id=first['id'])
             self.assertEqual(opening['id'], next(job['id'] for job in jobs if job['entry_id'] == first['id']))
+            rendering = self.call('task.start', operation='series.open', entry_id=first['id'], render=True)
+            self.assertEqual(rendering['id'], opening['id'], 'rendering must join the authorized preparse')
             gate.set()
             deadline = time.monotonic() + 10
             while any(job['state'] in ('queued', 'running') for job in self.call('task.list')) and time.monotonic() < deadline:
@@ -107,6 +177,7 @@ class FolderProjectTests(unittest.TestCase):
         self.assertEqual(reattached['metadata']['author'], 'Second window')
         self.call('document.release_window', window_id='book-second')
         self.call('document.release_window', window_id='book-first')
+        self.call('processing.configure', preparse=False)
         complex_pdf = self.sources / 'Needs rendering.pdf'
         with fitz.open(self.sources / 'Vol.1.pdf') as document:
             document[0].insert_text((5, 20), 'overlay')
@@ -122,6 +193,7 @@ class FolderProjectTests(unittest.TestCase):
         with patch.object(self.engine, 'run_worker', side_effect=wait_for_consent):
             state = self.call('series.add', paths=[str(complex_pdf)])
             identifier = next(item['id'] for item in state['items'] if item['title'] == 'Needs rendering')
+            unapproved = self.call('task.start', operation='series.open', entry_id=identifier, background=True)
             self.assertTrue(inspecting.wait(3))
             authorized = self.call('task.start', operation='series.open', entry_id=identifier, background=True, render=True)
             self.assertEqual(authorized['state'], 'queued', 'authorized rendering must wait for the same entry rather than share an unapproved parse')
@@ -130,10 +202,9 @@ class FolderProjectTests(unittest.TestCase):
             while any(job['state'] in ('queued', 'running') for job in self.call('task.list')) and time.monotonic() < deadline:
                 time.sleep(.01)
         self.assertEqual(self.call('task.get', id=authorized['id'])['state'], 'completed')
-        failed = next(job for job in self.call('task.list') if job.get('entry_id') == identifier and job.get('preparse'))
+        failed = self.call('task.get', id=unapproved['id'])
         self.assertEqual(failed['error']['data']['kind'], 'render_required')
         self.assertEqual(self.call('document.get')['id'], third['id'])
-        self.call('processing.configure', preparse=False)
         self.task('series.open', entry_id=identifier, render=True)
         self.call('processing.configure', preparse=True)
         staged, commit = threading.Event(), threading.Event()

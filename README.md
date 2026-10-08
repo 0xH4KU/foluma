@@ -22,7 +22,7 @@ Foluma helps you turn image-based books into a reading experience that fits. Org
 - **Organize a series.** Keep books, groups, metadata and review progress in a portable project folder.
 - **Edit pages visually.** Reorder pages, split spreads, insert blanks, manage covers, and undo changes.
 - **Check facing pages.** Preview spreads in either reading direction and simulate a reader's leading blank without changing the exported book.
-- **Preserve image quality.** Extract supported PDF images directly; render complex pages only with your approval.
+- **Preserve image quality.** Extract supported PDF images directly; render complex pages to PNG using Auto resolution during project preparsing.
 - **Export in batches.** Use each book's saved layout or a reusable preset, with separate results and protection for existing files.
 - **Choose your tools.** Importers, exporters, the page editor and language packs are independent plugins. English and Traditional Chinese are available.
 

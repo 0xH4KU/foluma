@@ -76,7 +76,7 @@ export function Preferences({
       <article className="settings-row">
         <div>
           <h2>{t("Background processing")}</h2>
-          <p>{t("Prepare books when a project opens. Saved results are reused; pages requiring rendering wait for your confirmation.")}</p>
+          <p>{t("Prepare books when a project opens. Saved results are reused; PDF pages requiring rendering use Auto resolution automatically.")}</p>
           <p>{t("Exports use the book version at the start of each export. Editing can continue while tasks run.")}</p>
         </div>
         <form onSubmit={event => {event.preventDefault(); void saveProcessing();}}>
@@ -121,7 +121,7 @@ export function Preferences({
             <h2>{t("Complex page rendering")}</h2>
             <p>
               {t(
-                "Auto follows the main image’s resolution, up to 6000 pixels on the longest edge. Text and vector pages use 200 DPI within that limit. Rendering requires confirmation.",
+                "Auto follows the main image’s resolution, up to 6000 pixels on the longest edge. Text and vector pages use 200 DPI within that limit. Manual imports ask before rendering.",
               )}
             </p>
           </div>

@@ -408,6 +408,14 @@ class Plugins:
         if not isinstance(value, dict) or not isinstance(value.get("plugins"), list):
             raise ValueError(t("Invalid official catalog"))
         for item in value["plugins"]:
+            if (not isinstance(item, dict)
+                    or any(not isinstance(item.get(key), str) for key in ("id", "name", "version", "sha256", "url"))
+                    or not re.fullmatch(r"[a-z0-9][a-z0-9.-]{1,79}", item["id"])
+                    or not 0 < len(item["name"]) <= 120
+                    or not re.fullmatch(r"\d+\.\d+\.\d+", item["version"])
+                    or type(item.get("api_version")) is not int
+                    or not isinstance(item.get("description", ""), str)):
+                raise ValueError(t("Invalid official catalog"))
             if not re.fullmatch(r"[a-f0-9]{64}", item.get("sha256", "")) or not item.get("url", "").startswith(
                 "https://"
             ):

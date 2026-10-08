@@ -140,6 +140,8 @@ function App({entryId}: {entryId?: string}) {
   });
   useEffect(() => localStorage.setItem("render-resolution", String(dpi)), [dpi]);
   const [bundled, setBundled] = useState<Plugin[]>([]);
+  const [pluginUpdates, setPluginUpdates] = useState<Plugin[]>([]);
+  const [updatesDismissed, setUpdatesDismissed] = useState(false);
   const host = useMemo(
     () =>
       createHost(
@@ -472,6 +474,15 @@ function App({entryId}: {entryId?: string}) {
           navigate={navigate}
         />
         <main>
+          {!!pluginUpdates.length && !updatesDismissed && (
+            <div className="notice" role="status">
+              <span>{t("Plugin updates available: {0}. Choose which to update in Plugins.", pluginUpdates.length)}</span>
+              <div className="notice-actions">
+                <button disabled={busy} onClick={() => void navigate("plugins")}>{t("Review updates")}</button>
+                <button aria-label={t("Dismiss message")} onClick={() => setUpdatesDismissed(true)}>×</button>
+              </div>
+            </div>
+          )}
           {message && (
             <div
               className={`notice ${message.error ? "error" : "success"}`}
@@ -565,6 +576,8 @@ function App({entryId}: {entryId?: string}) {
             run={run}
             refreshPlugins={refreshPlugins}
             restart={restart}
+            checkUpdates={ready && !entryId}
+            onUpdates={setPluginUpdates}
           />
           {tab === "settings" && (
             <Preferences

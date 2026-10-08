@@ -17,7 +17,7 @@ from .i18n import messages, t
 from .model import EngineError, Session, information_patch, new_id, review_unchanged, validate
 from .plugins import Plugins, platform_id, unpack
 from .series import FolderProject, Series, preview_inputs
-from .storage import atomic_json, contained, copy_asset, digest, open_project, parse_json, save_project
+from .storage import atomic_json, contained, copy_asset, digest, link_or_copy, open_project, parse_json, save_project
 from .worker import job_info
 from .workers import Workers
 
@@ -28,7 +28,7 @@ def publish(staged: Path, target: Path, overwrite: bool) -> None:
     if overwrite:
         os.replace(staged, target)
     else:
-        os.link(staged, target)  # Atomic no-clobber, even if the destination appeared during export.
+        link_or_copy(staged, target)
         staged.unlink()
 
 
@@ -141,7 +141,8 @@ class Engine:
                 continue
             self.preparse_attempted.add(entry["id"])
             try:
-                self.start({"operation": "series.open", "entry_id": entry["id"], "background": True, "preparse": True})
+                self.start({"operation": "series.open", "entry_id": entry["id"], "background": True,
+                            "preparse": True, "render": True, "dpi": "auto"})
             except (OSError, ValueError):
                 # A disabled importer must not prevent opening the rest of the project.
                 continue

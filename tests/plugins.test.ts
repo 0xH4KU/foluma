@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {test} from "node:test";
-import {availablePlugins, groupPlugins, pluginCategory, uniquePlugins} from "../desktop/plugins.ts";
+import {availablePlugins, groupPlugins, pluginCategory, pluginUpdates, uniquePlugins} from "../desktop/plugins.ts";
 import type {Plugin} from "../sdk/types.ts";
 
 test("plugin categories deduplicate sources, retain updates and preserve installed capabilities", () => {
@@ -35,4 +35,30 @@ test("plugin categories deduplicate sources, retain updates and preserve install
   assert.equal(pluginCategory({...base,id:"unknown",name:"Other"}),"tools");
   assert.equal(pluginCategory(importer),"import","disabled or restart-pending plugins keep their category");
   assert.equal(groupPlugins(uniquePlugins(catalog,bundled,installed),"import")[0].items.length,2);
+});
+
+test("startup updates include only installed plugins and select the newest compatible version", () => {
+  const plugin = (id: string, version: string): Plugin => ({id, name: id, version, api_version: 1, platforms: ["all"]});
+  const installed = [
+    {...plugin("epub", "0.1.3"), enabled: false}, plugin("editor", "0.1.10"),
+    {...plugin("pending", "2.0.0"), active_version: "1.0.0", pending: true}, plugin("current", "1.0.0"),
+  ];
+  const bundled = [plugin("epub", "0.1.4"), plugin("editor", "0.1.9"), plugin("new", "1.0.0")];
+  const catalog = [
+    plugin("epub", "0.1.12"), plugin("epub", "0.1.4"), plugin("editor", "0.1.11"),
+    plugin("pending", "2.0.0"), plugin("current", "0.9.9"), plugin("new", "2.0.0"),
+    {...plugin("epub", "3.0.0"), api_version: 2}, plugin("current", "invalid"),
+  ];
+  const original = structuredClone([installed, bundled, catalog]);
+  assert.deepEqual(pluginUpdates(installed, bundled, catalog).map(plugin => [plugin.id, plugin.version]),
+    [["epub", "0.1.12"], ["editor", "0.1.11"]]);
+  assert.deepEqual(pluginUpdates(installed, bundled).map(plugin => [plugin.id, plugin.version]),
+    [["epub", "0.1.4"]], "included updates remain visible without a catalog");
+  assert.deepEqual(pluginUpdates(installed, [plugin("current", "2.0.0")]).map(plugin => plugin.version), ["2.0.0"]);
+  assert.deepEqual(pluginUpdates([plugin("large", "9007199254740992.0.0")],
+    [plugin("large", "9007199254740993.0.0")]).map(plugin => plugin.version), ["9007199254740993.0.0"]);
+  assert.deepEqual(availablePlugins(bundled, installed).map(plugin => [plugin.id, plugin.version]),
+    [["epub", "0.1.4"], ["new", "1.0.0"]], "older included versions must not be offered as updates");
+  assert.deepEqual(pluginUpdates([], bundled, catalog), [], "removed plugins are not update candidates");
+  assert.deepEqual([installed, bundled, catalog], original, "checking must not change installed versions or activation");
 });

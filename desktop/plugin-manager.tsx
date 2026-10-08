@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import type { HostAPI, Plugin, PluginList } from "../sdk/types";
 import { t } from "../sdk/i18n";
 import {
@@ -6,6 +6,7 @@ import {
   groupPlugins,
   pluginCategories,
   pluginCategory,
+  pluginUpdates,
   uniquePlugins,
   type PluginFilter,
 } from "./plugins";
@@ -45,6 +46,8 @@ export function PluginManager({
   run,
   refreshPlugins,
   restart,
+  checkUpdates,
+  onUpdates,
 }: {
   host: HostAPI;
   plugins: PluginList;
@@ -54,6 +57,8 @@ export function PluginManager({
   run: (action: () => Promise<unknown>, commit?: boolean) => Promise<void>;
   refreshPlugins: () => Promise<void>;
   restart: () => Promise<void>;
+  checkUpdates: boolean;
+  onUpdates: (updates: Plugin[]) => void;
 }) {
   const [pluginFilter, setPluginFilter] = useState<PluginFilter>("all");
   const [catalog, setCatalog] = useState<{
@@ -76,7 +81,6 @@ export function PluginManager({
   );
   const installedCount = installedGroups.reduce((count, group) => count + group.items.length, 0);
   const loadCatalog = async () => {
-    host.notify("");
     setLoadingCatalog(true);
     try {
       setCatalog(await host.rpc("plugins.catalog"));
@@ -90,6 +94,12 @@ export function PluginManager({
       setLoadingCatalog(false);
     }
   };
+  useEffect(() => {
+    if (checkUpdates) void loadCatalog();
+  }, [checkUpdates, host]);
+  useEffect(() => {
+    if (checkUpdates) onUpdates(pluginUpdates(plugins.items, bundled, catalog?.plugins || []));
+  }, [checkUpdates, plugins.items, bundled, catalog, onUpdates]);
   const installLocal = () =>
     run(async () => {
       const path = await host.pickFile({
@@ -276,7 +286,7 @@ export function PluginManager({
       />
       <div className="section-title">
         <h2>{t("Official catalog")}</h2>
-        <button disabled={loadingCatalog} onClick={() => void loadCatalog()}>
+        <button disabled={loadingCatalog} onClick={() => { host.notify(""); void loadCatalog(); }}>
           {t(loadingCatalog ? "Loading catalog…" : "Load catalog")}
         </button>
       </div>

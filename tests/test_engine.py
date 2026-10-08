@@ -1,4 +1,5 @@
 import copy
+import errno
 import io
 import json
 import subprocess
@@ -48,6 +49,28 @@ class IntegrationTests(unittest.TestCase):
                 doc.xref_set_key(xref, "ColorSpace", "/DeviceRGB")
             doc.save(self.pdf)
         self.book = import_pdf(str(self.pdf), self.root / "assets")
+
+    def test_epub_export_without_hard_links_preserves_source_images(self):
+        path = self.root / "雙頁驗證.epub"
+        with patch("foluma.storage.os.link", side_effect=OSError(errno.ENOTSUP, "unsupported")):
+            export_epub(self.book, str(path))
+        with ZipFile(path) as archive:
+            self.assertEqual(archive.read("mimetype"), b"application/epub+zip")
+            self.assertIsNone(archive.testzip())
+            for asset_id in self.book["assets"]:
+                self.assertEqual(archive.read(f"EPUB/images/{asset_id}.jpg"), self.jpeg)
+        self.assertFalse(list(self.root.glob(".*.tmp")))
+
+    def test_epub_export_without_hard_links_refuses_a_late_destination(self):
+        path = self.root / "雙頁驗證.epub"
+        def occupied(_source, target):
+            target.write_bytes(b"keep existing output")
+            raise OSError(errno.ENOTSUP, "unsupported")
+        with patch("foluma.storage.os.link", side_effect=occupied):
+            with self.assertRaisesRegex(ValueError, "Refusing to overwrite"):
+                export_epub(self.book, str(path))
+        self.assertEqual(path.read_bytes(), b"keep existing output")
+        self.assertFalse(list(self.root.glob(".*.tmp")))
 
     def test_lossless_physical_pages_crop_and_validated_epub(self):
         self.assertEqual(len(self.book["pages"]), 3)
@@ -473,6 +496,23 @@ class IntegrationTests(unittest.TestCase):
         broken = Plugins(self.root / "broken", bundled_editor=package)
         self.assertFalse(broken.active)
         self.assertTrue(broken.errors)
+
+    def test_catalog_check_keeps_installed_plugins_and_falls_back_on_invalid_metadata(self):
+        manager = Plugins(self.root / "catalog-profile")
+        installed = manager.config_path.read_bytes()
+        entry = {"id": "test.export", "name": "Export", "version": "1.2.3", "api_version": 1,
+                 "platforms": ["all"], "sha256": "a" * 64, "url": "https://example.test/export.mte-plugin"}
+        catalog = {"schema": 1, "plugins": [entry]}
+        with patch("foluma.plugins.download", side_effect=lambda _url, path, _limit: path.write_text(json.dumps(catalog))):
+            self.assertFalse(manager.catalog()["offline"])
+        for invalid in [None, entry | {"name": None}, entry | {"version": "broken"},
+                        entry | {"description": {}}, entry | {"url": 123}, entry | {"api_version": False}]:
+            with self.subTest(metadata=invalid), patch("foluma.plugins.download", side_effect=lambda _url, path, _limit:
+                                                      path.write_text(json.dumps({"plugins": [invalid]}))):
+                result = manager.catalog()
+                self.assertTrue(result["offline"])
+                self.assertEqual(result["plugins"], [entry])
+                self.assertEqual(manager.config_path.read_bytes(), installed)
 
     def test_completed_export_always_includes_its_result(self):
         engine = Engine(self.root / "complete-result")

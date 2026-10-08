@@ -12,6 +12,8 @@ The page editor, PDF import plugin and EPUB export plugin install from bundled p
 
 Plugin Management groups packages into **Import**, **Export**, **Editing and tools**, and **Language packs**. Category filters apply to installed, included and downloadable packages, with counts for unique plugins. The default **All plugins** view groups each list by capability; disabled and restart-pending plugins keep their category. Installed versions are not repeated under included packages, and identical included versions are not repeated in the official catalog. Available updates remain visible.
 
+Each launch checks included packages and the official catalog in the background for newer versions of installed plugins. An update notice opens **Plugins**, where you choose which packages to update; closing the notice defers the reminder until the next launch. Included updates remain available offline. Checking does not install packages or change plugin activation.
+
 ### EPUB export editions
 
 Single-book export, project batch export and the editor's preset batch dialog offer two editions:
@@ -92,13 +94,13 @@ Windows and Linux use Ctrl in place of ⌘ for the document shortcuts.
 
 ## Image handling and performance
 
-**Preferences → Background processing** controls project preparsing and concurrent export. Both are enabled by default, with two tasks each; concurrency is configurable from 1 to 8. Turning concurrent export off processes one book at a time. Opening a project or adding books starts preparsing unread books and saves the results in their existing book projects. Later opens reuse these saved pages and images. Opening a book already being preparsed joins the same task and gives queued work priority. Complex PDF pages wait for explicit rendering consent; a failure in one book does not stop the rest.
+**Preferences → Background processing** controls project preparsing and concurrent export. Both are enabled by default, with two tasks each; concurrency is configurable from 1 to 8. Turning concurrent export off processes one book at a time. Opening a project or adding books starts preparsing unread books and saves the results in their existing book projects. Later opens reuse these saved pages and images. Opening a book already being preparsed joins the same task and gives queued work priority. Complex PDF pages render automatically as PNG using Auto resolution during preparsing; supported images are still extracted directly. A failure in one book does not stop the rest.
 
 The bottom-left status bar shows preparation and export activity. Click it to see queued/running tasks, page progress, errors and individual cancellation. Batch cancellation cancels all tasks started by that batch. Background work permits editing and switching books. Each export uses a snapshot taken when that export is submitted; edits made afterward still require another export. Concurrent exports reserve distinct filenames and retain the existing protection for source and destination files.
 
 Use **Open in new window** beside a project book to edit several books simultaneously. Reopening the same book window focuses the existing window. Each window keeps its document, selection, zoom and scroll; windows displaying the same document share revisions and undo/redo. Blank-suggestion tools stay attached to their originating book and select pages in their originating editor. Closing a book window keeps the main workspace open. Closing the main workspace or switching projects first checks and saves pending changes in the other book windows. Close a book's windows before removing or relinking it.
 
-Supported full-page images are extracted directly, preserving their original image data. Pages with text, rotation, compositing, or other unsupported content require confirmation before rendering to PNG.
+Supported full-page images are extracted directly, preserving their original image data. Pages with text, rotation, compositing, or other unsupported content render automatically during project preparsing. Manual imports and books opened with preparsing disabled require confirmation before rendering to PNG.
 
 **Auto** resolution follows the main image's displayed pixel density, with a maximum of 6000 pixels on the longest edge. Pages containing only text, vectors, or small images use 200 DPI within the same size limit. Manual settings from 72 to 600 DPI remain available. Changing this preference does not regenerate images already saved in a project.
 

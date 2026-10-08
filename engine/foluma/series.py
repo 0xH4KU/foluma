@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import os
 import re
 import shutil
 import tempfile
@@ -23,7 +22,7 @@ from .model import (
     review_page_ids,
     review_unchanged,
 )
-from .storage import atomic_json, contained, digest, open_project, owned_files, parse_json, save_project
+from .storage import atomic_json, contained, digest, link_or_copy, open_project, owned_files, parse_json, save_project
 
 
 def path_id(path: str) -> str:
@@ -384,7 +383,7 @@ class FolderProject(Series):
             recovery = contained(self.root, f".foluma/removed/{item['id']}/{source.name}")
             if not item.get("removed") and not source.exists() and recovery.is_file():
                 source.parent.mkdir(parents=True, exist_ok=True)
-                os.link(recovery, source)
+                link_or_copy(recovery, source)
                 recovery.unlink()
         self.refresh()
 
@@ -485,8 +484,7 @@ class FolderProject(Series):
             if source.is_dir():
                 source.rename(target)
             else:
-                # Hard-link then unlink gives files no-clobber semantics on the same project volume.
-                os.link(source, target)
+                link_or_copy(source, target)
                 try:
                     source.unlink()
                 except Exception:
@@ -503,7 +501,7 @@ class FolderProject(Series):
                 if target.is_dir():
                     target.rename(source)
                 else:
-                    os.link(target, source)
+                    link_or_copy(target, source)
                     target.unlink()
             for path in reversed(copies):
                 path.unlink(missing_ok=True)
@@ -524,7 +522,7 @@ class FolderProject(Series):
             staged = Path(temporary.name)
         try:
             shutil.copyfile(source, staged)
-            os.link(staged, target)
+            link_or_copy(staged, target)
         finally:
             staged.unlink(missing_ok=True)
 

@@ -29,6 +29,28 @@ export function uniquePlugins(...sources: Plugin[][]): Plugin[] {
 }
 
 export function availablePlugins(candidates: Plugin[], ...existing: Plugin[][]): Plugin[] {
-  const known = new Set(existing.flat().map(plugin => `${plugin.id}@${plugin.version}`));
-  return candidates.filter(plugin => !known.has(`${plugin.id}@${plugin.version}`));
+  const known = existing.flat();
+  return candidates.filter(plugin => !known.some(current => current.id === plugin.id &&
+    !newerVersion(plugin.version, current.version)));
+}
+
+function newerVersion(candidate: string, current: string): boolean {
+  if (!/^\d+\.\d+\.\d+$/.test(candidate) || !/^\d+\.\d+\.\d+$/.test(current)) return false;
+  const next = candidate.split(".").map(BigInt), previous = current.split(".").map(BigInt);
+  for (let index = 0; index < next.length; index++) {
+    if (next[index] !== previous[index]) return next[index] > previous[index];
+  }
+  return false;
+}
+
+export function pluginUpdates(installed: Plugin[], ...sources: Plugin[][]): Plugin[] {
+  const updates = new Map<string, Plugin>();
+  for (const candidate of sources.flat()) {
+    const current = installed.find(plugin => plugin.id === candidate.id);
+    if (current && candidate.api_version === current.api_version &&
+        newerVersion(candidate.version, (updates.get(candidate.id) || current).version)) {
+      updates.set(candidate.id, candidate);
+    }
+  }
+  return [...updates.values()];
 }

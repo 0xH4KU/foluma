@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import errno
 import hashlib
 import json
 import os
@@ -22,6 +23,23 @@ def parse_json(text: str | bytes):
 def digest(path: Path) -> str:
     with path.open("rb") as source:
         return hashlib.file_digest(source, "sha256").hexdigest()
+
+
+def link_or_copy(source: Path, target: Path) -> None:
+    try:
+        os.link(source, target)
+    except OSError as error:
+        if error.errno not in (errno.ENOTSUP, errno.EOPNOTSUPP):
+            raise
+        # ponytail: a process crash can leave a partial copy; add recovery if automatic cleanup is needed.
+        with source.open("rb") as incoming:
+            outgoing = target.open("xb")
+            try:
+                with outgoing:
+                    shutil.copyfileobj(incoming, outgoing)
+            except BaseException:
+                target.unlink(missing_ok=True)
+                raise
 
 
 def atomic_json(path: Path, value: object) -> None:

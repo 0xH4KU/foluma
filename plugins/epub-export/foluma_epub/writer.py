@@ -11,6 +11,7 @@ from io import BytesIO
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile, ZipInfo
 
+from foluma.storage import link_or_copy
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from .validation import validate_epub_structure
@@ -204,7 +205,7 @@ def _publish_epub(temp_path: Path, epub_path: Path, overwrite: bool) -> None:
         os.replace(temp_path, epub_path)
         return
     try:
-        os.link(temp_path, epub_path)
+        link_or_copy(temp_path, epub_path)
     except FileExistsError as exc:
         raise ValueError(f"Refusing to overwrite existing file: {epub_path}") from exc
     finally:

@@ -2,6 +2,12 @@
 
 Environment: macOS arm64, Python 3.14.4, PyMuPDF 1.28.2, Pillow 12.3.0, Node 25.8.2, Rust 1.98.1. The app uses a bundled interpreter; the end user does not need these development tools.
 
+## Background PDF rendering, 2026-10-08
+
+All 60 Python integration tests and 26 TypeScript/SDK tests pass, along with Ruff and strict TypeScript/Vite builds. The new generated-PDF regression first reproduced a `render_required` failure during automatic project preparsing, then verified that four background books complete, complex pages use Auto PNG rendering, original JPEG bytes and blank pages are preserved, sources remain unchanged, and saved books reopen without parsing again. Existing checks also verify sharing render-enabled opening requests with preparsing and retaining manual rendering confirmation when preparsing is disabled.
+
+Project preparsing now enables rendering at Auto resolution from the start, avoiding a second PDF inspection or a failed background task for pages that need rendering. Preferences, the Traditional Chinese language pack (0.4.11), and the user guide describe this behavior. The reported 375-page PDF and the packaged macOS app were not tested in this check.
+
 ## Background processing and book windows, 2026-10-07
 
 The current source passes 51 Python integration tests, 26 TypeScript/SDK tests, strict TypeScript/Vite builds, Ruff and the macOS debug app build. New checks cover bounded/shared parsing, authorized rendering queued behind an unapproved parse, cancellation before publishing staged imports, parallel export name reservation, immutable export revisions, serial-export preferences, signal-scoped cancellation, retained window sessions and cancellation of peer-window closing.
@@ -190,7 +196,7 @@ Scope remains simple image publications. Text reflow, composite SVG/CSS renderin
 ## Scope and limits
 
 - Preview pairing emulates the existing Apple Books cover gap. An external Apple Books import has not been tested in this session.
-- PDF extraction is deliberately conservative: only an upright full-page image with supported color/filter data and no extra composition is accepted directly. Other pages require user-approved PNG rendering (default Auto; manual 72–600 DPI). Auto follows a dominant scan’s displayed pixel density; pages without a dominant image use 200 DPI. Auto caps the longest edge at 6000 pixels.
+- PDF extraction is deliberately conservative: only an upright full-page image with supported color/filter data and no extra composition is accepted directly. Other pages use PNG rendering, automatically with Auto during project preparsing and with confirmation for manual imports (manual 72–600 DPI remains available). Auto follows a dominant scan’s displayed pixel density; pages without a dominant image use 200 DPI. Auto caps the longest edge at 6000 pixels.
 - Undo keeps 100 metadata snapshots; source image bytes are shared. Local asset and thumbnail files are retained under app data; automatic disk-cache reclamation is not implemented.
 - Folder imports read immediate files supported by active import plugins. Managed project refresh also scans one group level; deeper nesting is not supported. Autosaved projects and last-book selection persist; undo history and the current batch's transient error rows do not survive reopening. View preferences are stored locally per document. Saved books with normalized image assets can reopen without their source or importer. A legacy PDF-backed project still needs its matching original and the enabled PDF importer for its first migration; missing/changed originals leave the project unchanged.
 - Plugins are trusted local code, not sandboxed. Native workers are bundled by their authors; the engine does not run pip for plugins.

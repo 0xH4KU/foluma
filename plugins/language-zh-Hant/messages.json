@@ -506,7 +506,7 @@
   "Auto (recommended)": "自動（建議）",
   "Auto resolution": "自動解析度",
   "Auto · ask first": "自動 · 先詢問",
-  "Auto follows the main image’s resolution, up to 6000 pixels on the longest edge. Text and vector pages use 200 DPI within that limit. Rendering requires confirmation.": "自動依主要圖片的解析度渲染，長邊最多 6000 像素。文字與向量頁面採 200 DPI，並遵守相同尺寸上限。渲染前會先詢問。",
+  "Auto follows the main image’s resolution, up to 6000 pixels on the longest edge. Text and vector pages use 200 DPI within that limit. Manual imports ask before rendering.": "自動依主要圖片的解析度渲染，長邊最多 6000 像素。文字與向量頁面採 200 DPI，並遵守相同尺寸上限。手動匯入時會先詢問是否渲染。",
   "{0} pages require rendering (pages {1}{2}).\n\nRender these pages as PNG using {3}? Other pages will keep their original images.": "{0} 頁需要渲染（第 {1}{2} 頁）。\n\n是否使用{3}將這些頁面轉為 PNG？其他頁面會保留原始圖片。",
   "{0} pages in this book require rendering. Render them as PNG using {1}?": "本冊有 {0} 頁需要渲染。是否使用{1}將這些頁面轉為 PNG？",
   "Render resolution must be Auto or between 72 and 600 DPI": "渲染解析度須為自動，或介於 72–600 DPI",
@@ -851,7 +851,7 @@
   "Invalid original page rotation": "原始頁面的旋轉角度無效",
   "Preparing rotated images": "準備旋轉後的圖片",
   "Background processing": "背景處理",
-  "Prepare books when a project opens. Saved results are reused; pages requiring rendering wait for your confirmation.": "開啟專案時在背景預解析漫畫，已保存的結果會直接沿用；需要渲染的頁面會等待你的確認。",
+  "Prepare books when a project opens. Saved results are reused; PDF pages requiring rendering use Auto resolution automatically.": "開啟專案時在背景預解析漫畫，已儲存的結果會直接沿用；需要渲染的 PDF 頁面會以自動解析度轉為 PNG。",
   "Exports use the book version at the start of each export. Editing can continue while tasks run.": "匯出使用各本開始匯出時的版本，背景處理期間可以繼續編輯。",
   "Preparse project books": "預解析專案中的漫畫",
   "Parsing concurrency": "解析併發數",
@@ -877,5 +877,7 @@
   "Width (px)": "寬度（px）",
   "Height (px)": "高度（px）",
   "EPUB page size saved": "已保存 EPUB 頁面大小",
-  "EPUB page dimensions must be whole numbers between 1 and 10000": "EPUB 頁面寬度與高度必須是 1 到 10000 之間的整數"
+  "EPUB page dimensions must be whole numbers between 1 and 10000": "EPUB 頁面寬度與高度必須是 1 到 10000 之間的整數",
+  "Plugin updates available: {0}. Choose which to update in Plugins.": "有 {0} 個插件可更新，請到插件管理選擇要更新的項目。",
+  "Review updates": "查看更新"
 }
