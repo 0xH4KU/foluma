@@ -1,7 +1,7 @@
 {
   "id": "org.foluma.export.pdf",
   "name": "PDF export",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "api_version": 1,
   "description": "Export image-based PDF books with edited page order, lossless image placement, crops, blanks and reading direction.",
   "platforms": ["all"],

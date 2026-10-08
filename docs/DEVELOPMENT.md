@@ -82,6 +82,6 @@ Commit the SVG and the three desktop icons together. Additional generated platfo
 - `.venv/bin/python scripts/make_demo.py` generates an eight-page reference PDF under `artifacts/`, without external sample files.
 - Set `FOLUMA_DATA` to an isolated directory when launching an app for manual checks, so it uses a separate profile.
 
-Release format plugins bundle their own native workers; the base engine does not bundle MuPDF or an EPUB writer. See the [plugin API](PLUGIN-API.md) for package structure and host capabilities.
+Release format plugins bundle their own native workers and runtime directories, unpacked once at installation. The base engine does not bundle MuPDF or an EPUB writer. See the [plugin API](PLUGIN-API.md) for package structure and host capabilities.
 
 Older PDF-backed projects migrate to stored page images when opened with PDF import enabled. Their original PDF and importer are required for this one-time migration; afterward saved books no longer depend on either.

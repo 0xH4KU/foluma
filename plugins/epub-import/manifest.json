@@ -1,7 +1,7 @@
 {
   "id": "org.foluma.import.epub",
   "name": "EPUB image import",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "api_version": 1,
   "description": "Import image-based EPUB books in reading order, preserving metadata, covers, SVG crops and blank pages.",
   "platforms": [

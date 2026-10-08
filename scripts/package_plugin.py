@@ -1,6 +1,7 @@
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -37,12 +38,13 @@ for manifest_path in sorted((root / "plugins").glob("*/manifest.json")):
                               'runpy.run_path(str(Path(__file__).resolve().parents[1] / "worker.py"), run_name="__main__")\n')
             worker.chmod(0o755)
         else:
-            subprocess.run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onefile",
-                            "--name", worker_name.removesuffix(".exe"), "--distpath", str(worker.parent),
+            subprocess.run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onedir",
+                            "--name", worker_name.removesuffix(".exe"), "--distpath", str(worker.parent / "native"),
                             "--workpath", str(build / "plugin-work" / folder), "--specpath", str(build),
                             "--paths", str(root / "engine"), "--paths", str(root / "plugins"),
                             "--paths", str(content), str(content / "worker.py")],
                            cwd=root, check=True)
+            worker = worker.parent / "native" / worker_name.removesuffix(".exe") / worker_name
         manifest["workers"] = {platform_id(): f"workers/{worker_name}"}
         manifest["platforms"] = [platform_id()]
     name = f"{manifest['id']}-{manifest['version']}.mte-plugin"
@@ -50,7 +52,14 @@ for manifest_path in sorted((root / "plugins").glob("*/manifest.json")):
     with ZipFile(output, "w", ZIP_DEFLATED) as archive:
         archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
         if worker:
-            archive.write(worker, manifest["workers"][platform_id()])
+            if arguments.development:
+                archive.write(worker, manifest["workers"][platform_id()])
+            else:
+                # Flatten framework symlinks: installed plugin packages only contain ordinary files.
+                for directory, _, files in os.walk(worker.parent, followlinks=True):
+                    for filename in sorted(files):
+                        source = Path(directory) / filename
+                        archive.write(source, f"workers/{source.relative_to(worker.parent).as_posix()}")
         if not worker or arguments.development:
             if folder in ("cbz-import", "zip-import", "epub-import"):
                 archive.write(root / "plugins/image_archive.py", "image_archive.py")
