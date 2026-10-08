@@ -15,7 +15,7 @@ from zipfile import ZipFile
 import pymupdf as fitz
 from foluma.model import new_id
 from foluma.service import Engine, EngineError
-from foluma.storage import open_project
+from foluma.storage import digest, open_project
 from PIL import Image
 
 
@@ -83,6 +83,34 @@ class FolderProjectTests(unittest.TestCase):
                 self.assertEqual(archive.testzip(), None)
             self.assertFalse(list(self.project.glob('.import-*')))
             self.assertEqual((self.sources / 'Vol.1.pdf').read_bytes(), original)
+
+    def test_reopen_reuses_unchanged_sources_and_explicit_refresh_checks_all_bytes(self):
+        self.create()
+        self.call('series.refresh')
+        with patch('foluma.series.digest', side_effect=AssertionError('unchanged source was read again')):
+            reopened = self.call('series.open_project', path=str(self.project))
+        self.assertFalse(any(item['changed'] for item in reopened['items']))
+
+        source = Path(reopened['items'][0]['path'])
+        source.write_bytes(source.read_bytes() + b'\n% source changed\n')
+        with patch('foluma.series.digest', wraps=digest) as fingerprints:
+            reopened = self.call('series.open_project', path=str(self.project))
+        self.assertEqual(fingerprints.call_count, 1)
+        self.assertTrue(reopened['items'][0]['changed'])
+
+        other = Path(reopened['items'][1]['path'])
+        stamp = other.stat()
+        original = other.read_bytes()
+        other.write_bytes(b'X' + original[1:])
+        os.utime(other, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        refreshed = self.call('series.refresh')
+        self.assertTrue(refreshed['items'][1]['changed'], 'explicit refresh must detect same-size, same-time edits')
+
+        renamed = Path(reopened['items'][2]['path'])
+        renamed.rename(renamed.with_name('Renamed.pdf'))
+        reopened = self.call('series.open_project', path=str(self.project))
+        self.assertEqual(reopened['items'][2]['id'], refreshed['items'][2]['id'])
+        self.assertEqual(Path(reopened['items'][2]['path']).name, 'Renamed.pdf')
 
     def test_preparse_renders_complex_pdf_pages_with_auto_and_preserves_original_images(self):
         path = self.sources / 'Needs rendering.pdf'

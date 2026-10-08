@@ -385,7 +385,7 @@ class FolderProject(Series):
                 source.parent.mkdir(parents=True, exist_ok=True)
                 link_or_copy(recovery, source)
                 recovery.unlink()
-        self.refresh()
+        self.refresh(verify=False)
 
     @classmethod
     def create(cls, data: Path, parent: str, name: str, extensions=(), paths=None, information=None):
@@ -864,7 +864,7 @@ class FolderProject(Series):
                 item for item in self.state["items"] if item.get("removed")
             ]
 
-    def refresh(self):
+    def refresh(self, *, verify=True):
         previous = {item["id"]: item["path"] for item in self.state["items"] if not item.get("removed")}
         if self.state["output_directory"] and not Path(self.state["output_directory"]).is_absolute():
             self.state["output_directory"] = str(contained(self.root, self.state["output_directory"]))
@@ -876,12 +876,19 @@ class FolderProject(Series):
             ),
             key=natural_key,
         )
-        files = {}
+        files, stamps = {}, {}
+        known = {item["path"]: item for item in self.state["items"] if not item.get("removed")}
         tracked = self.extensions | {Path(item["path"]).suffix.lower() for item in self.state["items"]}
         for directory in [self.root, *(self.root / group for group in groups)]:
             for path in directory.iterdir():
                 if path.is_file() and not path.is_symlink() and path.suffix.lower() in tracked:
-                    files[str(path)] = digest(path)
+                    name = str(path)
+                    stat = path.stat()
+                    stamps[name] = [stat.st_size, stat.st_mtime_ns]
+                    item = known.get(name)
+                    # ponytail: startup trusts file stamps; explicit refresh detects edits preserving size and time.
+                    files[name] = (item["sha256"] if not verify and item and item.get("sha256")
+                                   and item.get("stamp") == stamps[name] else digest(path))
         with self.change():
             active = [item for item in self.state["items"] if not item.get("removed")]
             for item in active:
@@ -901,15 +908,14 @@ class FolderProject(Series):
                 parent = Path(item["path"]).parent
                 item["group"] = parent.name if parent != self.root else ""
                 if not item["changed"] and item["path"] in files:
-                    stat = Path(item["path"]).stat()
-                    item["stamp"] = [stat.st_size, stat.st_mtime_ns]
+                    item["stamp"] = stamps[item["path"]]
                 else:
                     item.pop("stamp", None)
             known = {item["path"] for item in active}
             for path in sorted(
                 (path for path in files.keys() - known if Path(path).suffix.lower() in self.extensions), key=natural_key
             ):
-                self.state["items"].append(self.new_item(Path(path), files[path]))
+                self.state["items"].append(self.new_item(Path(path), files[path]) | {"stamp": stamps[path]})
             self.state["groups"] = list(dict.fromkeys([*groups, *(item["group"] for item in active if item["group"])]))
             self.state["refreshed_at"] = datetime.now(UTC).isoformat()
         items = [item for item in self.state["items"] if not item.get("removed")]
