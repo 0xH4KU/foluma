@@ -254,7 +254,12 @@ class Engine:
             raise ValueError(t("Parameters must be an object"))
         if method == "document.preview":
             with self.lock:
-                book = copy.deepcopy(self.document(p).book)
+                current = self.document(p).book
+                page = next(page for page in current["pages"] if page["id"] == p["page_id"])
+                book = copy.deepcopy({
+                    "id": current["id"], "pages": [page],
+                    "assets": {page["asset_id"]: current["assets"][page["asset_id"]]} if page["kind"] == "image" else {},
+                })
             size = p.get("size", 320)
             return self.cache.preview(
                 book,

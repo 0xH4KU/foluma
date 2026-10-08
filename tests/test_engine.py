@@ -98,6 +98,45 @@ class IntegrationTests(unittest.TestCase):
             export_epub(self.book, str(path))
         self.assertEqual(path.read_bytes(), original)
 
+    def test_preview_worker_gets_only_its_page_and_an_isolated_asset_snapshot(self):
+        book = copy.deepcopy(self.book)
+        book["pages"].extend(book["pages"][0] | {"id": new_id()} for _ in range(1000))
+        page = book["pages"][-1]
+        page.update(crop=[0, 0, 0.5, 1], rotation=90)
+        blank = {"id": new_id(), "kind": "blank", "width": 240, "height": 320, "asset_id": "unused"}
+        book["pages"].append(blank)
+        engine = Engine(self.root / "preview-data")
+        self.addCleanup(engine.close)
+        engine.session = Session(book)
+        expected = self.root / "expected"
+        reference = expected / preview(book, page["id"], 320, expected / "previews")
+        observed = []
+        original = engine.run_worker
+
+        def render(operation, params, job=None):
+            observed.append(params["book"])
+            live_page = engine.session.book["pages"][-2]
+            live_page["crop"][2] = 1
+            live_asset = engine.session.book["assets"][page["asset_id"]]
+            previous_path = live_asset["path"]
+            live_asset["path"] = str(self.root / "missing.jpg")
+            try:
+                return original(operation, params, job)
+            finally:
+                live_asset["path"] = previous_path
+
+        with patch.object(engine, "run_worker", side_effect=render):
+            result = engine.call("document.preview", {"document_id": book["id"], "page_id": page["id"]})
+            blank_result = engine.call("document.preview", {"document_id": book["id"], "page_id": blank["id"]})
+        self.assertEqual([len(snapshot["pages"]) for snapshot in observed], [1, 1])
+        self.assertEqual([len(snapshot["assets"]) for snapshot in observed], [1, 0])
+        self.assertNotIn("metadata", observed[0])
+        with Image.open(reference) as expected_image, Image.open(engine.data / result) as rendered:
+            self.assertEqual(rendered.size, expected_image.size)
+            self.assertEqual(rendered.tobytes(), expected_image.tobytes())
+        with Image.open(engine.data / blank_result) as rendered:
+            self.assertEqual(rendered.getpixel((0, 0)), (255, 255, 255))
+
     def test_pdf_extraction_rejects_missing_image_payload(self):
         with fitz.open(self.pdf) as doc:
             xref = doc[0].get_images()[0][0]
