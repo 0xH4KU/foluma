@@ -441,6 +441,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(set(timing["phases"]), {"Preparing", "Checking PDF pages", "Preparing pages"})
         self.assertTrue(all(value >= 0 for value in timing["phases"].values()))
         self.assertAlmostEqual(sum(timing["phases"].values()), timing["seconds"], delta=0.01)
+        self.assertGreaterEqual(timing["total_seconds"], timing["seconds"])
 
     def test_saving_relocates_undo_redo_assets_and_rejects_escaped_asset_directories(self):
         engine = Engine(self.root / "save-data")

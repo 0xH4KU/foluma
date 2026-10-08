@@ -23,16 +23,25 @@ def execute(operation: str, handler, translations: dict) -> None:
     started = time.perf_counter()
     messages.set(translations)
     phase, phase_started, timings = t("Preparing"), started, {}
+    last_progress, pending_progress = None, None
 
     def progress(done, total, message):
-        nonlocal phase, phase_started
-        if message != phase:
-            now = time.perf_counter()
+        nonlocal phase, phase_started, last_progress, pending_progress
+        now = time.perf_counter()
+        changed = message != phase
+        if changed:
             timings[phase] = timings.get(phase, 0) + now - phase_started
             phase, phase_started = message, now
-        emit({"progress": {"done": done, "total": total, "message": message}})
+        pending_progress = {"progress": {"done": done, "total": total, "message": message}}
+        if changed or last_progress is None or done >= total or now - last_progress >= 0.1:
+            emit(pending_progress)
+            last_progress, pending_progress = now, None
 
     def report_timing():
+        nonlocal pending_progress
+        if pending_progress is not None:
+            emit(pending_progress)
+            pending_progress = None
         now = time.perf_counter()
         timings[phase] = timings.get(phase, 0) + now - phase_started
         if operation != "preview" or now - started >= 0.25:

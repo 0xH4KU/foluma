@@ -7,6 +7,7 @@ import re
 import sys
 import tempfile
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -797,6 +798,7 @@ class Engine:
                 self.export_targets.discard(target)
 
     def execute(self, job: dict, p: dict, book: dict | None) -> None:
+        started = time.perf_counter()
         messages.set(self.plugins.locale()["messages"])
         temporary = None
         try:
@@ -919,6 +921,9 @@ class Engine:
                 self.notify("task.changed", job_info(job))
                 self.threads.discard(threading.current_thread())
                 self.dispatch()
+            print("[task-timing] " + json.dumps({"id": job["id"], "operation": job["operation"],
+                  "state": job["state"], "seconds": round(time.perf_counter() - started, 3)}),
+                  file=sys.stderr, flush=True)
 
     def close(self) -> None:
         with self.lock:

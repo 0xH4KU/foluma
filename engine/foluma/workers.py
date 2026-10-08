@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 from .i18n import t
@@ -66,17 +67,17 @@ class Workers:
     def run(
         self, operation: str, params: dict, translations: dict, job: dict | None = None, executable: Path | None = None
     ):
+        started = time.perf_counter()
+        timing = {"operation": params.get("operation", operation)}
         with tempfile.TemporaryDirectory(dir=self.data) as temp:
             request = Path(temp) / "request.json"
-            atomic_json(
-                request,
-                {
+            if executable is None:
+                atomic_json(request, {
                     "operation": operation,
                     "params": params,
                     "data": str(self.data),
                     "messages": translations,
-                },
-            )
+                })
             command = worker_command(request, executable)
             worker_input = json.dumps(params, ensure_ascii=False) + "\n" if executable else None
             with (Path(temp) / "stderr.log").open("w+") as error_log:
@@ -104,12 +105,8 @@ class Workers:
                     process.stdin.close()
                     for line in process.stdout:
                         message = parse_json(line)
-                        if "timing" in message:
-                            print(
-                                "[timing] " + json.dumps(message["timing"], ensure_ascii=False),
-                                file=sys.stderr,
-                                flush=True,
-                            )
+                        if isinstance(message.get("timing"), dict):
+                            timing.update(message["timing"])
                         if "progress" in message and job:
                             job["progress"] = message["progress"]
                             self.notify("task.changed", job_info(job))
@@ -134,3 +131,7 @@ class Workers:
                     process.stdout.close()
                     with self.lock:
                         self.processes.pop(process.pid, None)
+                    elapsed = time.perf_counter() - started
+                    if operation != "preview" or elapsed >= 0.25:
+                        print("[timing] " + json.dumps(timing | {"total_seconds": round(elapsed, 3)}, ensure_ascii=False),
+                              file=sys.stderr, flush=True)
