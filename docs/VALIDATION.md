@@ -2,6 +2,45 @@
 
 Environment: macOS arm64, Python 3.14.4, PyMuPDF 1.28.2, Pillow 12.3.0, Node 25.8.2, Rust 1.98.1. The app uses a bundled interpreter; the end user does not need these development tools.
 
+## Performance and native packaging, 2026-10-08
+
+All 68 Python tests, 27 TypeScript/SDK tests, Ruff and strict TypeScript/Vite builds pass. The macOS release app was rebuilt and passes `codesign --verify --deep --strict`. Its signature remains ad-hoc with hardened runtime; notarization was not performed.
+
+The work is split into reversible stages:
+
+| Commit | Change |
+| --- | --- |
+| `3a76a59` | Package native format workers with runtime directories, unpacked once at installation. |
+| `52a313b` | Reuse unchanged source fingerprints on project open; explicit refresh still hashes all sources. |
+| `d460563` | Prepare each supported PDF image resource once, retaining per-page layout checks. |
+| `815871a` | Reuse saved asset paths across current/undo/redo state and remove redundant project reads and snapshots. |
+| `711e3a1` | Send only the requested page and asset to preview workers. |
+| `b1b2f37` | Coalesce progress, omit unused plugin request files and record worker/task elapsed time. |
+
+Generated local measurements, with warm filesystem caches:
+
+| Case | Before | After |
+| --- | --- | --- |
+| Repeated PDF native-worker startup | About 8.1 s | 0.125 s in the native import check |
+| 375 PDF pages sharing one 1750×2480 JPEG resource | 5.414 s | 0.091 s |
+| 24 distinct 1750×2480 Flate images | 2.297 s | 2.313 s; no measured speed-up in this case |
+| 375-page metadata edit with 100 undo snapshots, median of five | 40.30 ms | 14.74 ms |
+| 1,000-page metadata edit with 100 undo snapshots, median of five | 107.10 ms | 37.01 ms |
+| Cached preview request for a 1,000-page document, median of 30 | 2.082 ms | 0.050 ms |
+| Serialized document data for that preview | 392,291 bytes | 461 bytes |
+
+The shared-image result applies to reused PDF resources, not to books containing different scans on every page. Distinct-image compression remains a substantial cost. Metadata-edit measurements use small generated image assets to isolate state and filesystem overhead; preview measurements cover cache hits, not image decoding or UI drawing. These are local generated cases, not throughput guarantees for real books.
+
+The directory-based PDF worker's first import still took 11.36 s. The packaging prototype increased the PDF package from about 36 MB to 64 MB (about 138 MB unpacked). New package tests verify runtime files, executable permissions and flattened framework symlinks. All seven native format workers were exercised: PDF/CBZ/ZIP/EPUB import and PDF/CBZ/EPUB export, with original JPEG bytes and archive integrity checks.
+
+Final checks ran the rebuilt app's frozen engine from `/tmp`, with an isolated `FOLUMA_DATA`, a system-only executable search path, and no Python environment overrides. A generated three-page PDF included two shared JPEG pages and a composed page. Automatic preparsing, opening the saved book, metadata/crop/rotation edits, the 320×120 rotated preview, validated EPUB export, undo/redo and restart restoration all passed. This exercised the packaged engine and workers, not the native UI.
+
+Regression tests also cover unchanged-source reuse, changed/renamed sources, full refresh detecting same-size/same-time content edits, per-page composition decisions for shared images, lossless indexed PNGs, storage error propagation, portable undo/redo assets after deleting the old asset copies, rejection of escaped asset directories, and preview snapshots remaining stable during document changes. Progress tests preserve phase changes, completion and the latest progress before failure.
+
+`[timing]` records keep the worker's phase times and add `total_seconds` for request preparation, process startup, processing and exit. `[task-timing]` includes the running engine task's asset adoption and project persistence; queue wait and UI rendering are outside this measurement. Autosaves remain synchronous to preserve failure and revision semantics, with the repeated work removed.
+
+Real large-book files, UI frame rates, peak memory, cold/external-disk throughput and Windows/Linux were not tested in this pass.
+
 ## Background PDF rendering, 2026-10-08
 
 All 60 Python integration tests and 26 TypeScript/SDK tests pass, along with Ruff and strict TypeScript/Vite builds. The new generated-PDF regression first reproduced a `render_required` failure during automatic project preparsing, then verified that four background books complete, complex pages use Auto PNG rendering, original JPEG bytes and blank pages are preserved, sources remain unchanged, and saved books reopen without parsing again. Existing checks also verify sharing render-enabled opening requests with preparsing and retaining manual rendering confirmation when preparsing is disabled.
