@@ -26,7 +26,7 @@ class RenderRequired(ValueError):
         self.data = {"kind": "render_required", "pages": pages}
 
 
-def direct_image(doc, page):
+def direct_image(doc, page, directory: Path, prepared: dict):
     """Only accept a full-page, upright image drawn without other PDF operations."""
     images = page.get_image_info()
     if not page.get_bboxlog() and not list(page.annots() or ()) and not list(page.widgets() or ()):
@@ -64,22 +64,29 @@ def direct_image(doc, page):
     if any(doc.xref_get_key(xref, key)[0] != "null" for key in ("SMask", "Mask", "Decode")):
         return "render", None
     try:
-        image = _image_from_xref(doc, xref, 1)
-        if image.width * image.height > 100_000_000 or abs((a / d) / (image.width / image.height) - 1) > 0.001:
+        asset = prepared.get(xref)
+        if asset is None:
+            image = _image_from_xref(doc, xref, 1)
+            asset = {"kind": "file", "xref": xref, "width": image.width, "height": image.height}
+        if asset["width"] * asset["height"] > 100_000_000 or abs((a / d) / (asset["width"] / asset["height"]) - 1) > 0.001:
             return "render", None
+        if xref in prepared:
+            return "image", dict(asset)
         if image.color_space not in (b"/DeviceRGB", b"/DeviceGray") and not (
             image.filter_name != "DCTDecode" and (image.color_space or b"").startswith(b"[/Indexed")
         ):
             return "render", None
-        # Inspection decodes this temporary PNG immediately; compression only helps exports.
-        ext, payload = image_to_epub_member(image, compression_level=0)
+        ext, payload = image_to_epub_member(image, compression_level=3)
         with Image.open(io.BytesIO(payload)) as decoded:
             if decoded.size != (image.width, image.height) or decoded.getexif().get(274, 1) != 1:
                 return "render", None
             decoded.load()
-        return "image", {"kind": "pdf", "xref": xref, "width": image.width, "height": image.height, "ext": ext}
     except (ValueError, RuntimeError, OSError, AttributeError):
         return "render", None
+    # Retain encoded files, not a book's decoded pixels; storage failures must propagate.
+    asset.update(ext=ext, path=str(write_asset(payload, directory, ext)))
+    prepared[xref] = asset
+    return "image", dict(asset)
 
 
 def auto_render_scale(page) -> float:
@@ -107,10 +114,10 @@ def import_pdf(path: str, asset_dir: Path, render: bool = False, dpi: int | str 
             raise ValueError(t("Choose an unencrypted PDF"))
         if not len(doc):
             raise ValueError(t("The PDF has no pages"))
-        inspected = []
+        inspected, prepared = [], {}
         progress(0, len(doc), t("Checking PDF pages"))
         for i, page in enumerate(doc):
-            inspected.append(direct_image(doc, page))
+            inspected.append(direct_image(doc, page, asset_dir, prepared))
             progress(i + 1, len(doc), t("Checking PDF pages"))
         complex_pages = [i + 1 for i, (kind, _) in enumerate(inspected) if kind == "render"]
         if complex_pages and not render:
@@ -176,8 +183,7 @@ def import_pdf(path: str, asset_dir: Path, render: bool = False, dpi: int | str 
                         "derived_from": {"source_id": source_id, "page": i + 1, "dpi": scale * 72},
                     }
                 else:
-                    payload = image_to_epub_member(_image_from_xref(doc, asset["xref"], 1), compression_level=3)[1]
-                    asset.update(kind="file", path=str(write_asset(payload, asset_dir, asset["ext"])), source_id=source_id)
+                    asset["source_id"] = source_id
                 asset["source_page"] = i + 1
                 asset_id = new_id()
                 book["assets"][asset_id] = asset

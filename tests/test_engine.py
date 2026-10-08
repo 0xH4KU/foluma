@@ -227,6 +227,43 @@ class IntegrationTests(unittest.TestCase):
             self.assertEqual(asset["xref"], used_xref)
             self.assertEqual(load_asset(book, asset_id), self.jpeg)
 
+    def test_pdf_prepares_each_shared_image_once_without_reusing_page_layout_decisions(self):
+        for format_name in ("JPEG", "PNG"):
+            with self.subTest(format=format_name):
+                original = Image.new("RGB", (240, 320), "#bada55")
+                encoded = io.BytesIO()
+                original.save(encoded, format_name)
+                path = self.root / f"shared-{format_name}.pdf"
+                with fitz.open() as doc:
+                    xref = 0
+                    for number in range(4):
+                        page = doc.new_page(width=480 if number == 3 else 240, height=320)
+                        xref = page.insert_image(page.rect, stream=encoded.getvalue(), xref=xref, keep_proportion=False)
+                        doc.xref_set_key(xref, "ColorSpace", "/DeviceRGB")
+                        if number == 2:
+                            page.insert_text((10, 20), "overlay")
+                    doc.save(path, deflate=True)
+                with (
+                    patch.object(pdf_importer, "_image_from_xref", wraps=_image_from_xref) as extracted,
+                    patch.object(pdf_importer, "image_to_epub_member", wraps=image_to_epub_member) as encoded_image,
+                ):
+                    book = import_pdf(str(path), self.root / "shared-assets", render=True)
+                self.assertEqual(extracted.call_count, 1)
+                self.assertEqual(encoded_image.call_count, 1)
+                assets = [book["assets"][page["asset_id"]] for page in book["pages"]]
+                self.assertEqual([asset["source_page"] for asset in assets], [1, 2, 3, 4])
+                self.assertEqual(assets[0]["path"], assets[1]["path"])
+                self.assertEqual([bool(asset.get("derived_from")) for asset in assets], [False, False, True, True])
+                if format_name == "JPEG":
+                    self.assertEqual(Path(assets[0]["path"]).read_bytes(), encoded.getvalue())
+                else:
+                    with Image.open(assets[0]["path"]) as restored:
+                        self.assertEqual(restored.tobytes(), original.tobytes())
+
+        with patch.object(pdf_importer, "write_asset", side_effect=OSError("disk full")):
+            with self.assertRaisesRegex(OSError, "disk full"):
+                import_pdf(str(self.pdf), self.root / "failed-assets")
+
     def test_flate_pixels_and_core_direction_keep_split_identity(self):
         png = io.BytesIO()
         original = Image.new("RGB", (240, 320), "#bada55")
@@ -301,7 +338,8 @@ class IntegrationTests(unittest.TestCase):
             book = import_pdf(str(path), self.root / "assets")
             page = book["pages"][0]
             rendered = self.root / preview(book, page["id"], 320, self.root / "previews")
-            self.assertEqual({call.kwargs["level"] for call in compress.call_args_list}, {0, 3})
+            compress.assert_called_once()
+            self.assertEqual(compress.call_args.kwargs["level"], 3)
             with Image.open(rendered) as image:
                 self.assertEqual(image.convert("RGB").tobytes(), expected)
             compress.reset_mock()
