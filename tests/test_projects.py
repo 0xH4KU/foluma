@@ -15,7 +15,7 @@ from zipfile import ZipFile
 import pymupdf as fitz
 from foluma.model import new_id
 from foluma.service import Engine, EngineError
-from foluma.storage import digest, open_project
+from foluma.storage import digest, open_project, owned_files
 from PIL import Image
 
 
@@ -440,6 +440,7 @@ class FolderProjectTests(unittest.TestCase):
         with patch.object(self.engine.cache, 'limit', 16):
             result = self.call('storage.info')
         self.assertEqual(result['used'], 16)
+        self.assertEqual(result['assets'], 0)
         self.assertFalse(old.exists())
         self.assertTrue(newer.exists())
         os.utime(newer, None)
@@ -454,6 +455,7 @@ class FolderProjectTests(unittest.TestCase):
         self.assertTrue(asset.exists())
         del self.engine.cache.active[active]
         self.call('storage.clear')
+        self.assertFalse(asset.exists())
         item = self.create()['items'][0]
         book = self.task('series.open', entry_id=item['id'])
         params = {'document_id': book['id'], 'page_id': book['pages'][0]['id']}
@@ -466,10 +468,170 @@ class FolderProjectTests(unittest.TestCase):
         self.assertTrue((self.root / 'data' / preview).exists())
         self.assertEqual(self.call('document.get')['pages'], book['pages'])
         self.assertTrue(Path(item['path']).exists())
+        self.assertTrue(Path(book['assets'][book['pages'][0]['asset_id']]['path']).exists())
+        asset.write_bytes(b'keep image')
         (directory / 'escape.png').symlink_to(asset)
         with self.assertRaisesRegex(ValueError, 'symbolic links'):
             self.call('storage.clear')
         self.assertEqual(asset.read_bytes(), b'keep image')
+
+    def test_cache_limit_counts_unused_images_and_previews_together(self):
+        paths = [self.root / 'data/assets/old.jpg', self.root / 'data/previews/new.png']
+        for index, path in enumerate(paths):
+            path.parent.mkdir(exist_ok=True)
+            path.write_bytes(b'12345678')
+            os.utime(path, (index, index))
+        with patch.object(self.engine.cache, 'limit', 8):
+            result = self.call('storage.info')
+        self.assertEqual(result['freed'], 8)
+        self.assertEqual(result['used'], 8)
+        self.assertEqual(result['previews'], 8)
+        self.assertEqual(result['assets'], 0)
+        self.assertFalse(paths[0].exists())
+        self.assertTrue(paths[1].exists())
+
+    def test_cache_scan_tolerates_a_render_temporary_file_disappearing(self):
+        directory = self.root / 'data/assets'
+        directory.mkdir()
+        stored, temporary = directory / 'stored.png', directory / '.render-temporary.png'
+        stored.write_bytes(b'keep image')
+        temporary.write_bytes(b'partial render')
+
+        def rendered(root, path):
+            files = owned_files(root, path)
+            temporary.unlink(missing_ok=True)
+            return files
+
+        with patch('foluma.cache.owned_files', side_effect=rendered):
+            result = self.call('storage.info')
+        self.assertEqual(result['assets'], len(b'keep image'))
+        self.assertEqual(result['used'], result['assets'])
+        self.assertEqual(stored.read_bytes(), b'keep image')
+
+    def test_cache_clear_keeps_unsaved_books_history_and_retained_windows(self):
+        first = self.task('import', path=str(self.sources / 'Vol.1.pdf'))
+        self.call('document.retain', document_id=first['id'], window_id='retained-book')
+        current = self.task('import', path=str(self.sources / 'Vol.2.pdf'))
+        session = self.engine.session
+        paths = {Path(asset['path']) for book in [first, current] for asset in book['assets'].values()}
+        for history, name in [(session.undo_stack, 'undo.jpg'), (session.redo_stack, 'redo.jpg')]:
+            snapshot = copy.deepcopy(session.book)
+            asset = next(iter(snapshot['assets'].values()))
+            path = self.root / 'data/assets' / name
+            path.write_bytes(Path(asset['path']).read_bytes())
+            asset['path'] = str(path)
+            paths.add(path)
+            history.append(snapshot)
+        orphan = self.root / 'data/assets/unused.png'
+        orphan.write_bytes(b'unused')
+        result = self.call('storage.clear')
+        self.assertEqual(result['freed'], len(b'unused'))
+        self.assertEqual(result['assets'], sum(path.stat().st_size for path in paths))
+        self.assertEqual(result['in_use'], result['assets'])
+        self.assertTrue(all(path.exists() for path in paths))
+        self.assertFalse(orphan.exists())
+        self.call('document.release_window', window_id='retained-book')
+        released = Path(next(iter(first['assets'].values()))['path'])
+        self.call('storage.clear')
+        self.assertFalse(released.exists())
+        self.assertTrue(all(path.exists() for path in paths - {released}))
+
+    def test_cache_clear_protects_cancelled_import_until_its_thread_finishes(self):
+        ready, resume = threading.Event(), threading.Event()
+        self.addCleanup(resume.set)
+        run_worker = self.engine.run_worker
+
+        def paused(operation, params, job=None):
+            result = run_worker(operation, params, job)
+            ready.set()
+            if not resume.wait(5):
+                raise TimeoutError('import test did not resume')
+            return result
+
+        with patch.object(self.engine, 'run_worker', side_effect=paused):
+            job = self.call('task.start', operation='import', path=str(self.sources / 'Vol.1.pdf'))
+            try:
+                self.assertTrue(ready.wait(5))
+                thread = next(iter(self.engine.threads))
+                assets = list((self.root / 'data/assets').iterdir())
+                self.assertTrue(assets)
+                size = sum(path.stat().st_size for path in assets)
+                self.call('task.cancel', id=job['id'])
+                result = self.call('storage.clear')
+                self.assertEqual(result['assets'], size)
+                self.assertEqual(result['in_use'], size)
+                self.assertTrue(all(path.exists() for path in assets))
+            finally:
+                resume.set()
+            thread.join(5)
+            self.assertFalse(thread.is_alive())
+            job = self.call('task.get', id=job['id'])
+            self.assertEqual(job['state'], 'cancelled', job)
+        result = self.call('storage.clear')
+        self.assertEqual(result['freed'], size)
+        self.assertFalse(any(path.exists() for path in assets))
+
+    def test_cache_clear_keeps_preview_inputs_after_the_book_is_closed(self):
+        book = self.task('import', path=str(self.sources / 'Vol.1.pdf'))
+        asset = Path(next(iter(book['assets'].values()))['path'])
+        ready, resume = threading.Event(), threading.Event()
+        self.addCleanup(resume.set)
+        run_worker = self.engine.run_worker
+        previews, errors = [], []
+
+        def paused(operation, params, job=None):
+            ready.set()
+            if not resume.wait(5):
+                raise TimeoutError('preview test did not resume')
+            return run_worker(operation, params, job)
+
+        def render():
+            try:
+                previews.append(self.call('document.preview', document_id=book['id'], page_id=book['pages'][0]['id']))
+            except Exception as error:
+                errors.append(error)
+
+        with patch.object(self.engine, 'run_worker', side_effect=paused):
+            thread = threading.Thread(target=render)
+            thread.start()
+            try:
+                self.assertTrue(ready.wait(5))
+                self.call('series.close')
+                self.assertEqual(self.call('storage.clear')['in_use'], asset.stat().st_size)
+                self.assertTrue(asset.exists())
+            finally:
+                resume.set()
+                thread.join(5)
+            self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
+        self.assertTrue((self.root / 'data' / previews[0]).is_file())
+        self.call('storage.clear')
+        self.assertFalse(asset.exists())
+        self.assertFalse((self.root / 'data' / previews[0]).exists())
+
+    def test_saved_project_survives_cache_clear_restart_and_missing_source(self):
+        item = self.create()['items'][0]
+        book = self.task('series.open', entry_id=item['id'])
+        cached = list((self.root / 'data/assets').iterdir())
+        self.assertTrue(cached)
+        self.assertGreater(self.call('storage.clear')['freed'], 0)
+        self.assertFalse(any(path.exists() for path in cached))
+        saved = Path(next(iter(book['assets'].values()))['path'])
+        original = saved.read_bytes()
+        Path(item['path']).unlink()
+        self.engine.plugins.remove('org.foluma.import.pdf')
+        self.engine.close()
+        self.engine = Engine(self.root / 'data')
+        self.addCleanup(self.engine.close)
+        restored = self.call('document.get')
+        self.assertEqual(restored['pages'], book['pages'])
+        self.assertEqual(saved.read_bytes(), original)
+        preview = self.call('document.preview', document_id=restored['id'], page_id=restored['pages'][0]['id'])
+        self.assertTrue((self.root / 'data' / preview).is_file())
+        exported = self.task('export', document_id=restored['id'], base_revision=restored['revision'],
+                             path=str(self.root / 'after-clear.epub'))
+        with ZipFile(exported['path']) as archive:
+            self.assertIsNone(archive.testzip())
 
     def test_import_refresh_summaries_and_atomic_create_with_move(self):
         nested = self.sources / 'nested'

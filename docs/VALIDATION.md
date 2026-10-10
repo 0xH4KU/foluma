@@ -2,6 +2,28 @@
 
 Environment: macOS arm64, Python 3.14.4, PyMuPDF 1.28.2, Pillow 12.3.0, Node 25.8.2, Rust 1.98.1. The app uses a bundled interpreter; the end user does not need these development tools.
 
+## Visible import and parsing progress, 2026-10-10
+
+The macOS app was rebuilt and passes strict deep signature verification. Traditional Chinese 0.4.15 includes the progress labels.
+
+All 31 TypeScript checks, strict TypeScript including unused-symbol checks, Vite production build and whitespace checks pass. Browser checks used the actual desktop frontend with substituted task events to verify progress directly under the toolbar without opening status, separate bars for concurrent books, running/queued counts, live page counts and percentages, cancellation by task ID, indeterminate queued/unknown-total work, and automatic removal after completion, cancellation or failure. Previous-project preparation and export tasks do not appear in this area. English and Traditional Chinese were visually checked at 1180 × 820 and 860 × 600. Task execution and cancellation APIs are unchanged; large-book performance was not re-measured.
+
+## Installed plugin updates, 2026-10-10
+
+All 31 TypeScript checks, strict TypeScript including unused-symbol checks, Vite production build and whitespace checks pass. The macOS app was rebuilt and passes strict deep signature verification. Traditional Chinese 0.4.14 adds the update labels; the editor remains 0.4.6.
+
+Browser checks used the actual desktop frontend with substituted plugin RPC responses. Installed rows expose an orange update badge, current/new versions and Update action; installed IDs no longer repeat in Included or Catalog. Checks cover offline bundled updates taking precedence over newer cached downloads, official-only updates, failed installation retaining the current version, preserving a disabled plugin, and replacing an installed version with Restart needed. English and Traditional Chinese layouts fit at 1180 × 820 and 860 × 600. Official network downloads were not performed in this pass; installer validation is unchanged.
+
+## UX/UI flow improvements, 2026-10-10
+
+All 30 TypeScript checks and 68 Python checks pass, along with strict TypeScript including unused-symbol checks, Ruff, both Vite builds and whitespace checks. The macOS app was rebuilt and passes `codesign --verify --deep --strict`. Editor 0.4.6 and Traditional Chinese 0.4.13 are included in the app and local plugin artifacts.
+
+Chromium checked the desktop frontend and packaged editor against an isolated real Python engine; only native IPC and dialogs were substituted. Three generated 24-page PDFs exercised retained selections, disclosed hidden selections, export and removal of only visible selected books, and undo removal. Delayed metadata writes verified uninterrupted Title-to-Author input, serial commits across several rapid blurs, preservation of newer input, and an unchanged preview across metadata saves. Preview observations confirmed a thumbnail before the larger image. Inline title/language errors and blank-page previews were checked. Successful saves retained identical workspace bounds after moving feedback into the fixed status bar.
+
+Single-book export opened only the save dialog and passed the selected edition to the real EPUB worker. Format and per-format edition choices survived reload and remained synchronized with project batch settings. Import used one picker covering enabled PDF/ZIP formats, routed the selected PDF to its importer and retained the book when the picker was cancelled. English and Traditional Chinese layouts were visually checked at 1180 × 820 and 860 × 600; narrow windows collapsed secondary panels, panels could reopen, export settings stayed inside the viewport, and the virtual page list retained its 29-pixel rows. WebKit independently passed the slow-save focus, serial commit, stable preview, fixed notification, inline validation and blank-preview checks.
+
+The rebuilt frozen engine, with an isolated profile, `/tmp` as its working directory and no Python path/home overrides, independently imported a generated PDF through its native worker, generated a preview and exported an EPUB that passed ZIP integrity. Bundled editor/language versions and their final asset contents were verified. Native file dialogs and very large-book performance were not re-exercised in this pass.
+
 ## Performance and native packaging, 2026-10-08
 
 All 68 Python tests, 27 TypeScript/SDK tests, Ruff and strict TypeScript/Vite builds pass. The macOS release app was rebuilt and passes `codesign --verify --deep --strict`. Its signature remains ad-hoc with hardened runtime; notarization was not performed.

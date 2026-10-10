@@ -31,10 +31,10 @@ import {
   subscribeTask,
 } from "./bridge";
 import { ProjectCreator, SeriesWorkspace, type SeriesSelection } from "./series";
-import { useDocumentActions, UnsavedChanges, ExportEdition } from "./document-actions";
+import { useDocumentActions, UnsavedChanges } from "./document-actions";
 import { DocumentView } from "./document";
 import { PluginManager } from "./plugin-manager";
-import { Toolbar, DocumentBar, Sidebar, StatusBar } from "./shell";
+import { Toolbar, DocumentBar, Sidebar, ImportProgress, StatusBar } from "./shell";
 import { Preferences } from "./preferences";
 import { ProjectWizard } from "./project-wizard";
 import { closeBookWindows } from "./tool-windows";
@@ -115,6 +115,13 @@ function App({entryId}: {entryId?: string}) {
     restart_required: false,
   });
   const [tab, setTab] = useState("convert");
+  const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth > 1000);
+  useEffect(() => {
+    const narrow = window.matchMedia("(max-width: 1000px)");
+    const resize = () => setSidebarOpen(!narrow.matches);
+    narrow.addEventListener("change", resize);
+    return () => narrow.removeEventListener("change", resize);
+  }, []);
   const [message, setMessage] = useState<{
     text: string;
     error?: boolean;
@@ -159,7 +166,7 @@ function App({entryId}: {entryId?: string}) {
   const editorAvailable = plugins.active.some((plugin) => plugin.id === "org.foluma.editor");
   const {
     unsaved,
-    exportEdition,
+    exportSettings,
     metadataDraft,
     savingInformation,
     working,
@@ -198,6 +205,8 @@ function App({entryId}: {entryId?: string}) {
     }
   };
   const busy = working || pluginBusy;
+  const visibleJobs = jobs.filter(task => !task.preparse || series?.items.some(item => item.id === task.entry_id));
+  const cancelTask = (id: string) => void rpc("task.cancel", {id}).catch(host.report);
   const latest = useRef({ book, busy, series, tab, replaceAllowed });
   latest.current = { book, busy, series, tab, replaceAllowed };
   const importers = plugins.active.filter((plugin) => plugin.format?.direction === "import");
@@ -401,7 +410,6 @@ function App({entryId}: {entryId?: string}) {
   return (
     <div className="app-shell">
       {unsaved && <UnsavedChanges {...unsaved} />}
-      {exportEdition && <ExportEdition {...exportEdition} />}
       {draggingFiles && (
         <div className="file-drop-hint" role="status">
           {t("Drop book files or a folder")}
@@ -434,6 +442,9 @@ function App({entryId}: {entryId?: string}) {
         exportingSeries={tab === "series"}
         selectedBooks={selectedBooks}
         canExport={seriesSelection.canExport}
+        exportSettings={exportSettings}
+        sidebarOpen={sidebarOpen}
+        onToggleSidebar={() => setSidebarOpen((open) => !open)}
         onImport={() => void importBook()}
         onNewProject={() => void run(() => openFolder(), false)}
         onOpenProject={openProject}
@@ -448,6 +459,8 @@ function App({entryId}: {entryId?: string}) {
           else void exportBook();
         }}
       />
+      <div className="workspace-header">
+      <ImportProgress jobs={visibleJobs} cancel={cancelTask} />
       <DocumentBar
         series={series}
         book={book}
@@ -464,8 +477,10 @@ function App({entryId}: {entryId?: string}) {
         openVolume={openVolume}
         showReview={tab !== "series"}
       />
-      <div className="application-body">
+      </div>
+      <div className={`application-body ${sidebarOpen ? "" : "sidebar-collapsed"}`}>
         <Sidebar
+          hidden={!sidebarOpen}
           series={entryId ? null : series}
           book={book}
           plugins={plugins}
@@ -474,19 +489,20 @@ function App({entryId}: {entryId?: string}) {
           navigate={navigate}
         />
         <main>
+          <div className="feedback-stack">
           {!!pluginUpdates.length && !updatesDismissed && (
-            <div className="notice" role="status">
+            <div className="notice plugin-update-notice" role="status">
               <span>{t("Plugin updates available: {0}. Choose which to update in Plugins.", pluginUpdates.length)}</span>
               <div className="notice-actions">
-                <button disabled={busy} onClick={() => void navigate("plugins")}>{t("Review updates")}</button>
+                <button className="plugin-update-button" disabled={busy} onClick={() => void navigate("plugins")}>{t("Review updates")}</button>
                 <button aria-label={t("Dismiss message")} onClick={() => setUpdatesDismissed(true)}>×</button>
               </div>
             </div>
           )}
-          {message && (
+          {message?.error && (
             <div
-              className={`notice ${message.error ? "error" : "success"}`}
-              role={message.error ? "alert" : "status"}
+              className="notice error"
+              role="alert"
             >
               <span>{message.text}</span>
               <div className="notice-actions">
@@ -499,6 +515,7 @@ function App({entryId}: {entryId?: string}) {
               </div>
             </div>
           )}
+          </div>
           {!entryId && !book && tab === "convert" && (
             <section className="welcome">
               <Icon name="book" />
@@ -543,7 +560,7 @@ function App({entryId}: {entryId?: string}) {
               book={book}
               host={host}
               hidden={tab !== "convert"}
-              disabled={busy || !!savingInformation}
+              disabled={busy}
               dpi={dpi}
               information={{
                 draft: metadataDraft,
@@ -611,13 +628,15 @@ function App({entryId}: {entryId?: string}) {
       <StatusBar
         ready={ready}
         safeMode={plugins.safe_mode}
-        jobs={jobs.filter(task => !task.preparse || series?.items.some(item => item.id === task.entry_id))}
+        jobs={visibleJobs}
         prepared={new Set(series?.items.filter(item => item.document_id).map(item => item.id))}
-        cancel={id => void rpc("task.cancel", {id}).catch(host.report)}
+        cancel={cancelTask}
         exportingSeries={tab === "series"}
         selectedBooks={selectedBooks}
         book={book}
         busy={busy}
+        message={message && !message.error ? message : null}
+        dismissMessage={() => setMessage(null)}
       />
     </div>
   );

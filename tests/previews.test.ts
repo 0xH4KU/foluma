@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {setImmediate} from "node:timers/promises";
 import {test} from "node:test";
 import {createPreviewLoader} from "../desktop/previews.ts";
+import {previewKey} from "../sdk/previews.ts";
 import type {Book, Page} from "../sdk/types.ts";
 
 test("previews drop obsolete work, prioritize the current page, share requests and retry failures", async () => {
@@ -67,4 +68,25 @@ test("preview requests for different rotations do not share stale work", async (
   });
   assert.deepEqual(await Promise.all([preview(book,page),preview(book,{...page,rotation:90})]), ["0.png","90.png"]);
   assert.deepEqual(calls,[0,90]);
+});
+
+test("preview identity survives metadata saves and changes when image content or geometry changes", () => {
+  const page: Page = {id:"page",kind:"image",asset_id:"asset",width:20,height:30,crop:[0,0,1,1]};
+  const book = { id:"book", revision:0, metadata:{title:"Before"}, pages:[page],
+    assets:{asset:{kind:"pdf",source_id:"source",xref:4}}, sources:{source:{path:"book.pdf",sha256:"before"}},
+  } as unknown as Book;
+  const key = previewKey(book, page, 1024);
+  const saved = structuredClone(book);
+  saved.revision++;
+  saved.metadata.title = "After";
+  assert.equal(previewKey(saved, saved.pages[0], 1024), key);
+  for (const changed of [{rotation:90 as const}, {crop:[0,0,0.5,1] as Page["crop"]}, {width:30}, {kind:"blank" as const}]) {
+    assert.notEqual(previewKey(book, {...page,...changed}, 1024), key);
+  }
+  assert.notEqual(previewKey(book, page, 320), key);
+  saved.sources.source.sha256 = "replacement";
+  assert.notEqual(previewKey(saved, page, 1024), key);
+  saved.sources.source.sha256 = "before";
+  saved.assets.asset.xref = 5;
+  assert.notEqual(previewKey(saved, page, 1024), key);
 });

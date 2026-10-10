@@ -82,6 +82,15 @@ function Editor({ host, book }: { host: HostAPI; book: Book | null }) {
   const [initial] = useState(() => readView(book));
   const previousBook = useRef(book);
   const editor = useRef<HTMLDivElement>(null);
+  const [editorWidth, setEditorWidth] = useState(1000);
+  const [toolsOverride, setToolsOverride] = useState<boolean | null>(null);
+  const toolsOpen = toolsOverride ?? editorWidth >= 900;
+  useEffect(() => {
+    if (!editor.current) return;
+    const observer = new ResizeObserver(([entry]) => setEditorWidth(entry.contentRect.width));
+    observer.observe(editor.current);
+    return () => observer.disconnect();
+  }, [!!book]);
   const requestedSelect = useRef<(id: string) => void>(() => {});
   useEffect(() => host.onPageSelect?.(id => { requestedSelect.current(id); editor.current?.focus(); }), [host]);
   const [selected, setSelected] = useState<Set<string>>(new Set(initial.selected));
@@ -502,6 +511,8 @@ function Editor({ host, book }: { host: HostAPI; book: Book | null }) {
         book={book}
         ids={ids}
         busy={busy}
+        toolsOpen={toolsOpen}
+        toggleTools={() => setToolsOverride(!toolsOpen)}
         history={history}
         readPreset={readPreset}
         writePreset={writePreset}
@@ -512,7 +523,7 @@ function Editor({ host, book }: { host: HostAPI; book: Book | null }) {
           else setSuggestions((open) => !open);
         }}
       />
-      <div className="editor-columns">
+      <div className={`editor-columns ${toolsOpen ? "with-tools" : ""}`}>
         <PagePanel
           book={book}
           host={host}
@@ -559,6 +570,7 @@ function Editor({ host, book }: { host: HostAPI; book: Book | null }) {
           contextMenu={contextMenu}
         />
         <Inspector
+          hidden={!toolsOpen}
           book={book}
           current={current}
           ids={ids}

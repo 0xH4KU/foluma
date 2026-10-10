@@ -1,7 +1,7 @@
 {
   "id": "org.foluma.editor",
   "name": "Page editor",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "api_version": 1,
   "description": "Preview, reorder, rotate, insert and split pages; manage covers and portable layout presets.",
   "platforms": [

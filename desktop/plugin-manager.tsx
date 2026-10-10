@@ -68,7 +68,13 @@ export function PluginManager({
   } | null>(null);
   const [loadingCatalog, setLoadingCatalog] = useState(false);
   const knownPlugins = uniquePlugins(catalog?.plugins || [], bundled, plugins.items);
+  const includedUpdates = pluginUpdates(plugins.items, bundled);
+  const updates = pluginUpdates(plugins.items, bundled, (catalog?.plugins || []).filter(
+    (plugin) => !catalog?.offline || !includedUpdates.some((included) => included.id === plugin.id),
+  ));
   const installedGroups = groupPlugins(plugins.items, pluginFilter);
+  const visibleUpdateCount = installedGroups.flatMap((group) => group.items)
+    .filter((plugin) => updates.some((update) => update.id === plugin.id)).length;
   const includedGroups = groupPlugins(
     availablePlugins(bundled, plugins.items),
     pluginFilter,
@@ -98,7 +104,7 @@ export function PluginManager({
     if (checkUpdates) void loadCatalog();
   }, [checkUpdates, host]);
   useEffect(() => {
-    if (checkUpdates) onUpdates(pluginUpdates(plugins.items, bundled, catalog?.plugins || []));
+    if (checkUpdates) onUpdates(updates);
   }, [checkUpdates, plugins.items, bundled, catalog, onUpdates]);
   const installLocal = () =>
     run(async () => {
@@ -170,7 +176,10 @@ export function PluginManager({
       </div>
       <div className="section-title">
         <h2>{t("Installed")}</h2>
-        <span>{t("Installed: {0}", installedCount)}</span>
+        <div className="plugin-counts">
+          {!!visibleUpdateCount && <span className="plugin-update-badge">{t("Updates: {0}", visibleUpdateCount)}</span>}
+          <span>{t("Installed: {0}", installedCount)}</span>
+        </div>
       </div>
       <div className="plugin-table">
         <div className="plugin-table-head">
@@ -191,13 +200,17 @@ export function PluginManager({
         <PluginGroups
           groups={installedGroups}
           showTitles={pluginFilter === "all"}
-          render={(plugin) => (
-            <div className="plugin-row" key={plugin.id}>
+          render={(plugin) => {
+            const update = updates.find((candidate) => candidate.id === plugin.id);
+            return <div className={`plugin-row ${update ? "update-available" : ""}`} key={plugin.id}>
               <div>
                 <strong>{t(plugin.name)}</strong>
+                {update && <span className="plugin-update-badge">{t("Update available")}</span>}
                 <p>{t(plugin.description || "")}</p>
               </div>
-              <span className="version">{plugin.version}</span>
+              <span className="version">{plugin.version}
+                {update && <span className="plugin-update-version">→ {update.version}</span>}
+              </span>
               <label className="switch-label">
                 <input
                   type="checkbox"
@@ -220,6 +233,14 @@ export function PluginManager({
                     ? t("Enabled")
                     : t("Disabled")}
               </label>
+              <div className="plugin-actions">
+              {update && <button className="plugin-update-button" disabled={busy}
+                aria-label={t("Update {0} to {1}", t(plugin.name), update.version)}
+                onClick={() => void run(async () => {
+                  await host.rpc(bundled.includes(update) ? "plugins.install_bundled" : "plugins.install_official", { id: plugin.id });
+                  if (plugin.enabled === false) await host.rpc("plugins.set_enabled", { id: plugin.id, enabled: false });
+                  await refreshPlugins();
+                })}>{t("Update")}</button>}
               <button
                 disabled={busy}
                 onClick={() =>
@@ -237,8 +258,9 @@ export function PluginManager({
               >
                 {t("Remove")}
               </button>
-            </div>
-          )}
+              </div>
+            </div>;
+          }}
         />
       </div>
       <div className="section-title">
@@ -275,11 +297,7 @@ export function PluginManager({
                 })
               }
             >
-              {t(
-                plugins.items.some((installed) => installed.id === plugin.id)
-                  ? "Update"
-                  : "Install",
-              )}
+              {t("Install")}
             </button>
           </div>
         )}
@@ -339,11 +357,7 @@ export function PluginManager({
                 })
               }
             >
-              {t(
-                plugins.items.some((installed) => installed.id === plugin.id)
-                  ? "Update"
-                  : "Install",
-              )}
+              {t("Install")}
             </button>
           </div>
         )}

@@ -34,3 +34,26 @@ test("metadata commits serialize save/blur, keep newer input and retain failed e
   await assert.rejects(flushMetadata(host,draft,()=>{}),/another book/);
   assert.equal(draft.values.title,"Keep me");
 });
+
+test("several field blurs waiting for a save do not submit the same revision twice", async () => {
+  let book = {id:"book",revision:0,metadata:{title:"Before",author:""}} as Book;
+  const requests: {revision:number; resolve:()=>void}[] = [];
+  const host = {getDocument:()=>book,apply:async (current:Book,changes:{metadata?:Partial<Metadata>}) => {
+    await new Promise<void>((resolve)=>requests.push({revision:current.revision,resolve}));
+    book = {...book,revision:book.revision+1,metadata:{...book.metadata,...changes.metadata}};
+    return book;
+  }};
+  const draft: MetadataDraft = {bookId:"book",values:{title:"After"},pending:null};
+  const first = flushMetadata(host,draft,()=>{});
+  draft.values = {...draft.values,author:"Typed during save"};
+  const second = flushMetadata(host,draft,()=>{}), third = flushMetadata(host,draft,()=>{});
+  requests[0].resolve();
+  await first;
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(requests.map(request=>request.revision),[0,1]);
+  requests[1].resolve();
+  await Promise.all([second,third]);
+  assert.equal(requests.length,2);
+  assert.equal(book.metadata.author,"Typed during save");
+  assert.deepEqual(draft.values,{});
+});

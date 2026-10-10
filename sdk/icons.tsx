@@ -11,6 +11,7 @@ const shapes: Record<string, ReactNode> = {
   settings: <><path fill="#d0d5d9" stroke="#707b85" d="m9 2 6 0 1 4 4 1 2 5-3 3v4l-5 3-3-3-4 1-4-4 1-4-2-3 3-5z"/><circle fill="#f7f7f7" stroke="#707b85" cx="12" cy="12" r="4"/></>,
   list: <><path stroke="currentColor" d="M8 5h14M8 12h14M8 19h14"/><path fill="currentColor" stroke="none" d="M2 3h4v4H2zM2 10h4v4H2zM2 17h4v4H2z"/></>,
   grid: <path stroke="currentColor" d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z"/>,
+  sidebar: <><rect stroke="currentColor" x="3" y="4" width="18" height="16" rx="2"/><path stroke="currentColor" d="M9 4v16M5 8h2M5 12h2"/></>,
 };
 
 export function Icon({name}: {name: keyof typeof shapes}) {

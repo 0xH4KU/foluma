@@ -6,7 +6,9 @@
 
 1. Open Foluma.
 2. Choose **Import book** to work on one book, or **New project** to choose a location for a collection.
-3. Use **Edit pages** to arrange the book, then choose **Export current book** and an enabled output format.
+3. Use **Edit pages** to arrange the book. Choose the format and edition in the toolbar's **Export settings**, then choose **Export** to save the book.
+
+**Import book** opens one file picker for all enabled formats and selects the matching importer automatically. If two plugins support the same extension, choose which importer to use after selecting the file.
 
 The page editor, PDF import plugin and EPUB export plugin install from bundled packages on first launch, without a network connection. Each is independent: disabling or removing it takes effect after restarting, and the app will not automatically reinstall it. PDF import and EPUB export can be removed separately, just like the editor. Missing format actions lead to Plugins instead of falling back to hidden built-in codecs. Reinstall packages from **Plugins → Included packages** when needed.
 
@@ -14,12 +16,16 @@ Plugin Management groups packages into **Import**, **Export**, **Editing and too
 
 Each launch checks included packages and the official catalog in the background for newer versions of installed plugins. An update notice opens **Plugins**, where you choose which packages to update; closing the notice defers the reminder until the next launch. Included updates remain available offline. Checking does not install packages or change plugin activation.
 
+Updates appear on the plugin's row under **Installed**, with an orange **Update available** badge, current/new versions and an **Update** button. The Installed heading shows the update count for the selected category. **Included packages** and **Official catalog** list plugins that are not installed. Updating preserves a disabled plugin's state; code-plugin updates show **Restart needed** until the app restarts. When the catalog is offline, an available included update is used before a newer cached download.
+
 ### EPUB export editions
 
 Single-book export, project batch export and the editor's preset batch dialog offer two editions:
 
 - **General (default)** centers images and supports both single-page and two-page reading.
 - **Two-page optimized** aligns facing pages to the spine and moves horizontal padding to the outer edges. It preserves the common page size, source images and crops. Images remain off-center in single-page view; this is an alignment preference, not a forced two-page reading mode.
+
+The selected output format and each format's edition are remembered across these workflows and app launches. Single-book export uses the toolbar's **Export settings** directly, without asking for the edition again. If a saved format or edition is unavailable, an enabled format and its default edition are used.
 
 The EPUB retains the book title; the two editions have distinct publication identifiers so readers can keep both. Single-book export suggests an edition suffix for the optimized version; batch output retains book titles and the usual collision numbering. EPUB import can reopen both editions. Both reading directions, inserted blank pages and bookshelf-only covers are supported; spread positions follow the actual reading order, beginning with one unpaired page.
 
@@ -64,9 +70,13 @@ Each book keeps its own page order, blanks, crops, attention marks, and saved ed
 
 The toolbar identifies standalone books and the current book separately from selected project books. In the project view, **Export selected books** and ⌘E export the selection; in a book view they export the current book. Book information is committed before saving, exporting or changing books, including while an input still has focus. Unsaved standalone books offer **Save and continue**, **Discard changes** and **Cancel**.
 
+Searching, filtering and switching book groups retain the selected books. The selection bar reports how many selected books are hidden. **Export selected books**, move and remove use only the currently visible selected books. The batch information dialog explicitly offers selected, visible or all project books. Clear the filters to bring hidden selections back, or use **Clear selection** to deselect everything. Entering or leaving **Removed** clears the selection so active and removed books have separate batch scopes.
+
 Standalone books can also be saved as `.mteproj` folders. These embed all page images and retain source paths as provenance. Missing originals do not block saved-image previews or exports; relinking still requires matching contents. Older series continue to use per-book projects under the app's data directory until migrated.
 
 ## Page editing
+
+Use the toolbar's sidebar button and the editor's **Page tools** button to show or hide secondary panels. Narrow windows automatically give more room to the preview; the page tools can be reopened whenever needed. Previews show a thumbnail while a larger image loads, and editing book information keeps an unchanged page preview in place. Success messages use the fixed status bar, and errors appear in a fixed corner without resizing the workspace; invalid title and language fields also show their errors beside the input.
 
 The desktop layout uses a toolbar, workspace sidebar, page list, preview, inspector, and status bar, with organization inspired by [calibre](https://manual.calibre-ebook.com/gui.html).
 
@@ -96,7 +106,7 @@ Windows and Linux use Ctrl in place of ⌘ for the document shortcuts.
 
 **Preferences → Background processing** controls project preparsing and concurrent export. Both are enabled by default, with two tasks each; concurrency is configurable from 1 to 8. Turning concurrent export off processes one book at a time. Opening a project or adding books starts preparsing unread books and saves the results in their existing book projects. Later opens reuse these saved pages and images. Opening a book already being preparsed joins the same task and gives queued work priority. Complex PDF pages render automatically as PNG using Auto resolution during preparsing; supported images are still extracted directly. A failure in one book does not stop the rest.
 
-The bottom-left status bar shows preparation and export activity. Click it to see queued/running tasks, page progress, errors and individual cancellation. Batch cancellation cancels all tasks started by that batch. Background work permits editing and switching books. Each export uses a snapshot taken when that export is submitted; edits made afterward still require another export. Concurrent exports reserve distinct filenames and retain the existing protection for source and destination files.
+Import and parsing progress appears directly below the main toolbar, with the current book, processing stage, progress bar, completed/total counts, percentage and Cancel action. Concurrent parsing shows each running book and the queue count; preparation with no known total uses an indeterminate bar. The top progress area closes when importing/parsing finishes. The bottom-left status bar retains task history, export activity, errors and cancellation. Batch cancellation cancels all tasks started by that batch. Background work permits editing and switching books. Each export uses a snapshot taken when that export is submitted; edits made afterward still require another export. Concurrent exports reserve distinct filenames and retain the existing protection for source and destination files.
 
 Use **Open in new window** beside a project book to edit several books simultaneously. Reopening the same book window focuses the existing window. Each window keeps its document, selection, zoom and scroll; windows displaying the same document share revisions and undo/redo. Blank-suggestion tools stay attached to their originating book and select pages in their originating editor. Closing a book window keeps the main workspace open. Closing the main workspace or switching projects first checks and saves pending changes in the other book windows. Close a book's windows before removing or relinking it.
 
@@ -106,6 +116,6 @@ Supported full-page images are extracted directly, preserving their original ima
 
 PNG rendering uses lossless compression. Pages are stored as grayscale only when every pixel's red, green, and blue channels are equal; even a slight tint retains RGB. Preview requests prioritize the large preview and discard obsolete queued work.
 
-**Preferences → Storage** shows preview cache usage and offers a **1 GB / 5 GB / 10 GB / Custom** limit (default 5 GB; custom 1–1000 GB). Save the limit to apply it. Oldest-used previews are removed automatically; recent or generating previews may temporarily exceed the limit. **Clear cache now** clears available previews immediately and reports the space freed. Previews regenerate when needed. PDFs, saved edits, imported/rendered image assets and Removed books are excluded from this cache limit and cleanup.
+**Preferences → Storage** shows combined preview and imported-image cache usage, with a breakdown of both and the amount currently in use. It offers a **1 GB / 5 GB / 10 GB / Custom** limit (default 5 GB; custom 1–1000 GB). Save the limit to apply it. Oldest unused cache files are removed automatically; recent files and files in use may temporarily exceed the limit. **Clear cache now** removes available previews and unused imported/rendered images from the application cache and reports the space freed. Images needed by open books, undo/redo history or background tasks are kept. Clearing may make the next preview or import slower. PDFs, saved project images, saved edits and Removed books are excluded from cleanup.
 
 In a local 243-page benchmark, the faster PNG encoder reduced a fresh import from approximately **127 seconds to 50 seconds**. All rendered pages retained identical decoded pixels, while total PNG size increased by about 2%. Results depend on the PDF and hardware; see the [validation record](VALIDATION.md) for the measurements and test coverage. Reopening a saved project reuses its rendered images.

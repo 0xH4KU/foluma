@@ -5,7 +5,7 @@ export type MetadataDraft = {bookId: string | null; values: Partial<Metadata>; p
 
 export async function flushMetadata(host: Pick<HostAPI,"getDocument"|"apply">, draft: MetadataDraft,
   changed: (values: Partial<Metadata>) => void): Promise<void> {
-  if (draft.pending) await draft.pending;
+  while (draft.pending) await draft.pending;
   const values = {...draft.values};
   if (!Object.keys(values).length) return;
   const book = host.getDocument();

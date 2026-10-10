@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import type { Book, HostAPI, Page } from "../../../sdk/types";
 import { t } from "../../../sdk/i18n";
 import { Icon } from "../../../sdk/icons";
+import { usePagePreview } from "../../../sdk/previews";
 import { spreadGroups } from "./pages";
 
 export type ViewState = {
@@ -27,36 +28,10 @@ export function PageImage({
   size?: number;
   splitRatio?: number;
 }) {
-  const [url, setUrl] = useState("");
-  const [error, setError] = useState("");
+  const { url, error } = usePagePreview(book, page, host, size);
   const image = useRef<HTMLImageElement>(null);
   const [bounds, setBounds] = useState({ width: 0, height: 0 });
   const showGuide = splitRatio !== undefined;
-  const asset = book.assets[page.asset_id || ""];
-  const key = JSON.stringify([
-    book.id,
-    page.id,
-    page.crop,
-    page.rotation,
-    size,
-    asset?.path,
-    book.sources[asset?.source_id || ""]?.path,
-  ]);
-  useEffect(() => {
-    const controller = new AbortController();
-    setUrl("");
-    setError("");
-    if (page.kind !== "blank")
-      host
-        .preview(book, page, size, controller.signal)
-        .then((value) => {
-          if (!controller.signal.aborted) setUrl(value);
-        })
-        .catch((reason) => {
-          if (!controller.signal.aborted) setError(String(reason));
-        });
-    return () => controller.abort();
-  }, [key]);
   useEffect(() => {
     const node = image.current;
     if (!showGuide || !node) return;

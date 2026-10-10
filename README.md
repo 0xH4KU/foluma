@@ -55,7 +55,7 @@ This first release uses an ad-hoc signature and is not notarized. macOS may requ
 1. Choose **Import book** for a single book, or **New project** for a collection.
 2. Review book information, then open **Edit pages** to arrange pages and check spreads.
 3. Save the project to retain editable pages and images.
-4. Choose **Export current book** or **Export selected books** and select an output format.
+4. Choose an output format and edition, then **Export** the current book or **Export selected books** for a collection. Single-book settings are beside Export in the toolbar.
 
 Folder projects keep copied sources and saved edits together, including a hidden `.foluma` directory. Move the whole folder to keep the project portable. Saved books retain their page images even if an original file or import plugin is unavailable.
 

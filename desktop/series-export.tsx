@@ -4,6 +4,7 @@ import type { HostAPI, RenderResolution, Series, SeriesItem } from "../sdk/types
 import { t } from "../sdk/i18n";
 import { batchStateLabel, batchSummary, runBatch, type BatchRow } from "../sdk/batch";
 import { ExportVariantSelect } from "../sdk/export-variant";
+import { useExportSettings } from "../sdk/export-settings";
 
 export function useSeriesExport({ series, host, busy, removed, dpi, chosen, run }: {
   series: Series;
@@ -14,11 +15,7 @@ export function useSeriesExport({ series, host, busy, removed, dpi, chosen, run 
   chosen: SeriesItem[];
   run: (action: () => Promise<unknown>) => Promise<boolean>;
 }) {
-  const exporters = (host.getFormats?.() || []).filter((plugin) => plugin.format?.direction === "export");
-  const [exporter, setExporter] = useState(() => exporters[0]?.id || "");
-  const outputFormat = exporters.find((plugin) => plugin.id === exporter) || exporters[0];
-  const [variantId, setVariantId] = useState("");
-  const variant = outputFormat?.format?.variants?.find((value) => value.id === variantId) || outputFormat?.format?.variants?.[0];
+  const { exporters, outputFormat, variant, variantId, setExporter, setVariantId } = useExportSettings(host);
   const [render, setRender] = useState(false);
   const [running, setRunning] = useState(false);
   const [finished, setFinished] = useState(false);
@@ -117,7 +114,7 @@ export function SeriesExportPanel({ series, busy, dpi, batch }: {
             aria-label={t("Output format")}
             disabled={busy || running || !outputFormat}
             value={outputFormat?.id || ""}
-            onChange={(event) => { setExporter(event.target.value); setVariantId(""); }}
+            onChange={(event) => setExporter(event.target.value)}
           >
             {exporters.map((plugin) => (
               <option key={plugin.id} value={plugin.id}>

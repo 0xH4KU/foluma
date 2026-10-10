@@ -13,6 +13,8 @@ export function EditorToolbar({
   book,
   ids,
   busy,
+  toolsOpen,
+  toggleTools,
   history,
   readPreset,
   writePreset,
@@ -23,6 +25,8 @@ export function EditorToolbar({
   book: Book;
   ids: Set<string>;
   busy: boolean;
+  toolsOpen: boolean;
+  toggleTools: () => void;
   history: (redo?: boolean) => Promise<void>;
   readPreset: () => Promise<void>;
   writePreset: () => Promise<void>;
@@ -39,6 +43,7 @@ export function EditorToolbar({
         </span>
       </div>
       <div className="toolbar-actions">
+        <button aria-expanded={toolsOpen} aria-controls="page-inspector" onClick={toggleTools}>{t("Page tools")}</button>
         <button aria-expanded={suggestions} onClick={openSuggestions}>{t("Blank suggestions…")}</button>
         <button
           title={t("Undo ⌘Z")}
@@ -476,6 +481,7 @@ export function PreviewPanel({
 }
 
 export function Inspector({
+  hidden,
   book,
   current,
   ids,
@@ -491,6 +497,7 @@ export function Inspector({
   split,
   exportImages,
 }: {
+  hidden: boolean;
   book: Book;
   current: Page | undefined;
   ids: Set<string>;
@@ -513,7 +520,7 @@ export function Inspector({
       isPair(page, book.pages[i + 1]) && (ids.has(page.id) || ids.has(book.pages[i + 1].id)),
   );
   return (
-    <aside className="inspector">
+    <aside id="page-inspector" className="inspector" hidden={hidden}>
       <fieldset disabled={busy}>
         <div className="panel-title">
           <strong>{t("Page properties and actions")}</strong>

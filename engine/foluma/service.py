@@ -54,7 +54,6 @@ class Engine:
         self.export_targets: set[Path] = set()
         self.closing = False
         self.workers = Workers(data, notify)
-        self.cache = PreviewCache(data, self.plugins.config.get("preview_cache_limit"))
         self.notify = notify
         self.series: Series | None = None
         self.series_error = None
@@ -76,8 +75,19 @@ class Engine:
                     self.session = session
             except (OSError, ValueError, KeyError, TypeError) as error:
                 self.series_error = str(error)
+        self.cache = PreviewCache(data, self.plugins.config.get("preview_cache_limit"),
+                                  lock=self.lock, protected_assets=self.cached_assets)
         with self.lock:
             self.schedule_preparse()
+
+    def cached_assets(self) -> set[Path] | None:
+        # shortcut: keep all assets during tasks; track per-task paths if clearing must work mid-task.
+        if self.threads or self.pending:
+            return None
+        return {Path(asset["path"]).resolve()
+                for session in [self.session, *self.background_sessions.values()] if session
+                for book in [session.book, *session.undo_stack, *session.redo_stack]
+                for asset in book["assets"].values() if asset["kind"] == "file"}
 
     def processing(self) -> dict:
         stored = self.plugins.config.get("processing", {})
@@ -185,6 +195,7 @@ class Engine:
     def release_document(self, identifier: str) -> None:
         if identifier not in self.document_windows.values():
             self.background_sessions.pop(identifier, None)
+            self.cache.schedule(30)
 
     def document(self, params: dict, revision: bool = False) -> Session:
         session = (
@@ -240,6 +251,7 @@ class Engine:
                 raise
         snapshot = session.snapshot()
         self.notify("document.changed", snapshot)
+        self.cache.schedule(30)
         return snapshot
 
     def series_changed(self) -> dict | None:
@@ -254,19 +266,19 @@ class Engine:
         if not isinstance(p, dict):
             raise ValueError(t("Parameters must be an object"))
         if method == "document.preview":
-            with self.lock:
+            def snapshot():
                 current = self.document(p).book
                 page = next(page for page in current["pages"] if page["id"] == p["page_id"])
-                book = copy.deepcopy({
+                return copy.deepcopy({
                     "id": current["id"], "pages": [page],
                     "assets": {page["asset_id"]: current["assets"][page["asset_id"]]} if page["kind"] == "image" else {},
                 })
             size = p.get("size", 320)
             return self.cache.preview(
-                book,
+                snapshot,
                 p["page_id"],
                 size,
-                lambda: self.run_worker("preview", {"book": book, "page_id": p["page_id"], "size": size}),
+                lambda book: self.run_worker("preview", {"book": book, "page_id": p["page_id"], "size": size}),
             )
         if method == "plugins.catalog":
             return self.plugins.catalog()
@@ -452,6 +464,7 @@ class Engine:
             self.series, self.session, self.series_error = None, None, None
             self.background_sessions.clear()
             self.notify("document.activated", None)
+            self.cache.schedule(30)
             return self.series_changed()
         if method in ("series.create", "series.open_project", "series.migrate"):
             return self.open_series(method, p)
@@ -921,6 +934,7 @@ class Engine:
                 self.notify("task.changed", job_info(job))
                 self.threads.discard(threading.current_thread())
                 self.dispatch()
+                self.cache.schedule(30)
             print("[task-timing] " + json.dumps({"id": job["id"], "operation": job["operation"],
                   "state": job["state"], "seconds": round(time.perf_counter() - started, 3)}),
                   file=sys.stderr, flush=True)

@@ -3,7 +3,7 @@ import {test} from "node:test";
 import {availablePlugins, groupPlugins, pluginCategory, pluginUpdates, uniquePlugins} from "../desktop/plugins.ts";
 import type {Plugin} from "../sdk/types.ts";
 
-test("plugin categories deduplicate sources, retain updates and preserve installed capabilities", () => {
+test("plugin categories deduplicate sources, keep updates on installed plugins and preserve capabilities", () => {
   const base = {version:"0.1.0",api_version:1,platforms:["all"]};
   const importer: Plugin = {...base,id:"import.pdf",name:"PDF import",format:{direction:"import",name:"PDF",extensions:["pdf"]},enabled:false,pending:true};
   const cbz: Plugin = {...base,id:"import.cbz",name:"CBZ import",format:{direction:"import",name:"CBZ",extensions:["cbz"]}};
@@ -22,14 +22,14 @@ test("plugin categories deduplicate sources, retain updates and preserve install
   assert.deepEqual(groupPlugins([],"export"),[]);
   assert.deepEqual(installed,originals,"sorting cannot mutate installed state");
   assert.deepEqual(availablePlugins(bundled,installed).map(plugin => [plugin.id,plugin.version]),
-    [["import.cbz","0.1.0"],["language","0.2.0"]]);
+    [["import.cbz","0.1.0"]], "included packages contain only uninstalled plugins");
   assert.deepEqual(availablePlugins(catalog,installed,bundled).map(plugin => [plugin.id,plugin.version]),
-    [["language","0.3.0"],["export.pdf","0.2.0"]]);
+    [], "installed plugin updates do not repeat in download lists");
   const known = uniquePlugins(catalog,bundled,installed);
   assert.equal(known.length,6,"updates and duplicates count once per plugin");
   assert.equal(pluginCategory(known.find(plugin => plugin.id === "export.pdf")!),"export",
     "installed capabilities take precedence over incomplete catalog metadata");
-  assert.deepEqual(groupPlugins(availablePlugins(catalog,installed,bundled),"export",known)[0].items.map(plugin => plugin.id),
+  assert.deepEqual(groupPlugins(pluginUpdates(installed,bundled,catalog),"export",known)[0].items.map(plugin => plugin.id),
     ["export.pdf"],"an update with incomplete catalog metadata stays visible in its installed category");
   assert.equal(pluginCategory(worker),"tools");
   assert.equal(pluginCategory({...base,id:"unknown",name:"Other"}),"tools");
@@ -58,7 +58,17 @@ test("startup updates include only installed plugins and select the newest compa
   assert.deepEqual(pluginUpdates([plugin("large", "9007199254740992.0.0")],
     [plugin("large", "9007199254740993.0.0")]).map(plugin => plugin.version), ["9007199254740993.0.0"]);
   assert.deepEqual(availablePlugins(bundled, installed).map(plugin => [plugin.id, plugin.version]),
-    [["epub", "0.1.4"], ["new", "1.0.0"]], "older included versions must not be offered as updates");
+    [["new", "1.0.0"]], "installed plugin IDs are excluded regardless of package version");
   assert.deepEqual(pluginUpdates([], bundled, catalog), [], "removed plugins are not update candidates");
   assert.deepEqual([installed, bundled, catalog], original, "checking must not change installed versions or activation");
+});
+
+test("updates prefer an included package on version ties and stop once the new version is installed", () => {
+  const installed: Plugin = {id:"editor",name:"Page editor",version:"0.4.5",api_version:1,platforms:["all"]};
+  const included = {...installed,version:"0.4.6"};
+  const official = {...included};
+  assert.equal(pluginUpdates([installed],[included],[official])[0], included, "equal-version updates use the offline package");
+  assert.equal(pluginUpdates([installed],[{...included,api_version:2}],[official])[0], official, "an incompatible included package cannot take over the update action");
+  assert.deepEqual(pluginUpdates([{...included,pending:true,active_version:"0.4.5"}],[included],[official]), []);
+  assert.deepEqual(availablePlugins([included],[]),[included], "a removed plugin returns to Included as an install");
 });

@@ -242,6 +242,10 @@ export function SeriesWorkspace({
         .includes(search.trim().toLocaleLowerCase()),
   );
   const chosen = visible.filter((item) => selected.has(item.id));
+  const visibleIds = new Set(visible.map((item) => item.id));
+  const hiddenSelected = (removed ? series.removed : series.items).filter(
+    (item) => selected.has(item.id) && !visibleIds.has(item.id),
+  ).length;
   const run = async (action: () => Promise<unknown>, reportError = true) => {
     if (busy) return false;
     return execute(async () => {
@@ -265,7 +269,7 @@ export function SeriesWorkspace({
   }, [series]);
   const chooseGroup = (value: string) => {
     setGroup(value);
-    setSelected(new Set());
+    if (removed || value === "removed") setSelected(new Set());
   };
   const addPaths = (paths: string[]) =>
     run(async () => {
@@ -334,7 +338,7 @@ export function SeriesWorkspace({
     run(async () => {
       const ids = chosen.map((item) => item.id);
       await host.rpc("series.remove", { ids });
-      setSelected(new Set());
+      setSelected((old) => new Set([...old].filter((id) => !ids.includes(id))));
       host.notify(t("{0} books moved to Removed", ids.length), {
         label: t("Undo removal"),
         run: () => void restore(ids),
@@ -656,7 +660,6 @@ export function SeriesWorkspace({
           value={search}
           onChange={(event) => {
             setSearch(event.target.value);
-            setSelected(new Set());
           }}
         />
         <label>
@@ -666,7 +669,6 @@ export function SeriesWorkspace({
             disabled={busy}
             onChange={(event) => {
               setFilter(event.target.value);
-              setSelected(new Set());
             }}
           >
             <option value="all">{t("All books")}</option>
@@ -684,11 +686,11 @@ export function SeriesWorkspace({
           </button>
         )}
       </div>
-      {visible.length > 0 && (
+      {(visible.length > 0 || selected.size > 0) && (
         <div className="series-selection">
           <button
-            disabled={busy}
-            onClick={() => setSelected(new Set(visible.map((item) => item.id)))}
+            disabled={busy || !visible.length}
+            onClick={() => setSelected((old) => new Set([...old, ...visible.map((item) => item.id)]))}
           >
             {t("Select visible")}
           </button>
@@ -696,24 +698,23 @@ export function SeriesWorkspace({
             <button
               disabled={busy}
               onClick={() =>
-                setSelected(
-                  new Set(
-                    visible
-                      .filter((item) => item.reviewed && !item.exported)
-                      .map((item) => item.id),
-                  ),
-                )
+                setSelected((old) => new Set([...old, ...visible
+                  .filter((item) => item.reviewed && !item.exported)
+                  .map((item) => item.id)]))
               }
             >
               {t("Select reviewed for export")}
             </button>
           )}
+          {!!selected.size && <>
+            <button disabled={busy} onClick={() => setSelected(new Set())}>{t("Clear selection")}</button>
+            <span aria-live="polite">{t("{0} selected", chosen.length)}
+              {!!hiddenSelected && ` · ${t("{0} selected books hidden by filters", hiddenSelected)}`}
+            </span>
+            {!!hiddenSelected && <small className="selection-scope">{t("Export selected, move and remove apply only to visible selected books.")}</small>}
+          </>}
           {!!chosen.length && (
             <>
-              <button disabled={busy} onClick={() => setSelected(new Set())}>
-                {t("Clear selection")}
-              </button>
-              <span>{t("{0} selected", chosen.length)}</span>
               {series.managed &&
                 (removed ? (
                   <>

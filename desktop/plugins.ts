@@ -28,10 +28,10 @@ export function uniquePlugins(...sources: Plugin[][]): Plugin[] {
   return [...new Map(sources.flat().map(plugin => [plugin.id, plugin])).values()];
 }
 
-export function availablePlugins(candidates: Plugin[], ...existing: Plugin[][]): Plugin[] {
+export function availablePlugins(candidates: Plugin[], installed: Plugin[], ...existing: Plugin[][]): Plugin[] {
   const known = existing.flat();
-  return candidates.filter(plugin => !known.some(current => current.id === plugin.id &&
-    !newerVersion(plugin.version, current.version)));
+  return candidates.filter(plugin => !installed.some(current => current.id === plugin.id) &&
+    !known.some(current => current.id === plugin.id && !newerVersion(plugin.version, current.version)));
 }
 
 function newerVersion(candidate: string, current: string): boolean {

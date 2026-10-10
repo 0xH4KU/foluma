@@ -1,4 +1,4 @@
-"""Preview cache lifecycle, generation limits and cleanup."""
+"""Preview and imported-image cache lifecycle, generation limits and cleanup."""
 
 from __future__ import annotations
 
@@ -13,11 +13,12 @@ DEFAULT_LIMIT = 5_000_000_000
 
 
 class PreviewCache:
-    def __init__(self, data: Path, limit=DEFAULT_LIMIT):
+    def __init__(self, data: Path, limit=DEFAULT_LIMIT, *, lock, protected_assets):
         self.data = data
         self.directory = data / "previews"
         self.limit = limit if type(limit) is int and 1_000_000_000 <= limit <= 1_000_000_000_000 else DEFAULT_LIMIT
-        self.lock = threading.RLock()
+        self.lock = lock
+        self.protected_assets = protected_assets
         self.slots = threading.Semaphore(2)
         self.active: dict[Path, int] = {}
         self.timer: threading.Timer | None = None
@@ -26,19 +27,37 @@ class PreviewCache:
         self.maintain()
 
     def info(self, clear=False) -> dict:
-        # ponytail: scans hold the cache lock; index sizes if large caches make scans slow.
+        # shortcut: scans hold the document lock; index sizes if large caches make scans slow.
         with self.lock:
-            entries = [(path, path.stat()) for path in owned_files(self.data, self.directory) if path.suffix == ".png"]
-            used = sum(stat.st_size for _, stat in entries)
+            entries = []
+            sizes = {"previews": 0, "assets": 0}
+            for kind in sizes:
+                for path in owned_files(self.data, self.data / kind):
+                    if kind == "previews" and path.suffix != ".png":
+                        continue
+                    try:
+                        stat = path.stat()
+                    except FileNotFoundError:
+                        continue
+                    entries.append((path, stat, kind))
+            protected = self.protected_assets()
+            kept = set(self.active)
+            for path, stat, kind in entries:
+                sizes[kind] += stat.st_size
+                if kind == "assets" and (protected is None or self.active or path.resolve() in protected):
+                    kept.add(path)
+            used = sum(sizes.values())
             before, now = used, time.time()
-            for path, stat in sorted(entries, key=lambda entry: entry[1].st_mtime):
+            for path, stat, kind in sorted(entries, key=lambda entry: entry[1].st_mtime):
                 if not clear and used <= self.limit:
                     break
-                if path in self.active or not clear and now - stat.st_mtime < 60:
+                if path in kept or not clear and now - stat.st_mtime < 60:
                     continue
                 path.unlink()
                 used -= stat.st_size
-            return {"used": used, "limit": self.limit, "freed": before - used}
+                sizes[kind] -= stat.st_size
+            return {"used": used, "limit": self.limit, "freed": before - used, **sizes,
+                    "in_use": sum(stat.st_size for path, stat, _ in entries if path in kept)}
 
     def schedule(self, delay: int):
         if self.closed or self.timer is not None:
@@ -62,11 +81,12 @@ class PreviewCache:
             except (OSError, ValueError):
                 pass
 
-    def preview(self, book: dict, page_id: str, size: int, load) -> str:
-        output = preview_path(book, page_id, size, self.directory)
+    def preview(self, snapshot, page_id: str, size: int, load) -> str:
         with self.lock:
             if self.closed:
                 raise ValueError(t("Foluma is closing"))
+            book = snapshot()
+            output = preview_path(book, page_id, size, self.directory)
             if output.is_file():
                 output.touch()
                 if time.monotonic() - self.checked >= 30:
@@ -75,7 +95,7 @@ class PreviewCache:
             self.active[output] = self.active.get(output, 0) + 1
         try:
             with self.slots:
-                return load()
+                return load(book)
         finally:
             with self.lock:
                 self.active[output] -= 1

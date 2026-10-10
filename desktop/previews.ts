@@ -1,4 +1,5 @@
 import type {Book, HostAPI, Page} from "../sdk/types.ts";
+import {previewKey} from "../sdk/previews.ts";
 
 type Waiter = {resolve: (url: string) => void; reject: (error: unknown) => void};
 type Preview = {size: number; started: boolean; load: () => Promise<string>; waiters: Set<Waiter>};
@@ -27,9 +28,7 @@ export function createPreviewLoader(load: (book: Book, page: Page, size: number)
 
   return (book, page, size = 320, signal) => new Promise<string>((resolve, reject) => {
     if (signal?.aborted) {reject(signal.reason); return;}
-    const asset = book.assets?.[page.asset_id || ""];
-    const source = book.sources?.[asset?.source_id || ""];
-    const key = JSON.stringify([book.id,page.id,page.asset_id,page.width,page.height,page.crop,page.rotation,size,asset?.path,source?.path]);
+    const key = previewKey(book, page, size);
     let preview = pending.get(key);
     if (!preview) {
       preview = {size,started: false,load: () => load(book,page,size),waiters: new Set()};

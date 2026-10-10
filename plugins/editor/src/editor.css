@@ -4,7 +4,7 @@
   height: 100%;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: var(--ink);
-  font-size: 12px;
+  font-size: 13px;
 }
 [hidden] {
   display: none !important;
@@ -27,10 +27,11 @@ button {
   border: 1px solid #aeb4bb;
   border-radius: 3px;
   padding: 4px 8px;
-  min-height: 26px;
+  min-height: 32px;
   white-space: nowrap;
-  font-size: 11px;
+  font-size: 13px;
 }
+button:active:not(:disabled) { background: #d0e0ef; }
 button:hover:not(:disabled) {
   background: #e4edf7;
   border-color: #7c9cb9;
@@ -53,8 +54,8 @@ select {
   padding: 4px 6px;
   min-width: 0;
   width: 100%;
-  height: 26px;
-  font-size: 11px;
+  height: 32px;
+  font-size: 13px;
 }
 input[type="checkbox"] {
   accent-color: var(--accent);
@@ -74,12 +75,12 @@ h2 {
   margin-bottom: 8px;
 }
 p {
-  font-size: 10px;
+  font-size: 12px;
   color: var(--muted);
   line-height: 1.5;
 }
 small {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
 }
 .icon {
@@ -97,8 +98,7 @@ small {
   background: #eee;
 }
 .editor-toolbar {
-  height: 35px;
-  min-height: 35px;
+  min-height: 42px;
   border-bottom: 1px solid var(--line);
   display: flex;
   align-items: center;
@@ -138,8 +138,9 @@ small {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: 202px minmax(200px, 1fr) 220px;
+  grid-template-columns: 202px minmax(0, 1fr);
 }
+.editor-columns.with-tools { grid-template-columns: 202px minmax(0, 1fr) 240px; }
 .pages-panel {
   display: flex;
   flex-direction: column;
@@ -148,13 +149,13 @@ small {
   background: white;
 }
 .panel-title {
-  height: 29px;
-  min-height: 29px;
+  height: 36px;
+  min-height: 36px;
   display: flex;
   justify-content: space-between;
   align-items: center;
   padding: 0 9px;
-  font-size: 11px;
+  font-size: 13px;
   background: linear-gradient(#f8f8f8, #e6e7e9);
   border-bottom: 1px solid var(--line);
 }
@@ -169,9 +170,9 @@ small {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 23px;
-  min-height: 23px;
+  width: 30px;
+  height: 30px;
+  min-height: 30px;
   padding: 3px;
   border: 1px solid transparent;
   background: transparent;
@@ -291,6 +292,7 @@ small {
   gap: 0;
 }
 .list-view .thumbnail {
+  min-height: 29px;
   display: grid;
   grid-template-columns: 37px 1fr 47px;
   align-items: center;
@@ -363,8 +365,7 @@ small {
   background: #b9bdc2;
 }
 .preview-options {
-  height: 37px;
-  min-height: 37px;
+  min-height: 42px;
   display: flex;
   align-items: center;
   gap: 9px;
@@ -382,8 +383,8 @@ small {
 .segmented button {
   padding: 3px 8px;
   border-radius: 0;
-  font-size: 11px;
-  min-height: 25px;
+  font-size: 13px;
+  min-height: 30px;
 }
 .segmented button:first-child {
   border-radius: 3px 0 0 3px;
@@ -399,7 +400,7 @@ small {
   position: relative;
 }
 .preview-options label {
-  font-size: 10px;
+  font-size: 12px;
   color: #555e67;
   display: flex;
   gap: 5px;
@@ -458,8 +459,8 @@ small {
   gap: 8px;
   align-items: center;
   justify-content: center;
-  height: 34px;
-  min-height: 34px;
+  height: 42px;
+  min-height: 42px;
   background: #ececec;
   border-top: 1px solid #aeb5bd;
   padding: 0 10px;
@@ -478,7 +479,7 @@ small {
 .preview-navigation button {
   padding: 1px 8px;
   font-size: 14px;
-  min-height: 24px;
+  min-height: 30px;
 }
 .zoom-control {
   display: flex;
@@ -522,7 +523,7 @@ small {
 }
 .inspector label {
   display: block;
-  font-size: 11px;
+  font-size: 13px;
   color: #555d66;
   margin-bottom: 7px;
 }
@@ -533,6 +534,7 @@ small {
 }
 .full-width {
   width: 100%;
+  white-space: normal;
 }
 .inline-input {
   display: flex;
@@ -557,10 +559,10 @@ small {
 }
 .page-properties dl {
   display: grid;
-  grid-template-columns: 65px 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 7px 5px;
   margin: 0;
-  font-size: 10px;
+  font-size: 12px;
 }
 .page-properties dt {
   color: var(--muted);
@@ -627,8 +629,9 @@ small {
 }
 @media (max-width: 1030px) {
   .editor-columns {
-    grid-template-columns: 174px minmax(195px, 1fr) 195px;
+    grid-template-columns: 184px minmax(0, 1fr);
   }
+  .editor-columns.with-tools { grid-template-columns: 184px minmax(0, 1fr) 220px; }
   .editor-toolbar > div:first-child > span {
     display: none;
   }
@@ -860,7 +863,7 @@ small {
   border-bottom: 1px solid var(--line);
 }
 .review-actions button {
-  font-size: 10px;
+  font-size: 12px;
   padding: 3px 6px;
 }
 .review-actions button[aria-pressed="true"] {

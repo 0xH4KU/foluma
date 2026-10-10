@@ -5,7 +5,7 @@
   background: var(--paper);
   font-synthesis: none;
   -webkit-font-smoothing: antialiased;
-  font-size: 12px;
+  font-size: 13px;
 }
 * {
   box-sizing: border-box;
@@ -29,12 +29,12 @@ button {
   justify-content: center;
   gap: 6px;
   padding: 4px 10px;
-  min-height: 26px;
+  min-height: 32px;
   border: 1px solid #aeb4bb;
   border-radius: 3px;
   background: linear-gradient(#fff, #ededed);
   white-space: nowrap;
-  font-size: 12px;
+  font-size: 13px;
 }
 button:hover:not(:disabled) {
   background: #e4edf7;
@@ -68,12 +68,12 @@ select {
   width: 100%;
   min-width: 0;
   padding: 4px 6px;
-  height: 27px;
+  height: 32px;
   color: var(--ink);
   background: var(--surface);
   border: 1px solid #b1b6bd;
   border-radius: 2px;
-  font-size: 12px;
+  font-size: 13px;
 }
 input[type="checkbox"] {
   width: 15px;
@@ -112,8 +112,9 @@ small {
   flex-shrink: 0;
 }
 .app-shell {
+  position: relative;
   display: grid;
-  grid-template-rows: 48px auto minmax(0, 1fr) 25px;
+  grid-template-rows: 48px auto minmax(0, 1fr) 36px;
   height: 100vh;
   overflow: hidden;
 }
@@ -216,6 +217,69 @@ small {
   grid-template-columns: 166px minmax(0, 1fr);
   min-height: 0;
 }
+.application-body.sidebar-collapsed {
+  grid-template-columns: minmax(0, 1fr);
+}
+.sidebar-toggle {
+  flex: 0 0 34px;
+  padding: 5px;
+}
+.export-settings-menu {
+  position: relative;
+  flex-shrink: 0;
+}
+.export-settings-menu > summary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 34px;
+  cursor: pointer;
+  border-radius: 3px;
+}
+.export-settings-menu > summary::-webkit-details-marker { display: none; }
+.export-settings-menu > summary:hover,
+.export-settings-menu[open] > summary { background: var(--hover); }
+.export-settings-menu > summary:focus-visible { outline: 2px solid var(--accent); }
+.export-settings-menu .icon { width: 18px; height: 18px; }
+.export-settings-menu fieldset {
+  position: absolute;
+  top: 40px;
+  right: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 290px;
+  margin: 0;
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 6px 20px #0002;
+}
+.export-settings-menu label { display: flex; flex-direction: column; gap: 6px; }
+.export-settings-menu small { font-size: 12px; line-height: 1.5; }
+.feedback-stack {
+  position: absolute;
+  z-index: 20;
+  bottom: 46px;
+  right: 12px;
+  width: min(460px, calc(100% - 24px));
+  max-height: min(45vh, 320px);
+  display: grid;
+  gap: 8px;
+  overflow: auto;
+}
+.feedback-stack .notice {
+  padding: 10px 12px;
+  border: 1px solid #b7c5d2;
+  border-radius: 6px;
+  box-shadow: 0 3px 12px #0002;
+  font-size: 13px;
+}
+.feedback-stack .notice.error { border-color: #d9b0ab; }
+.feedback-stack .notice-actions { flex-shrink: 0; }
 .sidebar {
   background: #f7f7f7;
   border-right: 1px solid #aeb5bd;
@@ -249,8 +313,8 @@ nav button {
   background: transparent;
   justify-content: flex-start;
   padding: 0 11px 0 19px;
-  font-size: 12px;
-  min-height: 30px;
+  font-size: 13px;
+  min-height: 34px;
   gap: 7px;
 }
 nav button .icon {
@@ -505,6 +569,13 @@ main {
   object-fit: contain;
   box-shadow: 0 1px 4px #0003;
 }
+.cover-stage .blank-preview {
+  display: block;
+  height: 100%;
+  max-width: 100%;
+  background: white;
+  box-shadow: 0 1px 4px #0003;
+}
 .cover-stage span {
   color: var(--muted);
   font-size: 11px;
@@ -524,7 +595,7 @@ main {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  font-size: 11px;
+  font-size: 13px;
   color: #484e55;
 }
 .form-pair {
@@ -612,6 +683,17 @@ main {
   height: 8px;
   accent-color: var(--accent);
 }
+.import-progress { border-bottom: 1px solid #b4c4d5; background: #e8eff6; }
+.import-progress-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 12px 0; font-size: 12px; }
+.import-progress-heading > span { color: var(--muted); font-size: 11px; }
+.import-progress-jobs { max-height: 144px; overflow: auto; }
+.import-progress .job { gap: 12px; border-bottom: 0; }
+.import-progress .job > div { flex: 0 1 280px; min-width: 0; }
+.import-progress .job strong, .import-progress .job > div > span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.import-progress .job strong { font-size: 12px; font-weight: 600; }
+.import-progress .job > div > span { color: var(--muted); margin-top: 3px; }
+.import-progress .job progress { flex: 1; min-width: 120px; }
+.import-progress-count { font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .content {
   padding: 15px;
   width: 100%;
@@ -652,7 +734,7 @@ main {
 .plugin-table-head,
 .plugin-row {
   display: grid;
-  grid-template-columns: minmax(160px, 1fr) 75px 90px 60px;
+  grid-template-columns: minmax(160px, 1fr) 80px 100px 80px;
   gap: 16px;
   align-items: center;
   padding: 8px 12px;
@@ -683,6 +765,40 @@ main {
 .plugin-row .version {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
+}
+.plugin-row.update-available {
+  background: #fff7e8;
+  box-shadow: inset 3px 0 #d07812;
+}
+.plugin-counts { display: flex; align-items: center; gap: 10px; }
+.plugin-update-badge {
+  display: inline-block;
+  padding: 3px 7px;
+  border: 1px solid #e4bc7b;
+  border-radius: 4px;
+  background: #ffedc7;
+  color: #854006;
+  font-size: 11px;
+  font-weight: 600;
+}
+.plugin-row .plugin-update-badge { margin-left: 8px; }
+.plugin-update-version {
+  display: block;
+  margin-top: 5px;
+  color: #914804;
+  font-weight: 600;
+}
+.plugin-actions { display: flex; flex-direction: column; gap: 6px; }
+button.plugin-update-button {
+  background: #b96208;
+  border-color: #965008;
+  color: white;
+}
+button.plugin-update-button:hover:not(:disabled) { background: #994d05; border-color: #824106; }
+.feedback-stack .notice.plugin-update-notice {
+  background: #fff4df;
+  border-color: #d58b35;
+  color: #744107;
 }
 .switch-label {
   display: flex;
@@ -757,6 +873,22 @@ main {
   color: #505961;
   font-size: 10px;
 }
+.status-feedback {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #3c6749;
+  font-size: 13px;
+}
+.status-feedback > span {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.status-feedback button { min-height: 30px; }
 .status-dot {
   width: 6px;
   height: 6px;
@@ -902,6 +1034,10 @@ main {
 .series-selection span {
   font-size: 11px;
   color: var(--muted);
+}
+.series-selection .selection-scope {
+  flex-basis: 100%;
+  font-size: 12px;
 }
 .series-table-scroll {
   flex: 1;

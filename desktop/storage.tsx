@@ -3,7 +3,7 @@ import type {HostAPI} from "../sdk/types";
 import {t} from "../sdk/i18n";
 import {createActionRunner} from "../sdk/actions";
 
-type Storage = {used: number; limit: number; freed: number};
+type Storage = {used: number; limit: number; freed: number; previews: number; assets: number; in_use: number};
 
 export function formatBytes(bytes: number): string {
   if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(2)} GB`;
@@ -44,11 +44,13 @@ export function StorageSettings({host, busy, prepare, refreshPreviews}: {
     });
   };
   return <article className="settings-row storage-settings"><div><h2>{t("Storage")}</h2>
-    <p>{t("Preview cache only. PDFs, saved edits and imported images are kept.")}</p>
-    <p>{t("Old previews are removed automatically. Recently used previews may temporarily exceed the limit.")}</p>
+    <p>{t("Cached previews and imported images. PDFs and saved project images are kept.")}</p>
+    <p>{t("Old unused files are removed automatically. Recent files and files in use may temporarily exceed the limit.")}</p>
     {storage && <><p role="status">{t("Cache: {0} / limit: {1}", formatBytes(storage.used), formatBytes(storage.limit))}</p>
-      <progress aria-label={t("Preview cache usage")} value={Math.min(storage.used, storage.limit)} max={storage.limit}/></>}
-    <p>{t("The first preview after clearing may take longer. Active previews are kept until they finish.")}</p>
+      <p>{t("Previews: {0} · Imported images: {1}", formatBytes(storage.previews), formatBytes(storage.assets))}</p>
+      {storage.in_use > 0 && <p>{t("In use: {0} (kept when clearing)", formatBytes(storage.in_use))}</p>}
+      <progress aria-label={t("Cache usage")} value={Math.min(storage.used, storage.limit)} max={storage.limit}/></>}
+    <p>{t("The first preview or import after clearing may take longer.")}</p>
   </div><form onSubmit={event => {event.preventDefault(); void update("storage.configure", Number(choice === "custom" ? custom : choice));}}>
     <fieldset disabled={busy || working || !storage}>
       <label>{t("Cache capacity limit")}<select value={choice} onChange={event => setChoice(event.target.value)}>

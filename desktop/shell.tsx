@@ -1,7 +1,10 @@
+import { useEffect, useRef } from "react";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import type { Book, HostAPI, PluginList, Series, SeriesItem, Task } from "../sdk/types";
 import { t } from "../sdk/i18n";
 import { Icon } from "../sdk/icons";
+import { ExportVariantSelect } from "../sdk/export-variant";
+import type { useExportSettings } from "../sdk/export-settings";
 
 type RunAction = (action: () => Promise<unknown>, commit?: boolean) => Promise<void>;
 
@@ -16,6 +19,9 @@ export function Toolbar({
   exportingSeries,
   selectedBooks,
   canExport,
+  exportSettings,
+  sidebarOpen,
+  onToggleSidebar,
   onImport,
   onNewProject,
   onOpenProject,
@@ -33,6 +39,9 @@ export function Toolbar({
   exportingSeries: boolean;
   selectedBooks: number;
   canExport: boolean;
+  exportSettings: ReturnType<typeof useExportSettings>;
+  sidebarOpen: boolean;
+  onToggleSidebar: () => void;
   onImport: () => void;
   onNewProject: () => void;
   onOpenProject: () => void;
@@ -40,8 +49,20 @@ export function Toolbar({
   onSaveProject: () => void;
   onExport: () => void;
 }) {
+  const settings = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    const close = (event: PointerEvent) => {
+      if (settings.current && !settings.current.contains(event.target as Node)) settings.current.open = false;
+    };
+    document.addEventListener("pointerdown", close);
+    return () => document.removeEventListener("pointerdown", close);
+  }, []);
+  const { exporters, outputFormat, variant, variantId, setExporter, setVariantId } = exportSettings;
   return (
     <header className="command-bar" aria-label={t("Main toolbar")}>
+      <button className="command sidebar-toggle" aria-label={t(sidebarOpen ? "Hide sidebar" : "Show sidebar")}
+        title={t(sidebarOpen ? "Hide sidebar" : "Show sidebar")} aria-expanded={sidebarOpen}
+        aria-controls="main-sidebar" onClick={onToggleSidebar}><Icon name="sidebar" /></button>
       {!documentWindow && <>
       <button
         className="command"
@@ -87,7 +108,7 @@ export function Toolbar({
         title={
           exportingSeries
             ? t("Export selected books (⌘E)")
-            : t("Export current book: {0} (⌘E)", book?.metadata.title || "")
+            : t("Export current book: {0} (⌘E)", [book?.metadata.title, outputFormat?.format?.name, variant && t(variant.name)].filter(Boolean).join(" · "))
         }
         disabled={busy || (!!hasExporters && (exportingSeries ? !canExport : !book))}
         onClick={onExport}
@@ -98,9 +119,24 @@ export function Toolbar({
             ? t("Install export plugin")
             : exportingSeries
               ? t("Export {0} selected books", selectedBooks)
-              : t("Export current book")}
+              : t("Export {0}", outputFormat?.format?.name || "")}
         </span>
       </button>
+      {!exportingSeries && hasExporters && <details className="export-settings-menu" ref={settings}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") { event.preventDefault(); event.currentTarget.open = false; event.currentTarget.querySelector("summary")?.focus(); }
+        }}>
+        <summary aria-label={t("Export settings")} title={t("Export settings")}><Icon name="settings" /></summary>
+        <fieldset disabled={busy}>
+          <strong>{t("Export settings")}</strong>
+          <label>{t("Output format")}
+            <select value={outputFormat?.id || ""} onChange={(event) => setExporter(event.target.value)}>
+              {exporters.map((plugin) => <option key={plugin.id} value={plugin.id}>{plugin.format!.name}</option>)}
+            </select>
+          </label>
+          <ExportVariantSelect variants={outputFormat?.format?.variants} value={variantId} onChange={setVariantId} />
+        </fieldset>
+      </details>}
       <div className="toolbar-caption">
         <strong>Foluma</strong>
         <span>{t("Book conversion and editing")}</span>
@@ -229,6 +265,7 @@ export function DocumentBar({
 }
 
 export function Sidebar({
+  hidden,
   series,
   book,
   plugins,
@@ -236,6 +273,7 @@ export function Sidebar({
   sourceFormats,
   navigate,
 }: {
+  hidden: boolean;
   series: Series | null;
   book: Book | null;
   plugins: PluginList;
@@ -244,7 +282,7 @@ export function Sidebar({
   navigate: (tab: string) => Promise<void>;
 }) {
   return (
-    <aside className="sidebar">
+    <aside id="main-sidebar" className="sidebar" hidden={hidden}>
       <nav aria-label={t("Main navigation")}>
         <div className="tree-heading">{t("▾ Workspace")}</div>
         {series && (
@@ -321,6 +359,38 @@ export function Sidebar({
   );
 }
 
+export function ImportProgress({ jobs, cancel }: { jobs: Task[]; cancel: (id: string) => void }) {
+  const active = jobs.filter(job => ["import", "series.open", "images.import"].includes(job.operation) &&
+    (job.state === "running" || job.state === "queued"));
+  const running = active.filter(job => job.state === "running");
+  const queued = active.filter(job => job.state === "queued");
+  if (!active.length) return null;
+  return <section className="import-progress" aria-label={t("Import and parsing progress")}>
+    <header className="import-progress-heading">
+      <strong>{t("Import and parsing progress")}</strong>
+      <span role="status">{t("{0} running · {1} queued", running.length, queued.length)}</span>
+    </header>
+    <div className="import-progress-jobs">
+      {(running.length ? running : queued.slice(0, 1)).map(job => {
+        const title = job.title || t("Import book");
+        const known = job.state === "running" && job.progress.total > 0 &&
+          (job.progress.total > 1 || job.progress.done > 0);
+        const done = Math.max(0, Math.min(job.progress.done, job.progress.total));
+        return <article className="job" key={job.id}>
+          <div>
+            <strong title={title}>{title}</strong>
+            <span id={`task-stage-${job.id}`}>{t(job.state === "queued" ? "Queued" : job.progress.message || "Preparing")}</span>
+          </div>
+          <progress aria-label={t("Progress for {0}", title)} aria-describedby={`task-stage-${job.id}`}
+            value={known ? done : undefined} max={job.progress.total || 1} />
+          {known && <span className="import-progress-count">{done} / {job.progress.total} · {Math.round(done / job.progress.total * 100)}%</span>}
+          <button aria-label={t("Cancel {0}", title)} onClick={() => cancel(job.id)}>{t("Cancel")}</button>
+        </article>;
+      })}
+    </div>
+  </section>;
+}
+
 export function StatusBar({
   ready,
   safeMode,
@@ -331,6 +401,8 @@ export function StatusBar({
   selectedBooks,
   book,
   busy,
+  message,
+  dismissMessage,
 }: {
   ready: boolean;
   safeMode: boolean;
@@ -341,6 +413,8 @@ export function StatusBar({
   selectedBooks: number;
   book: Book | null;
   busy: boolean;
+  message: { text: string; action?: { label: string; run: () => void } } | null;
+  dismissMessage: () => void;
 }) {
   const active = jobs.filter(job => job.state === "running" || job.state === "queued");
   const parsing = [...new Map(jobs.filter(job => job.preparse).map(job => [job.entry_id, job])).values()];
@@ -382,7 +456,11 @@ export function StatusBar({
         </article>)}
       </div>
       </details>
-      <span className="status-right">
+      {message ? <div className="status-feedback" role="status">
+        <span title={message.text}>{message.text}</span>
+        {message.action && <button onClick={message.action.run}>{message.action.label}</button>}
+        <button aria-label={t("Dismiss message")} onClick={dismissMessage}>×</button>
+      </div> : <span className="status-right">
         {exportingSeries
           ? t("{0} selected", selectedBooks)
           : book
@@ -397,7 +475,7 @@ export function StatusBar({
           {active.length || (busy ? 1 : 0)}
         </span>
         <span>{t("Processed locally")}</span>
-      </span>
+      </span>}
     </footer>
   );
 }

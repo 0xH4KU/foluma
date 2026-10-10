@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Book, ExportVariant, HostAPI, Metadata, RenderResolution, Series, SeriesItem } from "../sdk/types";
-import { ExportVariantSelect } from "../sdk/export-variant";
+import type { Book, HostAPI, Metadata, RenderResolution, Series, SeriesItem } from "../sdk/types";
+import { useExportSettings } from "../sdk/export-settings";
 import { documentRef } from "../sdk/types";
 import { t } from "../sdk/i18n";
 import { flushMetadata, type MetadataDraft } from "./metadata";
@@ -14,28 +14,6 @@ export type MetadataEditor = {
 };
 
 type UnsavedChoice = "save" | "discard" | "cancel";
-export function ExportEdition({ variants, respond }: {
-  variants: ExportVariant[];
-  respond: (variant: ExportVariant | null) => void;
-}) {
-  const dialog = useRef<HTMLDialogElement>(null);
-  const [selected, setSelected] = useState(variants[0].id);
-  useEffect(() => { dialog.current?.showModal(); }, []);
-  return <dialog ref={dialog} className="project-dialog" aria-labelledby="export-edition-title"
-    onCancel={(event) => { event.preventDefault(); respond(null); }}>
-    <h1 id="export-edition-title">{t("Export edition")}</h1>
-    <fieldset>
-      <ExportVariantSelect variants={variants} value={selected} onChange={setSelected} />
-    </fieldset>
-    <div className="project-dialog-actions">
-      <button onClick={() => respond(null)}>{t("Cancel")}</button>
-      <button className="primary" onClick={() => respond(variants.find((variant) => variant.id === selected)!)}>
-        {t("Continue")}
-      </button>
-    </div>
-  </dialog>;
-}
-
 export function UnsavedChanges({
   title,
   respond,
@@ -78,10 +56,7 @@ export function useDocumentActions(
   editorAvailable: boolean,
   setTab: (tab: string) => void,
 ) {
-  const [exportEdition, setExportEdition] = useState<{
-    variants: ExportVariant[];
-    respond: (variant: ExportVariant | null) => void;
-  } | null>(null);
+  const exportSettings = useExportSettings(host);
   const [unsaved, setUnsaved] = useState<{
     title: string;
     respond: (choice: UnsavedChoice) => void;
@@ -170,12 +145,23 @@ export function useDocumentActions(
   );
   const importBook = useCallback(
     async (path?: string, pluginId?: string) => {
+      const importers = (host.getFormats?.() || []).filter(
+        (plugin) => plugin.format?.direction === "import" && (!pluginId || plugin.id === pluginId),
+      );
+      if (!path && importers.length) {
+        try {
+          const picked = await host.pickFile({
+            extensions: [...new Set(importers.flatMap((plugin) => plugin.format!.extensions))],
+            title: t("Import book"),
+          });
+          if (typeof picked === "string") await importBook(picked, pluginId);
+        } catch (error) { host.report(error); }
+        return;
+      }
       const extension = path?.split(".").pop()?.toLowerCase();
-      const candidates = (host.getFormats?.() || []).filter(
+      const candidates = importers.filter(
         (plugin) =>
-          plugin.format?.direction === "import" &&
-          (!pluginId || plugin.id === pluginId) &&
-          (!path || plugin.format.extensions.includes(extension || "")),
+          (!path || plugin.format!.extensions.includes(extension || "")),
       );
       if (!candidates.length) {
         setTab("plugins");
@@ -194,15 +180,9 @@ export function useDocumentActions(
       await run(async () => {
         const provider = candidates[0];
         if (!(await replaceAllowed(t("Import book")))) return;
-        const picked =
-          path ||
-          (await host.pickFile({
-            extensions: provider.format!.extensions,
-            title: t("Import {0}", provider.format!.name),
-          }));
-        if (typeof picked !== "string") return;
+        if (!path) return;
         try {
-          await host.task<Book>({ operation: "import", plugin_id: provider.id, path: picked });
+          await host.task<Book>({ operation: "import", plugin_id: provider.id, path });
         } catch (error) {
           const data = (error as { data?: { kind: string; pages: number[] } }).data;
           if (data?.kind !== "render_required") throw error;
@@ -222,7 +202,7 @@ export function useDocumentActions(
           await host.task<Book>({
             operation: "import",
             plugin_id: provider.id,
-            path: picked,
+            path,
             render: true,
             dpi,
           });
@@ -257,37 +237,18 @@ export function useDocumentActions(
       setOutput("");
     }, false);
   const saveProject = () => run(saveBook);
-  const exportBook = async (pluginId?: string): Promise<void> => {
-    const candidates = (host.getFormats?.() || []).filter(
-      (plugin) => plugin.format?.direction === "export" && (!pluginId || plugin.id === pluginId),
-    );
-    if (candidates.length > 1) {
-      await host.contextMenu?.(
-        candidates.map((plugin) => ({
-          text: t("Export {0}", plugin.format!.name),
-          action: () => void exportBook(plugin.id),
-        })),
-      ).catch(host.report);
-      return;
-    }
+  const exportBook = async (): Promise<void> => {
+    const { outputFormat: provider, variant } = exportSettings;
     await runExport(async () => {
       await commitInformation();
-      if (!candidates.length) {
+      if (!provider) {
         setTab("plugins");
         host.notify(t("Install and enable an export plugin to export books"));
         return;
       }
-      const provider = candidates[0];
       const current = host.getDocument();
       if (!current) return;
       const variants = provider.format?.variants;
-      let variant: ExportVariant | null = null;
-      if (variants?.length) {
-        variant = await new Promise<ExportVariant | null>((resolve) => {
-          setExportEdition({ variants, respond: (value) => { setExportEdition(null); resolve(value); } });
-        });
-        if (!variant) return;
-      }
       const path = await host.saveFile(
         `${current.metadata.title}${variant && variant.id !== variants?.[0].id ? ` (${t(variant.name)})` : ""}.${provider.format!.extensions[0]}`,
         provider.format!.extensions,
@@ -325,7 +286,7 @@ export function useDocumentActions(
       }
     }, false);
   return {
-    exportEdition,
+    exportSettings,
     unsaved,
     metadataDraft,
     savingInformation,

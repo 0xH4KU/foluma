@@ -2,30 +2,20 @@ import { useEffect, useRef, useState } from "react";
 import type { Book, HostAPI, Metadata, Page, RenderResolution } from "../sdk/types";
 import { t } from "../sdk/i18n";
 import { Icon } from "../sdk/icons";
+import { usePagePreview } from "../sdk/previews";
+import { useExportSettings } from "../sdk/export-settings";
 import type { MetadataEditor } from "./document-actions";
 
 function Preview({ book, page, host }: { book: Book; page: Page | undefined; host: HostAPI }) {
-  const [url, setUrl] = useState("");
-  useEffect(() => {
-    const controller = new AbortController();
-    setUrl("");
-    if (page)
-      host
-        .preview(book, page, 1024, controller.signal)
-        .then((value) => {
-          if (!controller.signal.aborted) setUrl(value);
-        })
-        .catch((error) => {
-          if (!controller.signal.aborted) host.report(error);
-        });
-    return () => controller.abort();
-  }, [book.id, page, host]);
+  const { url, error } = usePagePreview(book, page, host, 1024);
   return (
-    <div className="cover-stage">
-      {url ? (
+    <div className="cover-stage" title={error}>
+      {page?.kind === "blank" ? (
+        <span className="blank-preview" style={{ aspectRatio: `${page.width} / ${page.height}` }} aria-label={t("Blank page")} />
+      ) : url ? (
         <img src={url} alt={t("Selected page preview")} />
       ) : (
-        <span>{page ? t("Loading preview…") : t("No pages")}</span>
+        <span>{error ? t("Preview unavailable") : page ? t("Loading preview…") : t("No pages")}</span>
       )}
     </div>
   );
@@ -43,6 +33,8 @@ function MetadataForm({
   information: MetadataEditor;
 }) {
   const meta = { ...book.metadata, ...information.draft };
+  const invalidTitle = !meta.title.trim();
+  const invalidLanguage = !/^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$/.test(meta.language);
   const commit = (patch: Partial<Metadata>) => {
     information.change(patch);
     void information.commit().catch(host.report);
@@ -58,9 +50,12 @@ function MetadataForm({
         <input
           required
           value={meta.title}
-          aria-invalid={!meta.title.trim()}
+          aria-label={t("Title")}
+          aria-invalid={invalidTitle}
+          aria-describedby={invalidTitle ? "book-title-error" : undefined}
           onChange={(e) => information.change({ title: e.target.value })}
         />
+        {invalidTitle && <small id="book-title-error" className="series-error" role="alert">{t("Enter a book title")}</small>}
       </label>
       <label>
         {t("Author")}
@@ -77,6 +72,9 @@ function MetadataForm({
             required
             list="book-languages"
             value={meta.language}
+            aria-label={t("Book language")}
+            aria-invalid={invalidLanguage}
+            aria-describedby={invalidLanguage ? "book-language-error" : undefined}
             onChange={(e) => information.change({ language: e.target.value })}
           />
           <datalist id="book-languages">
@@ -88,6 +86,7 @@ function MetadataForm({
             <option value="fr">Français</option>
             <option value="de">Deutsch</option>
           </datalist>
+          {invalidLanguage && <small id="book-language-error" className="series-error" role="alert">{t("Enter a valid language code, such as en or zh-Hant")}</small>}
         </label>
         <label>
           {t("Reading direction")}
@@ -135,6 +134,7 @@ export function DocumentView({
   previewGeneration: number;
 }) {
   const [selected, setSelected] = useState<string | null>(null);
+  const { outputFormat, variant } = useExportSettings(host);
   const [viewport, setViewport] = useState({ top: 0, height: 600 });
   const list = useRef<HTMLDivElement>(null);
   const page = book.pages.find((p) => p.id === selected) || book.pages[0];
@@ -288,10 +288,7 @@ export function DocumentView({
             <div>
               <dt>{t("Output format")}</dt>
               <dd>
-                {(host.getFormats?.() || [])
-                  .filter((plugin) => plugin.format?.direction === "export")
-                  .map((plugin) => plugin.format!.name)
-                  .join(" / ") || t("No export plugins enabled")}
+                {outputFormat ? [outputFormat.format!.name, variant && t(variant.name)].filter(Boolean).join(" · ") : t("No export plugins enabled")}
               </dd>
             </div>
             <div>
