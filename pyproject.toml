@@ -1,6 +1,6 @@
 [project]
 name = "foluma-engine"
-version = "0.1.0"
+version = "0.1.1"
 description = "Foluma's local document engine"
 requires-python = ">=3.11"
 dependencies = ["Pillow>=10,<13"]

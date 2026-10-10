@@ -48,9 +48,9 @@ EPUB import supports image books, not arbitrary reflowable or scripted publicati
 
 ## Getting started
 
-Foluma **0.1.0** is available for **macOS Apple Silicon**. Download the disk image or app archive from the [latest release](https://github.com/0xH4KU/foluma/releases/latest), open it, and move **Foluma.app** to **Applications**. The packaged app includes its engine and plugins, so end users do not need Python, Node.js or Rust. You can also [build from source](docs/DEVELOPMENT.md).
+Foluma **0.1.1** is available for **macOS Apple Silicon**. Download the disk image or app archive from the [latest release](https://github.com/0xH4KU/foluma/releases/latest), open it, and move **Foluma.app** to **Applications**. The packaged app includes its engine and plugins, so end users do not need Python, Node.js or Rust. You can also [build from source](docs/DEVELOPMENT.md).
 
-This first release uses an ad-hoc signature and is not notarized. macOS may require you to allow the app under **System Settings → Privacy & Security** after attempting to open it.
+This build uses an ad-hoc signature and is not notarized. macOS may require you to allow the app under **System Settings → Privacy & Security** after attempting to open it.
 
 1. Choose **Import book** for a single book, or **New project** for a collection.
 2. Review book information, then open **Edit pages** to arrange pages and check spreads.
@@ -78,7 +78,7 @@ Requires macOS, Python 3.11+, Node.js 22.18+ and stable Rust, plus the [Tauri pr
 
 - macOS Apple Silicon is the validated target. Windows and Linux have not been validated.
 - Current builds use an ad-hoc signature and are not notarized.
-- Bundled and local plugin packages work offline. A public plugin catalog is not yet published.
+- Bundled and local plugin packages work offline. Plugin updates are available from the release catalog.
 - Code plugins are trusted local code and are not sandboxed.
 - Folder changes are discovered when opening or refreshing a project.
 
