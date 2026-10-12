@@ -42,7 +42,8 @@ def project_inputs(paths: list[str], extensions: set[str]) -> tuple[list[Path], 
         if path.is_dir() and path.suffix != ".mteproj":
             inputs.extend(
                 sorted(
-                    (p for p in path.iterdir() if p.is_file() and p.suffix.lower() in extensions),
+                    (p for p in path.iterdir() if not p.name.startswith(".") and p.is_file()
+                     and p.suffix.lower() in extensions),
                     key=lambda p: natural_key(p.name),
                 )
             )
@@ -96,7 +97,7 @@ class Series:
             if not root.exists() and not self.path.exists():
                 raise ValueError(t("Folder or file is missing: {0}", name))
             for item in root.iterdir() if root.is_dir() else [root]:
-                if item.is_file() and item.suffix.lower() in self.extensions:
+                if not item.name.startswith(".") and item.is_file() and item.suffix.lower() in self.extensions:
                     files.add(str(item.resolve()))
         if not files and not self.path.exists():
             raise ValueError(t("No supported book files were found in this folder"))
@@ -344,7 +345,7 @@ class FolderProject(Series):
         if self.state.get("schema") != 2 or not isinstance(self.state.get("items"), list):
             raise ValueError(t("Unsupported project format"))
         identifiers = set()
-        for item in self.state["items"]:
+        for item in self.state["items"][:]:
             if (
                 not isinstance(item.get("id"), str)
                 or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", item["id"])
@@ -360,6 +361,20 @@ class FolderProject(Series):
                 raise ValueError(t("Invalid project book identity"))
             identifiers.add(item["id"])
             relative = Path(item["path"])
+            # Older scans saved macOS AppleDouble sidecars as books; discard only unparsed entries.
+            if (
+                len(relative.parts) in (1, 2)
+                and not any(p.startswith(".") for p in relative.parts[:-1])
+                and relative.name.startswith("._")
+                and not item.get("removed")
+                and item.get("document_id") is None
+                and item.get("revision") is None
+            ):
+                contained(self.root, item["path"])
+                self.state["items"].remove(item)
+                if self.state["current_id"] == item["id"]:
+                    self.state["current_id"] = None
+                continue
             if (
                 not re.fullmatch(r"\.[a-zA-Z0-9]{1,16}", relative.suffix)
                 or ".." in relative.parts
@@ -873,7 +888,8 @@ class FolderProject(Series):
         tracked = self.extensions | {Path(item["path"]).suffix.lower() for item in self.state["items"]}
         for directory in [self.root, *(self.root / group for group in groups)]:
             for path in directory.iterdir():
-                if path.is_file() and not path.is_symlink() and path.suffix.lower() in tracked:
+                if (not path.name.startswith(".") and path.is_file() and not path.is_symlink()
+                        and path.suffix.lower() in tracked):
                     name = str(path)
                     stat = path.stat()
                     stamps[name] = [stat.st_size, stat.st_mtime_ns]

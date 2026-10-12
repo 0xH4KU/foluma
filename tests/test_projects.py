@@ -55,6 +55,104 @@ class FolderProjectTests(unittest.TestCase):
         self.project = Path(state['directory'])
         return self.call('series.add', paths=[str(self.sources)])
 
+    def test_folder_discovery_ignores_hidden_files_in_sources_and_project_groups(self):
+        hidden = ['._Vol.1.pdf', '.hidden.PDF', '.DS_Store']
+        for name in hidden:
+            (self.sources / name).write_bytes(b'not a book')
+        preview = self.call('series.preview', paths=[str(self.sources)])
+        self.assertEqual([book['filename'] for book in preview['books']], ['Vol.1.pdf', 'Vol.2.pdf', 'Vol.10.pdf'])
+        legacy = self.call('series.scan', paths=[str(self.sources)])
+        self.assertEqual(len(legacy['items']), 3)
+        state = self.call('series.create', parent=str(self.root), name='魔法少女小圓 完全版', paths=[str(self.sources)])
+        self.project = Path(state['directory'])
+        self.assertEqual(len(state['items']), 3)
+        self.assertTrue(all(not (self.project / name).exists() for name in hidden))
+        repeated = self.call('series.add', paths=[str(self.sources)])
+        self.assertEqual(repeated['summary'], {'added': 0, 'skipped': 3, 'folders_skipped': 0})
+        self.call('series.group', name='番外')
+        for directory in [self.project, self.project / '番外']:
+            for name in hidden:
+                (directory / name).write_bytes(b'not a book')
+        shutil.copyfile(self.sources / 'Vol.1.pdf', self.project / '番外/Extra.PDF')
+        refreshed = self.call('series.refresh')
+        self.assertEqual(refreshed['summary'], {'added': 1, 'renamed': 0, 'missing': 0, 'changed': 0})
+        for _ in range(2):
+            reopened = self.call('project.open', path=str(self.project))
+            self.assertEqual(len(reopened['items']), 4)
+            self.assertEqual([item['id'] for item in reopened['items']], [item['id'] for item in refreshed['items']])
+        self.assertTrue(all((self.project / name).read_bytes() == b'not a book' for name in hidden))
+        with self.assertRaises(ValueError):
+            self.call('series.add', paths=[str(self.sources / '._Vol.1.pdf')])
+
+    def test_restart_repairs_saved_sidecars_and_preserves_edited_books(self):
+        (self.sources / 'Vol.10.pdf').unlink()
+        state = self.create()
+        first = state['items'][0]
+        book = self.task('series.open', entry_id=first['id'])
+        book = self.call('document.apply', document_id=book['id'], base_revision=book['revision'], changes={
+            'metadata': {'title': '魔法少女小圓 完全版 [上]', 'author': 'Saved author'},
+            'pages': [*book['pages'], {'id': new_id(), 'kind': 'blank', 'width': 40, 'height': 60}],
+            'extension': {'id': 'test.sidecar', 'data': {'keep': True}},
+        })
+        self.call('series.review', id=first['id'], reviewed=True)
+        self.task('export', document_id=book['id'], base_revision=book['revision'], path=str(self.root / 'saved.epub'))
+        self.call('series.group', name='番外')
+        self.call('series.reorder', ids=[item['id'] for item in reversed(state['items'])])
+        self.call('series.refresh')
+        manifest_path = self.project / '.foluma/project.json'
+        manifest = json.loads(manifest_path.read_text())
+        saved_project = Path(book['project_path']) / 'project.json'
+        saved_bytes = saved_project.read_bytes()
+        ghosts = []
+        for relative in ['._Vol.1.pdf', '番外/._Vol.2.PDF']:
+            path = self.project / relative
+            path.write_bytes(b'AppleDouble sidecar')
+            ghosts.append(self.engine.series.new_item(path, digest(path)) | {'path': relative})
+        for current in [first['id'], ghosts[0]['id']]:
+            with self.subTest(current=current):
+                self.engine.close()
+                manifest_path.write_text(json.dumps(manifest | {'items': manifest['items'] + ghosts, 'current_id': current}))
+                self.engine = Engine(self.root / 'data')
+                self.addCleanup(self.engine.close)
+                self.assertIsNone(self.engine.series_error)
+                reopened = self.call('series.get')
+                self.assertEqual([item['id'] for item in reopened['items']], [item['id'] for item in manifest['items']])
+                repaired = json.loads(manifest_path.read_text())
+                self.assertEqual(repaired['items'], manifest['items'])
+                self.assertEqual(repaired['current_id'], first['id'] if current == first['id'] else None)
+                restored = self.call('document.get')
+                if current == first['id']:
+                    for key in ['id', 'revision', 'metadata', 'pages', 'extensions']:
+                        self.assertEqual(restored[key], book[key])
+                else:
+                    self.assertIsNone(restored)
+                self.assertEqual(saved_project.read_bytes(), saved_bytes)
+                self.assertTrue(all((self.project / ghost['path']).read_bytes() == b'AppleDouble sidecar' for ghost in ghosts))
+
+    def test_sidecar_recovery_still_rejects_unsafe_and_edited_hidden_sources(self):
+        self.create()
+        manifest_path = self.project / '.foluma/project.json'
+        original = manifest_path.read_bytes()
+        manifest = json.loads(original)
+        unsafe = ['../._outside.pdf', '/._outside.pdf', '._book\\file.pdf', '.hidden.pdf',
+                  '.hidden/._book.pdf', 'a/b/._book.pdf']
+        (self.project / '._linked.pdf').symlink_to(self.sources / 'Vol.1.pdf')
+        for path in [*unsafe, '._linked.pdf']:
+            with self.subTest(path=path):
+                invalid = copy.deepcopy(manifest)
+                invalid['items'][0]['path'] = path
+                manifest_path.write_text(json.dumps(invalid))
+                before = manifest_path.read_bytes()
+                with self.assertRaises(ValueError):
+                    self.call('project.open', path=str(self.project))
+                self.assertEqual(manifest_path.read_bytes(), before)
+        invalid = copy.deepcopy(manifest)
+        invalid['items'][0].update(path='._edited.pdf', document_id=new_id(), revision=1)
+        manifest_path.write_text(json.dumps(invalid))
+        with self.assertRaisesRegex(ValueError, 'Invalid project source path'):
+            self.call('project.open', path=str(self.project))
+        manifest_path.write_bytes(original)
+
     def test_filesystem_without_hard_links_supports_import_move_recovery_and_export(self):
         with patch('foluma.storage.os.link', side_effect=OSError(errno.ENOTSUP, 'unsupported')):
             state = self.create()

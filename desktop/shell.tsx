@@ -365,13 +365,27 @@ export function ImportProgress({ jobs, cancel }: { jobs: Task[]; cancel: (id: st
   const running = active.filter(job => job.state === "running");
   const queued = active.filter(job => job.state === "queued");
   if (!active.length) return null;
-  return <section className="import-progress" aria-label={t("Import and parsing progress")}>
-    <header className="import-progress-heading">
-      <strong>{t("Import and parsing progress")}</strong>
-      <span role="status">{t("{0} running · {1} queued", running.length, queued.length)}</span>
-    </header>
+  const primary = running[0] || queued[0];
+  const single = active.length === 1;
+  const known = single && primary.state === "running" && primary.progress.total > 0 &&
+    (primary.progress.total > 1 || primary.progress.done > 0);
+  const done = Math.max(0, Math.min(primary.progress.done, primary.progress.total));
+  return <details className="import-progress" aria-label={t("Import and parsing progress")}
+    onKeyDown={(event) => {
+      if (event.key === "Escape") { event.preventDefault(); event.currentTarget.open = false; event.currentTarget.querySelector("summary")?.focus(); }
+    }}>
+    <summary className="import-progress-heading" title={t("Background tasks")}>
+      <strong>{single ? primary.title || t("Import book") : t("Import and parsing progress")}</strong>
+      <span className="import-progress-state" role="status" id="import-progress-state">
+        {single ? t(primary.state === "queued" ? "Queued" : primary.progress.message || "Preparing")
+          : t("{0} running · {1} queued", running.length, queued.length)}
+      </span>
+      <progress aria-label={t("Import and parsing progress")} aria-describedby="import-progress-state"
+        value={known ? done : undefined} max={known ? primary.progress.total : 1} />
+      {known && <span className="import-progress-count">{done} / {primary.progress.total} · {Math.round(done / primary.progress.total * 100)}%</span>}
+    </summary>
     <div className="import-progress-jobs">
-      {(running.length ? running : queued.slice(0, 1)).map(job => {
+      {[...running, ...queued].map(job => {
         const title = job.title || t("Import book");
         const known = job.state === "running" && job.progress.total > 0 &&
           (job.progress.total > 1 || job.progress.done > 0);
@@ -384,11 +398,14 @@ export function ImportProgress({ jobs, cancel }: { jobs: Task[]; cancel: (id: st
           <progress aria-label={t("Progress for {0}", title)} aria-describedby={`task-stage-${job.id}`}
             value={known ? done : undefined} max={job.progress.total || 1} />
           {known && <span className="import-progress-count">{done} / {job.progress.total} · {Math.round(done / job.progress.total * 100)}%</span>}
-          <button aria-label={t("Cancel {0}", title)} onClick={() => cancel(job.id)}>{t("Cancel")}</button>
+          <button aria-label={t("Cancel {0}", title)} onClick={(event) => {
+            cancel(job.id);
+            event.currentTarget.closest("details")?.querySelector("summary")?.focus();
+          }}>{t("Cancel")}</button>
         </article>;
       })}
     </div>
-  </section>;
+  </details>;
 }
 
 export function StatusBar({

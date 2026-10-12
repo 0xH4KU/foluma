@@ -683,11 +683,24 @@ main {
   height: 8px;
   accent-color: var(--accent);
 }
-.import-progress { border-bottom: 1px solid #b4c4d5; background: #e8eff6; }
-.import-progress-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 12px 0; font-size: 12px; }
-.import-progress-heading > span { color: var(--muted); font-size: 11px; }
-.import-progress-jobs { max-height: 144px; overflow: auto; }
-.import-progress .job { gap: 12px; border-bottom: 0; }
+.import-progress { position: relative; border-bottom: 1px solid #b4c4d5; background: #e8eff6; }
+.import-progress-heading { display: flex; align-items: center; gap: 12px; padding: 8px 12px; font-size: 12px; cursor: pointer; }
+.import-progress-heading::-webkit-details-marker { display: none; }
+.import-progress-heading::after { content: "▾"; color: var(--muted); }
+.import-progress[open] > .import-progress-heading::after { transform: rotate(180deg); }
+.import-progress-heading:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.import-progress-heading:hover, .import-progress[open] > .import-progress-heading { background: #dce7f2; }
+.import-progress-heading > strong, .import-progress-state { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.import-progress-heading > strong { flex: 0 1 280px; }
+.import-progress-state { color: var(--muted); font-size: 11px; }
+.import-progress-heading progress { flex: 1; min-width: 80px; max-width: 320px; height: 8px; margin-left: auto; accent-color: var(--accent); }
+.import-progress-jobs {
+  position: absolute; top: calc(100% + 4px); right: 12px; width: min(760px, calc(100vw - 24px));
+  max-height: min(360px, calc(100vh - 160px)); overflow: auto; padding: 6px;
+  background: var(--surface); border: 1px solid var(--line); box-shadow: 0 4px 16px #0002; z-index: 30;
+}
+.import-progress .job { background: transparent; gap: 12px; border-bottom: 1px solid var(--line); }
+.import-progress .job:last-child { border-bottom: 0; }
 .import-progress .job > div { flex: 0 1 280px; min-width: 0; }
 .import-progress .job strong, .import-progress .job > div > span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .import-progress .job strong { font-size: 12px; font-weight: 600; }
