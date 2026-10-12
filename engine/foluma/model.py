@@ -199,11 +199,15 @@ class Session:
                 if asset and asset["kind"] == "file":
                     asset["path"] = path
 
-    def apply(self, document_id: str, base_revision: int, changes: dict) -> None:
+    def apply(self, document_id: str, base_revision: int, changes: dict, *, assets: dict | None = None) -> None:
         self.check(document_id, base_revision)
         if not isinstance(changes, dict) or set(changes) - {"pages", "metadata", "extension"}:
             raise ValueError(t("Unsupported document changes"))
         candidate = copy.deepcopy(self.book)
+        if assets is not None:
+            if not isinstance(assets, dict) or set(assets) & set(candidate["assets"]):
+                raise ValueError(t("Plugin images must use new asset IDs"))
+            candidate["assets"].update(copy.deepcopy(assets))
         if "pages" in changes:
             candidate["pages"] = copy.deepcopy(changes["pages"])
         if "metadata" in changes:

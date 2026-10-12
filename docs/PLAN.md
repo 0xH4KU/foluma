@@ -68,3 +68,12 @@ This prototype extends the existing page-editor plugin; it adds no image analysi
 UI direction: traditional desktop tooling inspired by calibre, with labeled icon commands, a dense page table, sidebar navigation, book/page properties and a fixed status bar. The editor supports both list and thumbnail views without changing the document model or core/plugin boundary.
 
 GitHub repository remains private. Do not publish releases or change repository visibility implicitly. Development artifacts and a release-ready catalog are created locally.
+
+## Optional advanced page editor, 2026-10-10
+
+- [x] Add a separately installable `org.foluma.page-layout` UI and native worker package; keep the basic editor independent.
+- [x] Use manually adjustable per-page frame anchors, ±5° scan correction, isotropic scale, position, common image canvas and inner/outer margins. Keep frame anchors separate from clipping; require confirmation when ink may leave the canvas.
+- [x] Save a comfortable reference page and apply its reading scale/margins to a selection while retaining each scan's own frame and angle. Preview current spreads and identify manually marked pairs for seam inspection.
+- [x] Retain source page descriptors and image assets; render ordinary PNGs so previews and all existing exporters agree. Support source restoration, history, portable project reopening and plugin removal.
+- [x] Extend generic native tool results with revision-safe read-only inspection and atomic new-image edits; do not add scan processing to the core or format plugins.
+- Deferred: automatic frame/angle suggestions, perspective/unwarping, and lightweight export. Geometry presets stay inside the advanced editor's reference workflow; basic-editor presets embed finished adjusted pages.

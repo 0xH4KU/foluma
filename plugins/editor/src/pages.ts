@@ -1,5 +1,7 @@
 import { t } from "../../../sdk/i18n.ts";
 import type { Book, Changes, Metadata, Page } from "../../../sdk/types.ts";
+import { pageSize, spreadGroups } from "../../../sdk/pages.ts";
+export { pageSize, readingPages, spreadGroups, spreadPages } from "../../../sdk/pages.ts";
 
 export function parseRange(text: string, pages: Page[]): string[] {
   const chosen = new Set<number>();
@@ -14,11 +16,6 @@ export function parseRange(text: string, pages: Page[]): string[] {
     for (let i = first; i <= last; i++) chosen.add(i - 1);
   }
   return [...chosen].sort((a, b) => a - b).map((i) => pages[i].id);
-}
-
-export function pageSize(page: Page): [number, number] {
-  const width = page.width * (page.crop?.[2] || 1), height = page.height * (page.crop?.[3] || 1);
-  return (page.rotation || 0) % 180 ? [height, width] : [width, height];
 }
 
 export function rotatePages(book: Book, ids: Set<string>): Changes {
@@ -95,30 +92,6 @@ export function restorePages(book: Book, ids: Set<string>): Changes {
     } else pages.push(a);
   }
   return { pages, metadata: { cover_id: cover } };
-}
-
-export function readingPages(book: Book): Page[] {
-  return book.pages.filter(
-    (p) => !book.metadata.cover_only || p.id !== book.metadata.cover_id,
-  );
-}
-
-export function spreadGroups(book: Book, gap: boolean): (Page | null)[][] {
-  const reading = readingPages(book);
-  const display: (Page | null)[] = gap && reading.length ? [null, ...reading] : reading;
-  const groups: (Page | null)[][] = [];
-  const cover = book.pages.find((p) => p.id === book.metadata.cover_id);
-  if (book.metadata.cover_only && cover) groups.push([cover]);
-  for (let i = 0; i < display.length; i += 2) {
-    const pair = [display[i] || null, display[i + 1] || null];
-    groups.push(book.metadata.direction === "rtl" ? pair.reverse() : pair);
-  }
-  return groups;
-}
-
-export function spreadPages(book: Book, selectedId: string | null, gap: boolean): (Page | null)[] {
-  const groups = spreadGroups(book, gap);
-  return groups.find((pair) => pair.some((page) => page?.id === selectedId)) || groups[0] || [];
 }
 
 export function navigatePage(

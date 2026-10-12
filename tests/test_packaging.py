@@ -22,9 +22,14 @@ class PackagingTests(unittest.TestCase):
             (root / "src-tauri/tauri.conf.json").write_text('{"version":"1.0.0"}')
             content = root / "plugins/sample"
             content.mkdir(parents=True)
+            ui_content = root / "build/sample"
+            ui_content.mkdir(parents=True)
+            (ui_content / "tool.js").write_text("export function mount() {}\n")
+            (ui_content / "tool.css").write_text(":host {display: block}\n")
             (content / "manifest.json").write_text(json.dumps({
                 "id": "test.format", "name": "Test format", "version": "1.0.0", "api_version": 1,
                 "format": {"direction": "import", "name": "Test", "extensions": ["test"]},
+                "ui": {"entry": "tool.js", "style": "tool.css", "title": "Test tool"},
             }))
 
             def freeze(command, **_options):
@@ -45,6 +50,8 @@ class PackagingTests(unittest.TestCase):
             unpack(root / "build/sample.mte-plugin", installed)
             manifest = manifest_at(installed)
             self.assertFalse(any(path.is_symlink() for path in installed.rglob("*")))
+            self.assertEqual((installed / "tool.js").read_text(), "export function mount() {}\n")
+            self.assertTrue((installed / "tool.css").is_file())
             self.assertEqual((installed / "workers/_internal/current/data.txt").read_text(), "runtime ready")
             worker = installed / manifest["workers"][platform_id()]
             self.assertTrue(worker.stat().st_mode & 0o111)
