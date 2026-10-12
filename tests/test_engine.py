@@ -550,6 +550,15 @@ class IntegrationTests(unittest.TestCase):
         final = self.wait_job(engine, job["id"])
         self.assertEqual(final["state"], "completed", final)
         self.assertEqual(engine.session.book["metadata"]["title"], "Worker title")
+        before = copy.deepcopy(engine.session.book)
+        for result in (None, [], {"result": {}}):
+            with self.subTest(result=result), patch.object(engine, "run_worker", return_value=result):
+                job = engine.call("task.start", {"operation": "plugin", "plugin_id": "test.worker",
+                                                 "document_id": before["id"], "base_revision": before["revision"]})
+                final = self.wait_job(engine, job["id"])
+                self.assertEqual(final["state"], "failed", final)
+                self.assertEqual(final["error"]["message"], "Invalid plugin result")
+                self.assertEqual(engine.session.book, before)
         with ZipFile(self.root / "bad.zip", "w") as archive:
             archive.writestr("../escape", "bad")
         with self.assertRaises(ValueError):

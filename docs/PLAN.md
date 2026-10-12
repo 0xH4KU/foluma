@@ -35,7 +35,7 @@ Accepted direction: a new independent repository, macOS first, portable architec
 - [x] Apply only selected reading-direction and cover/body settings to selected books, with explicit scope confirmation.
 - [x] Export selected books using their own saved edits without a preset; isolate failures, retry remaining items and preserve existing outputs.
 
-Series scanning currently includes PDFs immediately inside the selected folder. Each volume uses the existing `.mteproj` format and export queue. Preset copying remains an advanced editor tool for documents with known matching structures.
+Series scanning currently includes PDFs immediately inside the selected folder. Each volume uses the existing `.mteproj` format and export queue. Preset copying remains an optional page-editor tool for documents with known matching structures.
 
 ## Manual spread marks and blank suggestions, 2026-10-06
 
@@ -69,11 +69,6 @@ UI direction: traditional desktop tooling inspired by calibre, with labeled icon
 
 GitHub repository remains private. Do not publish releases or change repository visibility implicitly. Development artifacts and a release-ready catalog are created locally.
 
-## Optional advanced page editor, 2026-10-10
+## Remove the scan-layout editor, 2026-10-12
 
-- [x] Add a separately installable `org.foluma.page-layout` UI and native worker package; keep the basic editor independent.
-- [x] Use manually adjustable per-page frame anchors, ±5° scan correction, isotropic scale, position, common image canvas and inner/outer margins. Keep frame anchors separate from clipping; require confirmation when ink may leave the canvas.
-- [x] Save a comfortable reference page and apply its reading scale/margins to a selection while retaining each scan's own frame and angle. Preview current spreads and identify manually marked pairs for seam inspection.
-- [x] Retain source page descriptors and image assets; render ordinary PNGs so previews and all existing exporters agree. Support source restoration, history, portable project reopening and plugin removal.
-- [x] Extend generic native tool results with revision-safe read-only inspection and atomic new-image edits; do not add scan processing to the core or format plugins.
-- Deferred: automatic frame/angle suggestions, perspective/unwarping, and lightweight export. Geometry presets stay inside the advanced editor's reference workflow; basic-editor presets embed finished adjusted pages.
+Removed the optional scan-layout workspace and its unused host APIs, packaging support and translations because its manual workflow provided too little practical value. Skew detection is deferred until real problem pages justify it. Existing projects retain their generated images and opaque extension data.

@@ -104,21 +104,7 @@ Windows and Linux use Ctrl in place of ⌘ for the document shortcuts.
 
 ## Image handling and performance
 
-### Optional advanced page editor
-
-Install **Advanced page editor** from **Plugins → Included packages**, then restart and open **Adjust pages** in the workspace sidebar. It is independent of the basic page editor; use it with the accompanying updated Foluma build. Update the Traditional Chinese language pack to **0.4.16** for its translations.
-
-Choose a normal body page, drag the blue rectangle around its overall comic frame area, and adjust **Straighten**, **Frame height**, **Inner margin**, and position while inspecting the two-page preview. The blue frame determines scale and alignment, not the content crop: artwork, balloons and text outside it remain included until they reach the output canvas edge. Percentage fields provide keyboard access to the frame bounds. **Page canvas** sets the generated image dimensions; the initial canvas follows the first image page, capped at 6000 pixels on its longest edge.
-
-**Apply and use as reference** saves that page's rendered adjustment and makes its scale and margins the starting point for other pages. Select pages, or **Select this spread**, then **Apply to … pages** to share the current page's scale and margins while preserving each target's own frame bounds and angle. Unmarked pages initially use their complete source image as the frame; mark each scan's frame individually when its white borders differ. Covers, full-bleed illustrations and deliberate unusual layouts can retain individual settings. No automatic frame detection, perspective correction or page unwarping is performed.
-
-The preview follows the current reading order, cover exclusion and an initial virtual blank, matching EPUB spread positioning. Spare horizontal space goes toward the outer edge. Marked spread pairs show a seam-inspection reminder; select both halves before applying their common scale. Changing page order or reading direction can change the outer edge: reapply the adjustments to update their placement.
-
-Before applying, the plugin checks whether visible ink extends beyond the output canvas and asks for explicit clipping confirmation. Its conservative rectangular ink bounds can also flag empty corners on rotated pages. Inspect the actual preview before accepting. Frame, angle and canvas changes remain drafts until applied; undo/redo or an external document edit discards those drafts.
-
-Applied pages are ordinary PNG assets, so the basic editor, saved projects and EPUB/PDF/CBZ exporters use the same results even if this plugin is later disabled or removed. The plugin retains original page descriptors and image assets; repeated adjustments start from those originals rather than recompressing a previous result. **Restore source images** restores selected pages at their current positions and also removes subsequent crop/rotation edits on them, after confirmation. Source restoration and adjustment batches each support normal undo/redo. If another editor changes an adjusted page's crop, rotation or split, undo that edit or restore its source before re-adjusting it. Newly split halves are separate pages.
-
-Generated PNGs store the selected canvas resolution and white padding. Resizing and small-angle correction resample pixels; source images stay in the editable project for recalculation. Basic-editor presets treat generated pages as embedded images; use this workspace's reference and per-page anchors to adjust other books instead of copying those finished images.
+The former scan-layout plugin is no longer included. Previously adjusted projects keep their rendered images and can still be edited and exported with the page editor. Saved source images and plugin data are preserved, but the removed plugin's adjustment and source-restoration controls are no longer available.
 
 **Preferences → Background processing** controls project preparsing and concurrent export. Both are enabled by default, with two tasks each; concurrency is configurable from 1 to 8. Turning concurrent export off processes one book at a time. Opening a project or adding books starts preparsing unread books and saves the results in their existing book projects. Later opens reuse these saved pages and images. Opening a book already being preparsed joins the same task and gives queued work priority. Complex PDF pages render automatically as PNG using Auto resolution during preparsing; supported images are still extracted directly. A failure in one book does not stop the rest.
 

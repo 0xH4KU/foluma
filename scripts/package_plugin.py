@@ -26,10 +26,9 @@ for manifest_path in sorted((root / "plugins").glob("*/manifest.json")):
     if arguments.formats_only and not manifest.get("format"):
         continue
     folder = manifest_path.parent.name
-    content = manifest_path.parent
-    ui_content = build / folder if manifest.get("ui") else None
+    content = root / "build/editor" if folder == "editor" else manifest_path.parent
     worker = None
-    if manifest.get("format") or manifest.get("workers"):
+    if manifest.get("format"):
         worker_name = f"{folder}-worker" + (".exe" if sys.platform == "win32" else "")
         worker = build / "plugin-workers" / worker_name
         worker.parent.mkdir(exist_ok=True)
@@ -61,16 +60,11 @@ for manifest_path in sorted((root / "plugins").glob("*/manifest.json")):
                     for filename in sorted(files):
                         source = Path(directory) / filename
                         archive.write(source, f"workers/{source.relative_to(worker.parent).as_posix()}")
-        if ui_content:
-            for source in sorted(ui_content.rglob("*")):
-                if source.is_file():
-                    archive.write(source, source.relative_to(ui_content).as_posix())
-        if not worker and not ui_content or worker and arguments.development:
+        if not worker or arguments.development:
             if folder in ("cbz-import", "zip-import", "epub-import"):
                 archive.write(root / "plugins/image_archive.py", "image_archive.py")
             for source in sorted(content.rglob("*")):
-                if (source.is_file() and source != manifest_path and "__pycache__" not in source.parts
-                        and (not ui_content or source.suffix == ".py")):
+                if source.is_file() and source != manifest_path and "__pycache__" not in source.parts:
                     archive.write(source, source.relative_to(content).as_posix())
     if arguments.development:
         print(f"Development package: {output}")

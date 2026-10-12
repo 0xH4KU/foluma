@@ -39,6 +39,7 @@ destination = build / "engine"
 if destination.exists():
     shutil.rmtree(destination)
 shutil.copytree(build / "pyinstaller" / "foluma-engine", destination, symlinks=True)
-for package in build.glob("*.mte-plugin"):
+for manifest in sorted((root / "plugins").glob("*/manifest.json")):
+    package = build / f"{manifest.parent.name}.mte-plugin"
     shutil.copyfile(package, destination / package.name)
 print(f"Bundled engine: {destination}")

@@ -34,7 +34,7 @@ Python checks exercise the engine and formats; TypeScript checks cover document 
 npm run tauri build
 ```
 
-The build packages both independent page editors, language pack and self-contained native workers, freezes the Python engine, and builds the frontend. Outputs include:
+The build packages the page editor, language pack and self-contained native workers, freezes the Python engine, and builds the frontend. Outputs include:
 
 - `src-tauri/target/release/bundle/macos/Foluma.app`
 - A disk image under `src-tauri/target/release/bundle/dmg/`
@@ -78,7 +78,7 @@ Commit the SVG and the three desktop icons together. Additional generated platfo
 ## Plugins and sample books
 
 - `npm run package:plugins:dev` builds development plugin packages under `build/`.
-- `npm run build:plugins` builds both page-editor workspaces; `npm run build:page-layout` builds only the optional advanced editor.
+- `npm run build:editor` builds the page-editor workspace.
 - `npm run package:editor` builds release plugin packages and the catalog under `artifacts/`.
 - `.venv/bin/python scripts/make_demo.py` generates an eight-page reference PDF under `artifacts/`, without external sample files.
 - Set `FOLUMA_DATA` to an isolated directory when launching an app for manual checks, so it uses a separate profile.

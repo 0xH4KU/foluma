@@ -290,7 +290,6 @@ class Engine:
                 return {
                     "version": __version__,
                     "platform": platform_id(),
-                    "plugin_worker_api": 2,
                     "plugins": self.plugins.list(),
                     "document": self.session.snapshot() if self.session else None,
                     "locale": self.plugins.locale(),
@@ -844,9 +843,7 @@ class Engine:
                         if operation == "images.import"
                         else {
                             "plugin_id": p["plugin_id"],
-                            "operation": "plugin",
                             "input": p.get("input"),
-                            "asset_directory": str(self.data / "assets"),
                             "book": book,
                         }
                     )
@@ -916,28 +913,13 @@ class Engine:
                         session.apply(p["document_id"], p["base_revision"], {"pages": candidate["pages"]})
                     else:
                         session = self.document(p, True)
-                        if not isinstance(result, dict):
+                        if not isinstance(result, dict) or "changes" not in result:
                             raise ValueError(t("Invalid plugin result"))
-                        if "changes" in result:
-                            assets = result.get("assets", {})
-                            if not isinstance(assets, dict) or set(assets) & set(session.book["assets"]):
-                                raise ValueError(t("Plugin images must use new asset IDs"))
-                            candidate = copy.deepcopy(session.book)
-                            candidate["assets"].update(assets)
-                            validate(candidate)
-                            adopted = {}
-                            for identifier, asset in assets.items():
-                                if asset["kind"] != "file":
-                                    raise ValueError(t("Plugin images must be ordinary image files"))
-                                adopted[identifier] = asset | {"path": str(copy_asset(
-                                    Path(asset["path"]).resolve(strict=True), self.data / "assets", asset["ext"]))}
-                            session.apply(p["document_id"], p["base_revision"], result["changes"], assets=adopted)
-                        elif "result" not in result or result.get("assets"):
-                            raise ValueError(t("Invalid plugin result"))
+                        session.apply(p["document_id"], p["base_revision"], result["changes"])
                     if job.get("preparse") and not job["_retain"]:
                         result = None
                     else:
-                        result = result["result"] if operation == "plugin" and "changes" not in result else self.changed(session)
+                        result = self.changed(session)
             with self.lock:
                 job.update(state="completed", result=result)
         except Exception as exc:

@@ -12,6 +12,26 @@ from foluma.plugins import manifest_at, platform_id, unpack
 
 
 class PackagingTests(unittest.TestCase):
+    def test_engine_bundle_excludes_packages_without_a_source_manifest(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            script = root / "scripts/build_engine.py"
+            script.parent.mkdir()
+            shutil.copyfile(Path(__file__).resolve().parents[1] / "scripts/build_engine.py", script)
+            content = root / "plugins/editor"
+            content.mkdir(parents=True)
+            (content / "manifest.json").write_text("{}")
+            build = root / "build"
+            runtime = build / "pyinstaller/foluma-engine"
+            runtime.mkdir(parents=True)
+            (runtime / "foluma-engine").write_text("engine")
+            (build / "editor.mte-plugin").write_bytes(b"current package")
+            (build / "retired.mte-plugin").write_bytes(b"stale package")
+            with patch("subprocess.run"):
+                runpy.run_path(str(script), run_name="__main__")
+            self.assertEqual((build / "engine/editor.mte-plugin").read_bytes(), b"current package")
+            self.assertFalse((build / "engine/retired.mte-plugin").exists())
+
     def test_native_package_keeps_runtime_paths_and_flattens_framework_symlinks(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -22,14 +42,9 @@ class PackagingTests(unittest.TestCase):
             (root / "src-tauri/tauri.conf.json").write_text('{"version":"1.0.0"}')
             content = root / "plugins/sample"
             content.mkdir(parents=True)
-            ui_content = root / "build/sample"
-            ui_content.mkdir(parents=True)
-            (ui_content / "tool.js").write_text("export function mount() {}\n")
-            (ui_content / "tool.css").write_text(":host {display: block}\n")
             (content / "manifest.json").write_text(json.dumps({
                 "id": "test.format", "name": "Test format", "version": "1.0.0", "api_version": 1,
                 "format": {"direction": "import", "name": "Test", "extensions": ["test"]},
-                "ui": {"entry": "tool.js", "style": "tool.css", "title": "Test tool"},
             }))
 
             def freeze(command, **_options):
@@ -50,8 +65,6 @@ class PackagingTests(unittest.TestCase):
             unpack(root / "build/sample.mte-plugin", installed)
             manifest = manifest_at(installed)
             self.assertFalse(any(path.is_symlink() for path in installed.rglob("*")))
-            self.assertEqual((installed / "tool.js").read_text(), "export function mount() {}\n")
-            self.assertTrue((installed / "tool.css").is_file())
             self.assertEqual((installed / "workers/_internal/current/data.txt").read_text(), "runtime ready")
             worker = installed / manifest["workers"][platform_id()]
             self.assertTrue(worker.stat().st_mode & 0o111)
