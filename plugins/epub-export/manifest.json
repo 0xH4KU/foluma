@@ -1,7 +1,7 @@
 {
   "id": "org.foluma.export.epub",
   "name": "EPUB export",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "api_version": 1,
   "description": "Export validated fixed-layout EPUB books with covers, crops and reading direction.",
   "platforms": [
@@ -12,24 +12,6 @@
     "name": "EPUB",
     "extensions": [
       "epub"
-    ],
-    "variants": [
-      {
-        "id": "general",
-        "name": "General (default)",
-        "description": "Centered pages for single-page and two-page reading.",
-        "options": {
-          "layout": "general"
-        }
-      },
-      {
-        "id": "spread",
-        "name": "Two-page optimized",
-        "description": "Pages align to the spine for two-page reading. In single-page view, images sit to one side.",
-        "options": {
-          "layout": "spread"
-        }
-      }
     ]
   },
   "workers": {}

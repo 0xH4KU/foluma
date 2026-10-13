@@ -26,7 +26,10 @@ for manifest_path in sorted((root / "plugins").glob("*/manifest.json")):
     if arguments.formats_only and not manifest.get("format"):
         continue
     folder = manifest_path.parent.name
-    content = root / "build/editor" if folder == "editor" else manifest_path.parent
+    content = root / "build" / folder if manifest.get("ui") else manifest_path.parent
+    if manifest.get("ui") and any(not (content / manifest["ui"][key]).is_file()
+                                  for key in ("entry", "style") if manifest["ui"].get(key)):
+        raise ValueError(f"Build the {folder} workspace before packaging")
     worker = None
     if manifest.get("format"):
         worker_name = f"{folder}-worker" + (".exe" if sys.platform == "win32" else "")

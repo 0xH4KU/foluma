@@ -469,9 +469,9 @@ class FormatPluginTests(unittest.TestCase):
                 self.restart()
                 book = self.engine.call("project.open", {"path": str(project)})
             self.assertEqual(self.engine.call("epub.canvas.get", {}), size)
-            for layout in ("general", "spread"):
+            for legacy_options in ({}, {"layout": "spread"}):
                 result = self.task("export", document_id=book["id"], base_revision=book["revision"],
-                                   directory=str(self.root), options={"layout": layout})
+                                   directory=str(self.root), options=legacy_options)
                 with ZipFile(result["path"]) as archive:
                     for number in (1, 2):
                         root = ET.fromstring(archive.read(f"EPUB/pages/{number:06d}.xhtml"))
@@ -502,70 +502,86 @@ class FormatPluginTests(unittest.TestCase):
         self.assertIn("EPUB page dimensions", failure["error"]["message"])
         self.assertFalse(invalid_path.exists())
 
-    def test_epub_export_editions_preserve_content_and_pair_actual_reading_pages(self):
+    def test_epub_marked_spreads_and_page_colors_preserve_crops_and_original_images(self):
         self.engine.plugins.install_bundled("org.foluma.import.epub")
         self.restart()
         imported = self.task("import", path=str(self.pdf))
         pages = [copy.deepcopy(imported["pages"][0]) for _ in range(5)]
-        for page in pages:
-            page["id"] = new_id()
+        for candidate in pages:
+            candidate["id"] = new_id()
         pages[1]["crop"] = [0.25, 0, 0.5, 1]
         pages[2]["crop"] = [0, 0.25, 1, 0.5]
         pages.insert(2, {"id": new_id(), "kind": "blank", "width": 80, "height": 120})
         book = self.engine.call("document.apply", {"document_id": imported["id"], "base_revision": imported["revision"],
             "changes": {"pages": pages, "metadata": {"cover_id": pages[0]["id"]}}})
-        ns = {"o": "http://www.idpf.org/2007/opf", "h": "http://www.w3.org/1999/xhtml",
-              "s": "http://www.w3.org/2000/svg", "dc": "http://purl.org/dc/elements/1.1/"}
+        original = Path(book["assets"][pages[0]["asset_id"]]["path"]).read_bytes()
+        ns = {"o": "http://www.idpf.org/2007/opf", "h": "http://www.w3.org/1999/xhtml", "s": "http://www.w3.org/2000/svg"}
         for direction in ("rtl", "ltr"):
             for cover_only in (False, True):
                 with self.subTest(direction=direction, cover_only=cover_only):
                     book = self.engine.call("document.apply", {"document_id": book["id"], "base_revision": book["revision"],
                         "changes": {"metadata": {"direction": direction, "cover_only": cover_only}}})
-                    outputs = [self.root / f"{direction}-{cover_only}-{layout}.epub" for layout in ("general", "spread")]
-                    for layout, path in zip(("general", "spread"), outputs):
-                        self.task("export", document_id=book["id"], base_revision=book["revision"], path=str(path),
-                                  options={} if layout == "general" else {"layout": layout})
-                    with ZipFile(outputs[0]) as general, ZipFile(outputs[1]) as spread:
-                        css = general.read("EPUB/styles/page.css").decode()
-                        self.assertEqual(spread.read("EPUB/styles/page.css").decode(), css)
-                        self.assertIn("color-scheme: light dark;", css)
-                        self.assertIn("background: #fff;", css.split("@media")[0])
-                        self.assertIn("@media (prefers-color-scheme: dark)", css)
-                        self.assertIn("background: #000;", css.split("@media")[1])
-                        original = ET.fromstring(general.read("EPUB/content.opf"))
-                        package = ET.fromstring(spread.read("EPUB/content.opf"))
-                        self.assertNotEqual(original.find("o:metadata/dc:identifier", ns).text,
-                                            package.find("o:metadata/dc:identifier", ns).text)
-                        self.assertEqual(package.find("o:metadata/o:meta[@property='rendition:spread']", ns).text, "auto")
-                        reading = pages[1:] if cover_only else pages
+                    reading = pages[1:] if cover_only else pages
+                    marked = [candidate["id"] for candidate in reading[3:5]]
+                    book = self.engine.call("document.apply", {"document_id": book["id"], "base_revision": book["revision"],
+                        "changes": {"extension": {"id": "org.foluma.editor", "data": {"spreads": [marked]}}}})
+                    colors = {marked[0]: "black", marked[1]: "white", reading[0]["id"]: "black"}
+                    book = self.engine.call("document.apply", {"document_id": book["id"], "base_revision": book["revision"],
+                        "changes": {"extension": {"id": "org.foluma.page-tools", "data": {"colors": colors}}}})
+                    path = self.root / f"{direction}-{cover_only}.epub"
+                    self.task("export", document_id=book["id"], base_revision=book["revision"], path=str(path))
+                    with ZipFile(path) as archive:
+                        css = archive.read("EPUB/styles/page.css").decode()
+                        self.assertIn("width: 96vw;", css)
+                        self.assertNotIn("prefers-color-scheme", css)
+                        package = ET.fromstring(archive.read("EPUB/content.opf"))
                         refs = list(package.find("o:spine", ns))
-                        self.assertEqual([ref.get("idref") for ref in refs], [f"page-{page['id']}" for page in reading])
-                        self.assertTrue(all(not ref.get("properties") for ref in original.find("o:spine", ns)))
-                        for position, (page, ref) in enumerate(zip(reading, refs)):
-                            left = (position % 2 == 0) == (direction == "rtl")
-                            side = "left" if left else "right"
+                        marked_styles = []
+                        self.assertEqual([ref.get("idref") for ref in refs], [f"page-{candidate['id']}" for candidate in reading])
+                        for position, (candidate, ref) in enumerate(zip(reading, refs)):
+                            side = "left" if (position % 2 == 0) == (direction == "rtl") else "right"
                             self.assertEqual(ref.get("properties"), f"rendition:page-spread-{side}")
-                            member = f"EPUB/pages/{pages.index(page) + 1:06d}.xhtml"
-                            a, b = ET.fromstring(general.read(member)), ET.fromstring(spread.read(member))
-                            self.assertEqual(a.find(".//h:meta[@name='viewport']", ns).attrib,
-                                             b.find(".//h:meta[@name='viewport']", ns).attrib)
-                            sa, sb = a.find(".//s:svg", ns), b.find(".//s:svg", ns)
-                            if page["kind"] == "image":
-                                self.assertEqual(sb.get("preserveAspectRatio"), "xMaxYMid meet" if left else "xMinYMid meet")
-                                sb.set("preserveAspectRatio", "xMidYMid meet")
-                            self.assertEqual(ET.tostring(sa), ET.tostring(sb), "Only horizontal alignment may change")
-                        for name in general.namelist():
-                            if name.startswith("EPUB/images/"):
-                                self.assertEqual(general.read(name), spread.read(name))
-                    restored = self.task("import", path=str(outputs[1]), background=True)
-                    self.assertEqual([page.get("crop") for page in restored["pages"]], [page.get("crop") for page in reading])
+                            root = ET.fromstring(archive.read(f"EPUB/pages/{pages.index(candidate) + 1:06d}.xhtml"))
+                            svg = root.find(".//s:svg", ns)
+                            if candidate["kind"] == "image":
+                                alignment = ("xMaxYMid" if side == "left" else "xMinYMid") if candidate["id"] in marked else "xMidYMid"
+                                self.assertEqual(svg.get("preserveAspectRatio"), alignment + " meet")
+                                if candidate["id"] in marked:
+                                    marked_styles.append(svg.get("style"))
+                                self.assertEqual(root.get("style"), "background: " + ("#000" if colors.get(candidate["id"]) == "black" else "#fff"))
+                                left, top, right, bottom = crop_box(candidate)
+                                self.assertEqual(svg.get("viewBox"), f"0 0 {right-left} {bottom-top}")
+                        self.assertEqual(archive.read(f"EPUB/images/{pages[0]['asset_id']}.jpg"), original)
+                        self.assertEqual(marked_styles[0], marked_styles[1])
+                        if not cover_only:
+                            self.assertIn("height:", marked_styles[0])
+                    restored = self.task("import", path=str(path), background=True)
+                    restored_reading = [candidate for candidate in restored["pages"]
+                                        if not restored["metadata"]["cover_only"] or candidate["id"] != restored["metadata"]["cover_id"]]
+                    self.assertEqual([candidate.get("crop") for candidate in restored_reading], [candidate.get("crop") for candidate in reading])
                     self.assertEqual(restored["metadata"]["direction"], direction)
+                    restored_colors = restored["extensions"]["org.foluma.page-tools"]["colors"]
+                    self.assertEqual(restored_colors[restored_reading[3]["id"]], "black")
+                    self.assertEqual(restored["extensions"]["org.foluma.editor"]["spreads"],
+                                     [[candidate["id"] for candidate in restored_reading[3:5]]])
                     self.engine.call("document.release", {"document_id": restored["id"]})
-        path = self.root / "invalid.epub"
-        failure = self.task("export", expected_state="failed", document_id=book["id"], base_revision=book["revision"],
-                            path=str(path), options={"layout": "unknown"})
-        self.assertIn("Unknown EPUB layout", failure["error"]["message"])
-        self.assertFalse(path.exists())
+
+    def test_epub_rejects_invalid_or_misaligned_spreads_without_publishing(self):
+        book = self.task("import", path=str(self.pdf))
+        pages = [copy.deepcopy(book["pages"][0]) for _ in range(4)]
+        for candidate in pages:
+            candidate["id"] = new_id()
+        book = self.engine.call("document.apply", {"document_id": book["id"], "base_revision": book["revision"],
+            "changes": {"pages": pages, "metadata": {"cover_id": pages[0]["id"]}}})
+        for marked, message in [([pages[0]["id"], pages[1]["id"]], "Add a blank"),
+                                ([pages[1]["id"], pages[3]["id"]], "invalid spread"),
+                                ([pages[1]["id"], "gone"], "invalid spread")]:
+            book = self.engine.call("document.apply", {"document_id": book["id"], "base_revision": book["revision"],
+                "changes": {"extension": {"id": "org.foluma.editor", "data": {"spreads": [marked]}}}})
+            path = self.root / "invalid.epub"
+            failure = self.task("export", expected_state="failed", document_id=book["id"], base_revision=book["revision"], path=str(path))
+            self.assertIn(message, failure["error"]["message"])
+            self.assertFalse(path.exists())
 
     def test_epub_import_reads_external_epub2_and_epub3_cover_only_and_encoded_paths(self):
         self.engine.plugins.install_bundled("org.foluma.import.epub")
@@ -750,9 +766,9 @@ class FormatPluginTests(unittest.TestCase):
             ({"META-INF/container.xml": None}, "resource is missing"),
             ({image_member: None}, "resource is missing"),
             ({"EPUB/content.opf": opf.replace('idref="page-', 'idref="missing-').encode()}, "Invalid EPUB spine"),
-            ({page_member: image_page.replace('<body>', '<body><p>Novel text</p>').encode()}, "Only simple image pages"),
+            ({page_member: image_page.replace('</body>', '<p>Novel text</p></body>').encode()}, "Only simple image pages"),
             ({page_member: image_page.replace('<svg ', '<svg transform="rotate(90)" ').encode()}, "Only simple image pages"),
-            ({page_member: image_page.replace('<html ', '<html style="transform: rotate(90deg)" ').encode()}, "Only simple image pages"),
+            ({page_member: image_page.replace('style="background: #fff"', 'style="transform: rotate(90deg)"', 1).encode()}, "Only simple image pages"),
             ({page_member: image_page.replace('</svg>', '<image href="../missing.jpg" width="80" height="120"/></svg>').encode()},
              "Only simple image pages"),
             ({page_member: image_page.replace('href="../images/', 'href="https://example.invalid/images/').encode()}, "inside the archive"),

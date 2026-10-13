@@ -18,20 +18,19 @@ Each launch checks included packages and the official catalog in the background 
 
 Updates appear on the plugin's row under **Installed**, with an orange **Update available** badge, current/new versions and an **Update** button. The Installed heading shows the update count for the selected category. **Included packages** and **Official catalog** list plugins that are not installed. Updating preserves a disabled plugin's state; code-plugin updates show **Restart needed** until the app restarts. When the catalog is offline, an available included update is used before a newer cached download.
 
-### EPUB export editions
+### EPUB layout and page finishing
 
-Single-book export, project batch export and the editor's preset batch dialog offer two editions:
+EPUB export uses one layout: ordinary pages are centered with a small margin on all four sides, while marked facing spreads align to the spine without extra padding. Source images and crop bounds are retained. Spread placement counts actual reading pages, including blanks and excluding a bookshelf-only cover; the first reading page is unpaired. Invalid or misaligned spread marks must be corrected before export using the editor's blank suggestions.
 
-- **General (default)** centers images and supports both single-page and two-page reading.
-- **Two-page optimized** aligns facing pages to the spine and moves horizontal padding to the outer edges. It preserves the common page size, source images and crops. Images remain off-center in single-page view; this is an alignment preference, not a forced two-page reading mode.
+Page padding is fixed to the page's confirmed black or white color, with white as the default. It follows the image rather than the reader's dark/light mode. Inserted blank pages remain white. Earlier saved EPUB edition choices are ignored; single-book and batch exports use the same layout.
 
-The selected output format and each format's edition are remembered across these workflows and app launches. Single-book export uses the toolbar's **Export settings** directly, without asking for the edition again. If a saved format or edition is unavailable, an enabled format and its default edition are used.
+**Preferences → EPUB page size** sets the canvas for single-book and batch exports. The default is **1750 × 2480**; dimensions accept integers from 1 to 10000. Each export captures this setting when submitted. Images fit proportionally without resampling or recompression, and blank pages use the same canvas.
 
-The EPUB retains the book title; the two editions have distinct publication identifiers so readers can keep both. Single-book export suggests an edition suffix for the optimized version; batch output retains book titles and the usual collision numbering. EPUB import can reopen both editions. Both reading directions, inserted blank pages and bookshelf-only covers are supported; spread positions follow the actual reading order, beginning with one unpaired page.
+The optional **Crop and margins** plugin appears under **Editing and tools**. Select a page in the left two-column thumbnail grid, arranged in the same facing-page order as the reading preview, to see its pair on the right, including the exported margins and marked-spread alignment. Choose **Crop…**, drag any of the four edges or enter percentages, then choose **Preview crop**. Original image files are retained; cropping follows the displayed orientation.
 
-EPUB export automatically uses white page padding in light mode and black padding when the reader reports dark mode, in both General and Two-page optimized editions. This changes only the page background: source images, crop bounds, alignment and fixed viewport dimensions remain unchanged. Inserted blank pages remain white. EPUB import accepts the corresponding `:root`, `color-scheme` and background media rules so these books can be edited again.
+**Detect all page colors** is a separate button. It scans every image page using cached small previews and shows progress with cancellation. It samples the visible edges, including draft crops. Mixed edges use white and show **Check color**; select those pages and choose **White** or **Black** while viewing the result. Detection and manual changes are preview edits until **Apply** saves them together. **Discard preview edits** leaves the book unchanged. Applied crops and colors support undo/redo and survive saving, reopening and disabling the plugin. An edit from another window makes an existing draft stale; discard it before preparing another draft.
 
-**Preferences → EPUB page size** sets the canvas used by both EPUB editions, including single-book and batch exports. The default is **1750 × 2480**; width and height can be saved as integers from 1 to 10000. Each export captures this setting when submitted. Images fit proportionally within the canvas without resampling or recompression, and blank pages use the same canvas. Update the EPUB export plugin to **0.1.3** to use this setting.
+EPUB import **0.1.5** can reopen these exports while retaining crops, confirmed colors and marked spreads. Older imported books without appearance data default to white.
 
 ### Optional formats
 

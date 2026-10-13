@@ -1,5 +1,13 @@
 # Foluma 0.1 validation
 
+## Crop and page margins (2026-10-12)
+
+The EPUB exporter now has one layout: ordinary pages have a 2% inset and marked pairs align to the spine at a shared display height. The optional Crop and margins workspace provides a thumbnail list, facing-page preview, reversible crop drafts, whole-book edge-color detection with progress/cancellation, and manual white/black choices before Apply. Confirmed appearance data remains in projects without the editing plugin.
+
+The full run passed 80 Python tests and 36 TypeScript checks. After the shared-height adjustment, all 16 format tests and all 36 TypeScript checks passed again, along with strict TypeScript, Ruff, application/plugin builds and whitespace checks. One existing cache-clear assertion failed in the initial broad run; its isolated rerun and the final full run passed without changes to cache code.
+
+Playwright exercised the built workspace in a shadow root through an isolated HTTP bridge to the real Python engine: detection progress, uncertain-color labels, manual preview changes, drag/numeric cropping, atomic Apply, undo/redo, cancellation without writes, stale-revision rejection and canvas preference refresh. Traditional Chinese at 1180 × 820 and English at 860 × 600 were visually inspected, including a marked pair with different crop proportions and matching rendered heights. Release packages for page tools 0.1.0, EPUB export 0.2.0, EPUB import 0.1.5 and Traditional Chinese 0.4.18 were built. Their frozen native workers exported and reimported a seven-page image book after removing the editing tool, preserving image bytes, crops, colors and spread marks. A fresh macOS Tauri QA bundle also loaded the real plugin resources and completed seven-page canvas-based color detection, confirming the native custom-protocol images can be sampled. Page tools 0.1.1 fixes the missing shadow-host/root height contract, uses two-column thumbnails in facing-page order, and puts margin controls on one line. Native visual QA confirms the complete spread and navigation fit inside the workspace; browser assertions check two columns, preview bounds and absence of root overflow. Apple Books and other readers have not been manually checked.
+
 Environment: macOS arm64, Python 3.14.4, PyMuPDF 1.28.2, Pillow 12.3.0, Node 25.8.2, Rust 1.98.1. The app uses a bundled interpreter; the end user does not need these development tools.
 
 ## Scan-layout editor removal, 2026-10-12

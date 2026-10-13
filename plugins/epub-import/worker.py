@@ -78,9 +78,10 @@ def xml(archive, member, html=False):
 
 def check_style(style, member):
     allowed = {
-        "width": {"100%", "100vw", "auto"}, "height": {"100%", "100vh", "auto"},
+        "width": {"100%", "100vw", "96vw", "auto"}, "height": {"100%", "100vh", "96vh", "auto"},
         "max-width": {"100%", "100vw", "none"}, "max-height": {"100%", "100vh", "none"},
         "display": {"block", "inline", "inline-block"}, "overflow": {"hidden", "visible"},
+        "position": {"absolute"}, "left": {"0", "2vw"}, "top": {"0", "2vh"},
         "background": {"#000", "#000000", "black", "#fff", "#ffffff", "white", "transparent"},
         "background-color": {"#000", "#000000", "black", "#fff", "#ffffff", "white", "transparent"},
         "object-fit": {"contain"}, "text-align": {"center", "left", "right"},
@@ -98,6 +99,11 @@ def check_style(style, member):
         property_name, value = declaration.split(":", 1)
         property_name = property_name.strip().lower()
         value = re.sub(r"\s*!important\s*$", "", value.strip().lower())
+        if property_name in ("height", "top") and re.fullmatch(r"\d+(?:\.\d+)?vh", value):
+            limit = 100 if property_name == "height" else 50
+            percentage = float(value[:-2])
+            if 0 <= percentage <= limit and (property_name == "top" or percentage > 0):
+                continue
         if property_name in ("max-width", "max-height") and re.fullmatch(r"\d+(?:\.\d+)?px", value):
             if number(value, member) > 0:
                 continue
@@ -172,7 +178,7 @@ def number(value, member):
     return result
 
 
-def page(archive, member, resources, load_image):
+def page(archive, member, resources, load_image, colors=None, spread_ids=None):
     media_type = resources.get(member, {}).get("media-type")
     if media_type in IMAGE_TYPES:
         return load_image(member)
@@ -247,6 +253,11 @@ def page(archive, member, resources, load_image):
             raise unsupported(member)
         result["crop"] = [(left - number(image.get("x", "0"), member)) / image_width,
                           (top - number(image.get("y", "0"), member)) / image_height, width / image_width, height / image_height]
+        background = re.search(r"(?:^|;)\s*background:\s*(#fff|#000)\s*(?:;|$)", root.get("style", ""))
+        if background and colors is not None:
+            colors[result["id"]] = "black" if background[1] == "#000" else "white"
+        if "spread" in body.get("class", "").split() and spread_ids is not None:
+            spread_ids.add(result["id"])
         return result
     if len(images) != 1 or rectangles:
         raise unsupported(member)
@@ -340,10 +351,17 @@ def handle(operation: str, params: dict, book: dict | None, progress):
                 extracted.unlink()
             return copy.deepcopy(cached[member]) | {"id": new_id()}
 
+        colors, spread_ids = {}, set()
         progress(0, len(members), t("Importing EPUB pages"))
         for number, member in enumerate(members, 1):
-            book["pages"].append(page(archive, member, resources, load_image) | {"source_page": number})
+            book["pages"].append(page(archive, member, resources, load_image, colors, spread_ids) | {"source_page": number})
             progress(number, len(members), t("Importing EPUB pages"))
+        if colors:
+            book["extensions"]["org.foluma.page-tools"] = {"colors": colors}
+        spreads = [[a["id"], b["id"]] for a, b in zip(book["pages"][1::2], book["pages"][2::2])
+                   if a["id"] in spread_ids and b["id"] in spread_ids]
+        if spreads:
+            book["extensions"]["org.foluma.editor"] = {"spreads": spreads}
         cover_document = next((reference(package_member, item.get("href", "")) for item in
                                package.findall(f"{OPF}guide/{OPF}reference") if item.get("type") == "cover"), None)
         for member, item in resources.items():

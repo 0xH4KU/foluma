@@ -31,7 +31,7 @@ Foluma helps you turn image-based books into a reading experience that fits. Org
 | Format | Import | Export |
 | --- | --- | --- |
 | PDF | Image extraction with optional rendering | Image-based PDF |
-| EPUB | Supported image-page layouts | Fixed-layout EPUB, with general and two-page optimized editions |
+| EPUB | Supported image-page layouts | Fixed-layout EPUB, centered pages and marked facing spreads |
 | CBZ | Images and ComicInfo metadata | Images and ComicInfo metadata |
 | ZIP | JPEG, PNG and WebP image archives | — |
 

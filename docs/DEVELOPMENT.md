@@ -79,6 +79,7 @@ Commit the SVG and the three desktop icons together. Additional generated platfo
 
 - `npm run package:plugins:dev` builds development plugin packages under `build/`.
 - `npm run build:editor` builds the page-editor workspace.
+- `npm run build:page-tools` builds the optional crop-and-margins workspace.
 - `npm run package:editor` builds release plugin packages and the catalog under `artifacts/`.
 - `.venv/bin/python scripts/make_demo.py` generates an eight-page reference PDF under `artifacts/`, without external sample files.
 - Set `FOLUMA_DATA` to an isolated directory when launching an app for manual checks, so it uses a separate profile.

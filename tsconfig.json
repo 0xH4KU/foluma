@@ -11,5 +11,5 @@
     "allowImportingTsExtensions": true,
     "esModuleInterop": true
   },
-  "include": ["desktop", "plugins/editor/src", "sdk", "tests/*.test.ts"]
+  "include": ["desktop", "plugins/editor/src", "plugins/page-tools/src", "sdk", "tests/*.test.ts"]
 }

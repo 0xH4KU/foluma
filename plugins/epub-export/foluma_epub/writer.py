@@ -35,6 +35,8 @@ class EpubPage:
     crop_width: int | None = None
     crop_y: int = 0
     crop_height: int | None = None
+    is_spread: bool = False
+    background: str = "white"
 
     def load_image_data(self) -> bytes:
         if self.image_data_loader is not None:
@@ -63,19 +65,18 @@ def write_epub_from_pages(
     exclude_cover_from_reading: bool = False,
     reading_direction: str = "rtl",
     cover_png: bytes | None = None,
-    layout: str = "general",
     viewport: tuple[int, int] = DEFAULT_VIEWPORT,
 ) -> dict[str, int]:
     if (not isinstance(viewport, (list, tuple)) or len(viewport) != 2
             or any(type(value) is not int or not 1 <= value <= 10000 for value in viewport)):
         raise ValueError("EPUB page dimensions must be whole numbers between 1 and 10000")
-    if layout not in ("general", "spread"):
-        raise ValueError("EPUB layout must be 'general' or 'spread'")
+    if any(page.background not in ("white", "black") for page in pages):
+        raise ValueError("Page background must be white or black")
     if reading_direction not in {"rtl", "ltr"}:
         raise ValueError("Reading direction must be 'rtl' or 'ltr'")
     if epub_path.exists() and not overwrite:
         raise ValueError(f"Refusing to overwrite existing file: {epub_path}")
-    identity = source_path.resolve().as_uri() + ("#spread" if layout == "spread" else "")
+    identity = source_path.resolve().as_uri()
     identifier = f"urn:uuid:{uuid.uuid5(uuid.NAMESPACE_URL, identity)}"
 
     cover_id = cover_item_id or _first_image_item_id(pages)
@@ -98,7 +99,6 @@ def write_epub_from_pages(
             reading_direction,
             viewport,
             cover_png,
-            layout,
         )
         validate_epub_structure(temp_path)
         _publish_epub(temp_path, epub_path, overwrite=overwrite)
@@ -128,11 +128,17 @@ def _write_epub_zip(
     reading_direction: str,
     viewport: tuple[int, int],
     cover_png: bytes | None = None,
-    layout: str = "general",
 ) -> None:
     # Count actual reading pages, including blanks, after removing a bookshelf-only cover.
     sides = ("left", "right") if reading_direction == "rtl" else ("right", "left")
-    page_sides = {page.item_id: sides[i % 2] for i, page in enumerate(reading_pages)} if layout == "spread" else {}
+    page_sides = {page.item_id: sides[i % 2] for i, page in enumerate(reading_pages)}
+    spread_ratios = {}
+    for index in range(1, len(reading_pages) - 1, 2):
+        pair = reading_pages[index:index + 2]
+        if all(page.is_spread for page in pair):
+            ratio = min(1, *(viewport[0] * (page.crop_height or page.height)
+                            / (viewport[1] * (page.crop_width or page.width)) for page in pair))
+            spread_ratios.update((page.item_id, ratio) for page in pair)
     cover_href = (
         "images/cover.png"
         if cover_png
@@ -169,7 +175,8 @@ def _write_epub_zip(
             if page.is_blank:
                 _write_deflated(archive, f"EPUB/{page.xhtml_href}", _blank_page_xhtml(title, page, language, viewport))
             else:
-                _write_deflated(archive, f"EPUB/{page.xhtml_href}", _page_xhtml(title, page, language, viewport, page_sides.get(page.item_id)))
+                _write_deflated(archive, f"EPUB/{page.xhtml_href}", _page_xhtml(title, page, language, viewport,
+                    page_sides[page.item_id] if page.is_spread else None, spread_ratios.get(page.item_id, 1)))
         for page in _unique_image_pages(pages):
             image_data = page.load_image_data()
             _write_stored(archive, f"EPUB/{page.image_href}", image_data)
@@ -407,7 +414,7 @@ def _nav_xhtml(
 
 def _page_css() -> str:
     return """:root {
-  color-scheme: light dark;
+  color-scheme: light;
 }
 
 html, body {
@@ -418,21 +425,26 @@ html, body {
   background: #fff;
 }
 
-@media (prefers-color-scheme: dark) {
-  html, body {
-    background: #000;
-  }
-}
-
 svg {
   display: block;
+  position: absolute;
+  left: 2vw;
+  top: 2vh;
+  width: 96vw;
+  height: 96vh;
+}
+
+.spread svg {
+  left: 0;
+  top: 0;
   width: 100vw;
   height: 100vh;
 }
 """
 
 
-def _page_xhtml(title: str, page: EpubPage, language: str, viewport: tuple[int, int], side: str | None = None) -> str:
+def _page_xhtml(title: str, page: EpubPage, language: str, viewport: tuple[int, int], side: str | None = None,
+                height_ratio: float = 1) -> str:
     page_title = html.escape(f"{title} - Page {page.index}", quote=True)
     language_xml = html.escape(language or "zh-Hant", quote=True)
     href = html.escape(f"../{page.image_href}", quote=True)
@@ -441,16 +453,18 @@ def _page_xhtml(title: str, page: EpubPage, language: str, viewport: tuple[int, 
     page_height = page.crop_height or page.height
     image_x = -page.crop_x
     alignment = {"left": "xMaxYMid", "right": "xMinYMid"}.get(side, "xMidYMid")
+    background = "#000" if page.background == "black" else "#fff"
+    scale_style = f' style="height: {height_ratio * 100:.10f}vh; top: {(1 - height_ratio) * 50:.10f}vh"' if height_ratio < 1 else ""
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="{language_xml}" xml:lang="{language_xml}">
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="{language_xml}" xml:lang="{language_xml}" style="background: {background}">
   <head>
     <title>{page_title}</title>
     <meta name="viewport" content="width={viewport_width}, height={viewport_height}"/>
     <link rel="stylesheet" type="text/css" href="../styles/page.css"/>
   </head>
-  <body>
-    <svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="{viewport_width}" height="{viewport_height}" viewBox="0 0 {page_width} {page_height}" preserveAspectRatio="{alignment} meet" overflow="hidden" role="img" aria-label="Page {page.index}">
+  <body class="{'spread' if side else 'page'}" style="background: {background}">
+    <svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="{viewport_width}" height="{viewport_height}" viewBox="0 0 {page_width} {page_height}" preserveAspectRatio="{alignment} meet" overflow="hidden" role="img" aria-label="Page {page.index}"{scale_style}>
       <image x="{image_x}" y="{-page.crop_y}" width="{page.width}" height="{page.height}" href="{href}"/>
     </svg>
   </body>

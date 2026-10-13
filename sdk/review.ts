@@ -12,3 +12,19 @@ export function reviewData(book: Book): ReviewData {
     ? data.review.filter((id): id is string => typeof id === "string" && pages.has(id)) : [];
   return { ...data, review: [...new Set(review)] };
 }
+
+export type SpreadMark = [string, string];
+
+export function spreadMarks(book: Book): SpreadMark[] {
+  const value = reviewData(book).spreads;
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  return value.filter((pair): pair is SpreadMark => {
+    if (!Array.isArray(pair) || pair.length !== 2 ||
+        !pair.every((id) => typeof id === "string" && id.length > 0) || pair[0] === pair[1]) return false;
+    const key = JSON.stringify([...pair].sort());
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}

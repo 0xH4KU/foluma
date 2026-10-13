@@ -1,23 +1,9 @@
 import { t } from "../../../sdk/i18n.ts";
-import { REVIEW_EXTENSION_ID, reviewData } from "../../../sdk/review.ts";
+import { REVIEW_EXTENSION_ID, reviewData, spreadMarks, type SpreadMark } from "../../../sdk/review.ts";
 import type { Book, Changes } from "../../../sdk/types.ts";
 import { readingPages } from "./pages.ts";
 
-export type SpreadMark = [string, string];
-
-export function spreadMarks(book: Book): SpreadMark[] {
-  const value = reviewData(book).spreads;
-  if (!Array.isArray(value)) return [];
-  const seen = new Set<string>();
-  return value.filter((pair): pair is SpreadMark => {
-    if (!Array.isArray(pair) || pair.length !== 2 ||
-        !pair.every((id) => typeof id === "string" && id.length > 0) || pair[0] === pair[1]) return false;
-    const key = JSON.stringify([...pair].sort());
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
+export { spreadMarks, type SpreadMark } from "../../../sdk/review.ts";
 
 export function setSpreadMarks(book: Book, spreads: SpreadMark[]): Changes {
   return { extension: { id: REVIEW_EXTENSION_ID, data: { ...reviewData(book), spreads } } };

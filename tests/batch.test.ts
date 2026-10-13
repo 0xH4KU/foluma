@@ -151,7 +151,7 @@ Image.new('RGB',(120,160),'red').save(root/'insert.png')
     );
     await runBatch(
       host,
-      { paths, directory, render: true, dpi: "auto", exportOptions: { layout: "spread" } },
+      { paths, directory, render: true, dpi: "auto" },
       new AbortController().signal,
       (index, row) => (rows[index] = row),
       prepare,

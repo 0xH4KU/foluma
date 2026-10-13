@@ -14,10 +14,8 @@ from PIL import Image
 from .writer import DEFAULT_VIEWPORT, EpubPage, media_type_for_ext, write_epub_from_pages
 
 
-def export_epub(book: dict, path: str, progress=lambda *_: None, *, layout: str = "general",
+def export_epub(book: dict, path: str, progress=lambda *_: None, *,
                 viewport: tuple[int, int] = DEFAULT_VIEWPORT) -> dict:
-    if layout not in ("general", "spread"):
-        raise ValueError(t("Unknown EPUB layout"))
     validate(book)
     if not book["metadata"]["cover_id"]:
         raise ValueError(t("The book needs at least one image for its cover"))
@@ -25,6 +23,33 @@ def export_epub(book: dict, path: str, progress=lambda *_: None, *, layout: str 
     check_sources(book, active)
     pages = []
     loaded = 0
+    meta = book["metadata"]
+    reading = [page for page in book["pages"] if not meta["cover_only"] or page["id"] != meta["cover_id"]]
+    positions = {page["id"]: index for index, page in enumerate(reading)}
+    review = book["extensions"].get("org.foluma.editor", {})
+    marks = review.get("spreads", []) if isinstance(review, dict) else []
+    joined = set()
+    seen = set()
+    for pair in marks if isinstance(marks, list) else []:
+        if (not isinstance(pair, list) or len(pair) != 2 or
+                not all(isinstance(identifier, str) and identifier for identifier in pair) or pair[0] == pair[1]):
+            continue
+        key = tuple(sorted(pair))
+        if key in seen:
+            continue
+        seen.add(key)
+        indexes = sorted(positions.get(identifier, -1) for identifier in pair)
+        start, end = indexes
+        if (start < 0 or end != start + 1 or any(identifier in joined for identifier in pair) or
+                any(reading[index]["kind"] != "image" for index in indexes)):
+            raise ValueError(t("Update or remove invalid spread marks before exporting."))
+        if start % 2 != 1:
+            raise ValueError(t("Add a blank page to align the marked spread before exporting."))
+        joined.update(pair)
+    appearance = book["extensions"].get("org.foluma.page-tools", {})
+    colors = appearance.get("colors", {}) if isinstance(appearance, dict) else {}
+    if not isinstance(colors, dict):
+        colors = {}
 
     def payload(asset_id):
         def load():
@@ -56,9 +81,10 @@ def export_epub(book: dict, path: str, progress=lambda *_: None, *, layout: str 
                 crop_y=top,
                 crop_width=right - left,
                 crop_height=bottom - top,
+                is_spread=page["id"] in joined,
+                background="black" if colors.get(page["id"]) == "black" else "white",
             )
         )
-    meta = book["metadata"]
     cover = next(p for p in book["pages"] if p["id"] == meta["cover_id"])
     cover_png = None
     if cover["crop"] != [0, 0, 1, 1]:
@@ -78,7 +104,6 @@ def export_epub(book: dict, path: str, progress=lambda *_: None, *, layout: str 
         exclude_cover_from_reading=meta["cover_only"],
         reading_direction=meta["direction"],
         cover_png=cover_png,
-        layout=layout,
         viewport=viewport,
     )
 
@@ -88,5 +113,4 @@ def handle(operation: str, params: dict, book: dict | None, progress):
     if operation != "export":
         raise ValueError(t("Unsupported background task"))
     options = params.get("options", {})
-    return export_epub(book, params["path"], progress, layout=options.get("layout", "general"),
-                       viewport=options.get("viewport", DEFAULT_VIEWPORT))
+    return export_epub(book, params["path"], progress, viewport=options.get("viewport", DEFAULT_VIEWPORT))

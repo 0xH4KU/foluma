@@ -12,6 +12,36 @@ from foluma.plugins import manifest_at, platform_id, unpack
 
 
 class PackagingTests(unittest.TestCase):
+    def test_optional_ui_package_uses_its_own_built_workspace(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            script = root / "scripts/package_plugin.py"
+            script.parent.mkdir()
+            shutil.copyfile(Path(__file__).resolve().parents[1] / "scripts/package_plugin.py", script)
+            (root / "src-tauri").mkdir()
+            (root / "src-tauri/tauri.conf.json").write_text('{"version":"1.0.0"}')
+            source = root / "plugins/tool"
+            source.mkdir(parents=True)
+            (source / "manifest.json").write_text(json.dumps({
+                "id": "test.tool", "name": "Test tool", "version": "1.0.0", "api_version": 1, "platforms": ["all"],
+                "ui": {"entry": "tool.js", "style": "tool.css", "title": "Test tool"},
+            }))
+            (source / "source-only.txt").write_text("not shipped")
+            content = root / "build/tool"
+            content.mkdir(parents=True)
+            (content / "tool.js").write_text("export function mount() {}")
+            (content / "tool.css").write_text(":host {color: black}")
+            with patch.object(sys, "argv", [str(script), "--development"]):
+                runpy.run_path(str(script), run_name="__main__")
+            installed = root / "installed"
+            unpack(root / "build/tool.mte-plugin", installed)
+            self.assertEqual(manifest_at(installed)["id"], "test.tool")
+            self.assertEqual((installed / "tool.js").read_text(), "export function mount() {}")
+            self.assertFalse((installed / "source-only.txt").exists())
+            (content / "tool.js").unlink()
+            with patch.object(sys, "argv", [str(script), "--development"]), self.assertRaisesRegex(ValueError, "Build the tool"):
+                runpy.run_path(str(script), run_name="__main__")
+
     def test_engine_bundle_excludes_packages_without_a_source_manifest(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
