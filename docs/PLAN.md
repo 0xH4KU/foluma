@@ -72,3 +72,13 @@ GitHub repository remains private. Do not publish releases or change repository 
 ## Remove the scan-layout editor, 2026-10-12
 
 Removed the optional scan-layout workspace and its unused host APIs, packaging support and translations because its manual workflow provided too little practical value. Skew detection is deferred until real problem pages justify it. Existing projects retain their generated images and opaque extension data.
+
+## Maintenance audit, 2026-10-14
+
+- [x] Preserve mounted workspaces during cache clearing; consult crop/margin draft guards before replacing or closing a book, and route plugin drops only while visible.
+- [x] Share page-data remapping across split, restore and presets; atomically update multiple extensions while retaining legacy single-extension edits. Carry appearance and spread marks in presets and retain source numbers for repeated EPUB images.
+- [x] Bound PDF image and palette decompression before allocation, retain supported lossless paths and delete unreachable predictor code and the unused import-settings branch.
+- [x] Download and stage official plugins outside the document lock; reject stale install commits and roll back failed config writes. Read bundled metadata without unpacking runtimes and reuse the package index.
+- [x] Share visible-range calculations between the editor and page tools; render only nearby crop-workspace thumbnails.
+- [x] Remove the dedicated local super-resolution benchmarks, models and Python environment from build/ into macOS Trash, retaining the original input PDF.
+- [x] Complete the regression suite, isolated browser checks, builds and Rust validation.

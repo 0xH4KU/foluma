@@ -42,10 +42,10 @@ class Engine:
             if getattr(sys, "frozen", False)
             else Path(__file__).resolve().parents[2] / "build" / "editor.mte-plugin"
         )
-        self.plugins = Plugins(data, safe, bundled_editor)
+        self.lock = threading.RLock()
+        self.plugins = Plugins(data, safe, bundled_editor, lock=self.lock)
         self.session: Session | None = None
         self.background_sessions: dict[str, Session] = {}
-        self.lock = threading.RLock()
         self.jobs: dict[str, dict] = {}
         self.pending: list[tuple[dict, dict, dict | None]] = []
         self.threads: set[threading.Thread] = set()
@@ -283,8 +283,7 @@ class Engine:
         if method == "plugins.catalog":
             return self.plugins.catalog()
         if method == "plugins.install_official":
-            with self.lock:
-                return self.plugins.install_official(p["id"])
+            return self.plugins.install_official(p["id"])
         with self.lock:
             if method == "app.info":
                 return {

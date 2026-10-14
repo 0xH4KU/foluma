@@ -201,7 +201,7 @@ class Session:
 
     def apply(self, document_id: str, base_revision: int, changes: dict) -> None:
         self.check(document_id, base_revision)
-        if not isinstance(changes, dict) or set(changes) - {"pages", "metadata", "extension"}:
+        if not isinstance(changes, dict) or set(changes) - {"pages", "metadata", "extension", "extensions"}:
             raise ValueError(t("Unsupported document changes"))
         candidate = copy.deepcopy(self.book)
         if "pages" in changes:
@@ -210,6 +210,13 @@ class Session:
             if not isinstance(changes["metadata"], dict):
                 raise ValueError(t("Invalid book metadata"))
             candidate["metadata"].update(changes["metadata"])
+        extensions = changes.get("extensions", {})
+        if not isinstance(extensions, dict):
+            raise ValueError(t("Invalid page or plugin data"))
+        for identifier, data in extensions.items():
+            if not isinstance(identifier, str) or not re.fullmatch(r"[a-z0-9][a-z0-9.-]{1,79}", identifier):
+                raise ValueError(t("Invalid plugin ID"))
+            candidate["extensions"][identifier] = copy.deepcopy(data)
         if "extension" in changes:
             item = changes["extension"]
             if not isinstance(item, dict) or not re.fullmatch(r"[a-z0-9][a-z0-9.-]{1,79}", item.get("id", "")):

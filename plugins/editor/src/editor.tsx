@@ -182,23 +182,6 @@ function Editor({ host, book }: { host: HostAPI; book: Book | null }) {
   const marks = spreadMarks(book);
   const spreadIds = new Set(marks.flat());
   const update = (changes: Changes) => {
-    if (changes.pages && flags.size && !changes.extension) {
-      const marked = book.pages.filter((page) => flags.has(page.id));
-      const review = changes.pages
-        .filter((page) =>
-          marked.some(
-            (old) =>
-              old.id === page.id ||
-              page.split?.original.id === old.id ||
-              old.split?.original.id === page.id,
-          ),
-        )
-        .map((page) => page.id);
-      changes = {
-        ...changes,
-        extension: { id: REVIEW_EXTENSION_ID, data: { ...editorData, review } },
-      };
-    }
     return run(() => host.apply(book, changes));
   };
   const markSpread = (selection = ids) => {

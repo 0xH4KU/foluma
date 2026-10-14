@@ -124,7 +124,7 @@ export function useDocumentActions(
       } catch {
         failed = true;
       }
-      if (!failed && !host.getDocument()?.dirty) return true;
+      if (!failed && !host.getDocument()?.dirty) return await host.prepareDocumentReplace?.() ?? true;
       const choice = await new Promise<UnsavedChoice>((resolve) =>
         setUnsaved({
           title,
@@ -137,9 +137,10 @@ export function useDocumentActions(
       if (choice === "discard") {
         inputDraft.current.values = {};
         setMetadataDraft({});
-        return true;
+      } else if (choice !== "save" || !(await saveBook())) {
+        return false;
       }
-      return choice === "save" && (await saveBook());
+      return await host.prepareDocumentReplace?.() ?? true;
     },
     [host, commitInformation, saveBook],
   );

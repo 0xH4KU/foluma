@@ -2,33 +2,25 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "reac
 import { createRoot } from "react-dom/client";
 import { createActionRunner } from "../../../sdk/actions.ts";
 import { getLocale, setLocale, subscribeLocale, t } from "../../../sdk/i18n.ts";
-import { usePagePreview } from "../../../sdk/previews.ts";
-import { PAGE_TOOLS_ID, cropBox, cropFromMargins, imagePlacement, joinedSpread, pageColors, pageSize, pagesWithoutMargins, spreadGroups,
+import { usePagePreview, visibleRange } from "../../../sdk/previews.ts";
+import { PAGE_TOOLS_ID, appearanceData, cropBox, cropFromMargins, imagePlacement, joinedSpread, pageColors, pageSize, pagesWithoutMargins, spreadGroups,
   type CropMargins, type PageColor } from "../../../sdk/page-layout.ts";
 import type { Book, HostAPI, Page } from "../../../sdk/types.ts";
 import { CropControls, CropTool, useCropChannel, type CropState } from "./crop-controls.tsx";
 import { detectColor } from "./detect-color.ts";
 import "./page-tools.css";
 
-function Thumbnail({ book, page, host, selected, color, uncertain, select }: {
-  book: Book; page: Page; host: HostAPI; selected: boolean; color: PageColor; uncertain: boolean; select: () => void;
+function Thumbnail({ book, page, host, position, selected, color, uncertain, select }: {
+  book: Book; page: Page; host: HostAPI; position: number; selected: boolean; color: PageColor; uncertain: boolean; select: () => void;
 }) {
-  const button = useRef<HTMLButtonElement>(null);
-  const [visible, setVisible] = useState(false);
-  useEffect(() => {
-    const observer = new IntersectionObserver(([entry]) => setVisible(entry.isIntersecting));
-    if (button.current) observer.observe(button.current);
-    return () => observer.disconnect();
-  }, []);
-  useEffect(() => { if (selected) button.current?.scrollIntoView({ block: "nearest" }); }, [selected]);
-  const { url, error } = usePagePreview(book, visible ? page : undefined, host, 320);
-  return <button ref={button} className={`thumbnail ${selected ? "selected" : ""}`} aria-pressed={selected}
+  const { url, error } = usePagePreview(book, page, host, 320);
+  return <button className={`thumbnail ${selected ? "selected" : ""}`} aria-pressed={selected}
     title={uncertain ? t("Check this page's margin color") : undefined} onClick={select}>
     <span className="thumbnail-image" style={{ background: color }}>
       {page.kind === "blank" ? <span className="blank-image" /> : url ? <img src={url} alt="" draggable={false} />
         : <span title={error}>{error ? t("Preview unavailable") : "…"}</span>}
     </span>
-    <span>{t("Page {0}", book.pages.indexOf(page) + 1)}
+    <span>{t("Page {0}", position)}
       <i className={`color-dot ${color}`} aria-label={t(color === "black" ? "Black margins" : "White margins")} />
       {uncertain && <small>{t("Check color")}</small>}</span>
   </button>;
@@ -72,10 +64,15 @@ function PageTools({ book, host }: { book: Book; host: HostAPI }) {
   const [viewport, setViewport] = useState<[number, number]>([1750, 2480]);
   const [stageSize, setStageSize] = useState({ width: 800, height: 600 });
   const stage = useRef<HTMLDivElement>(null);
+  const thumbnails = useRef<HTMLDivElement>(null);
+  const [thumbnailViewport, setThumbnailViewport] = useState({ top: 0, height: 600 });
   const scanner = useRef<AbortController | null>(null);
   const execute = useMemo(() => createActionRunner(host, setBusy), [host]);
   const current = book.pages.find(page => page.id === focus) || book.pages[0];
-  const groups = spreadGroups(book, true);
+  const groups = useMemo(() => spreadGroups(book, true), [book.pages, book.metadata.direction, book.metadata.cover_id, book.metadata.cover_only]);
+  const cells = useMemo(() => groups.flatMap(pair => pair.length === 1 ? [pair[0], null] : pair), [groups]);
+  const positions = useMemo(() => new Map(book.pages.map((page, index) => [page.id, index + 1])), [book.pages]);
+  const { first, last } = visibleRange(cells.length, thumbnailViewport.top, thumbnailViewport.height, 176, 2);
   const groupIndex = Math.max(0, groups.findIndex(group => group.some(page => page?.id === current?.id)));
   const group = groups[groupIndex] || [];
   const joined = joinedSpread(book, group);
@@ -89,9 +86,11 @@ function PageTools({ book, host }: { book: Book; host: HostAPI }) {
   const stale = baseRevision !== null && baseRevision !== book.revision;
   const editable = !busy && !stale && current?.kind === "image";
   const savedColors = pageColors(book);
-  const savedNoMargins = pagesWithoutMargins(book);
+  const savedAppearance = appearanceData(book);
+  const savedNoMargins = new Set(pagesWithoutMargins(book));
+  const pageIds = new Set(book.pages.map(page => page.id));
   const colorFor = (page: Page) => page.kind === "blank" ? "white" : colors[page.id] || savedColors[page.id] || "white";
-  const noMarginsFor = (page: Page) => noMargins[page.id] ?? savedNoMargins.includes(page.id);
+  const noMarginsFor = (page: Page) => noMargins[page.id] ?? savedNoMargins.has(page.id);
   const beginDraft = () => setBaseRevision(old => old ?? book.revision);
   const clear = () => { setCrops({}); setColors({}); setNoMargins({}); setUncertain([]); setBaseRevision(null); setStatus(""); };
   const changeCrop = (margins: CropMargins) => {
@@ -106,8 +105,40 @@ function PageTools({ book, host }: { book: Book; host: HostAPI }) {
     title: current ? t("Page {0}", book.pages.indexOf(current) + 1) : t("No pages"),
     margins: current && crops[current.id] || [0, 0, 0, 0], disabled: !editable,
   };
-  const latestCrop = useRef({ state: cropState, change: changeCrop });
-  latestCrop.current = { state: cropState, change: changeCrop };
+  const latestCrop = useRef({ state: cropState, change: changeCrop, dirty, clear });
+  latestCrop.current = { state: cropState, change: changeCrop, dirty, clear };
+  const scrollThumbnail = (id: string | null | undefined) => {
+    const node = thumbnails.current;
+    if (!node?.clientHeight) return;
+    const index = cells.findIndex(page => page?.id === id);
+    if (index < 0) return;
+    const top = Math.floor(index / 2) * 176;
+    if (top < node.scrollTop) node.scrollTop = top;
+    else if (top + 176 > node.scrollTop + node.clientHeight) node.scrollTop = top + 176 - node.clientHeight;
+  };
+  useEffect(() => { scrollThumbnail(current?.id); }, [current?.id, cells]);
+  useEffect(() => {
+    const node = thumbnails.current;
+    if (!node) return;
+    let visible = false;
+    const observer = new ResizeObserver(() => {
+      if (!node.clientHeight) { visible = false; return; }
+      if (!visible) scrollThumbnail(latestCrop.current.state.pageId);
+      visible = true;
+      setThumbnailViewport({ top: node.scrollTop, height: node.clientHeight });
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [cells]);
+  useEffect(() => host.onBeforeDocumentReplace?.(async () => {
+    if (!latestCrop.current.dirty) return true;
+    if (!(await host.confirm(
+      t("Discard the crop and margin preview edits before continuing? Apply them in Crop and margins to keep them."),
+      t("Discard preview edits"), t("Discard preview edits"),
+    ))) return false;
+    latestCrop.current.clear();
+    return true;
+  }), [host]);
   useEffect(() => {
     if (!channel) return;
     channel.onmessage = ({ data }) => {
@@ -177,13 +208,13 @@ function PageTools({ book, host }: { book: Book; host: HostAPI }) {
     } finally { controller.abort(); scanner.current = null; setProgress(null); }
   });
   const apply = () => void execute(async () => {
-    const data = book.extensions[PAGE_TOOLS_ID];
     await host.apply({ ...book, revision: baseRevision ?? book.revision }, {
       ...(Object.keys(crops).length ? { pages: book.pages.map(page => crops[page.id]
         ? { ...page, crop: cropFromMargins(page, crops[page.id]) } : page) } : {}),
       extension: { id: PAGE_TOOLS_ID, data: {
-        ...(data && typeof data === "object" && !Array.isArray(data) ? data : {}), colors: { ...savedColors, ...colors },
-        no_margins: book.pages.filter(page => page.kind === "image" && noMarginsFor(page)).map(page => page.id),
+        ...savedAppearance, colors: { ...savedAppearance.colors, ...colors },
+        no_margins: [...savedAppearance.no_margins.filter(id => !pageIds.has(id)),
+          ...book.pages.filter(page => page.kind === "image" && noMarginsFor(page)).map(page => page.id)],
       } },
     });
     clear(); setStatus(t("Crop and margin changes applied."));
@@ -214,10 +245,16 @@ function PageTools({ book, host }: { book: Book; host: HostAPI }) {
     {stale && <p className="draft-warning" role="alert">{t("The book changed. Discard these preview edits and try again.")}</p>}
     <div className="workspace">
       <aside className="page-list" aria-label={t("Pages")}><div className="panel-title">{t("Pages")} · {book.pages.length}</div>
-        <div className="thumbnails">{groups.flatMap(pair => pair.length === 1 ? [pair[0], null] : pair).map((page, slot) => page ?
-          <Thumbnail key={page.id} book={book} page={page} host={host} selected={current?.id === page.id}
+        <div className="thumbnails" ref={thumbnails} onScroll={event => {
+          const top = event.currentTarget.scrollTop;
+          setThumbnailViewport(old => ({ ...old, top }));
+        }}><div className="thumbnail-height" style={{ height: Math.ceil(cells.length / 2) * 176 }}>
+          <div className="thumbnail-grid" style={{ top: Math.floor(first / 2) * 176 }}>
+          {cells.slice(first, last).map((page, offset) => page ?
+          <Thumbnail key={page.id} book={book} page={page} host={host} position={positions.get(page.id)!} selected={current?.id === page.id}
             color={colorFor(page)} uncertain={uncertain.includes(page.id)} select={() => { if (!busy) setFocus(page.id); }} />
-          : <div className="thumbnail-gap" key={`gap-${slot}`}>{t("Preview only")}</div>)}</div>
+          : <div className="thumbnail-gap" key={`gap-${first + offset}`}>{t("Preview only")}</div>)}
+          </div></div></div>
       </aside>
       <section className="preview-panel" aria-label={t("Spread preview with margins")}>
         <div className="page-controls"><strong>{current ? t("Page {0}", book.pages.indexOf(current) + 1) : t("No pages")}</strong>

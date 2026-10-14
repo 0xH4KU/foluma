@@ -930,5 +930,7 @@
   "Right": "右側",
   "Bottom": "下方",
   "Reset": "重設",
-  "Apply": "套用"
+  "Apply": "套用",
+  "Discard the crop and margin preview edits before continuing? Apply them in Crop and margins to keep them.": "要放棄裁切與邊距的預覽修改再繼續嗎？若要保留，請先在「裁切與邊距」套用修改。",
+  "Plugin settings changed during download. Please retry.": "下載期間外掛設定已變更，請重試。"
 }

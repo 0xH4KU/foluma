@@ -143,10 +143,17 @@ export async function task<T>(params: Record<string, unknown>, signal?: AbortSig
 }
 const preview = createPreviewLoader((current, page, size) =>
   rpc<string>("document.preview", {document_id: current.id, page_id: page.id, size}).then(resourceUrl));
+export function createWorkspaceHost(host: HostAPI, visible: () => boolean): HostAPI {
+  return { ...host, onFileDrop: listener => host.onFileDrop?.(paths => {
+    if (visible()) listener(paths);
+  }) || (() => {}) };
+}
+
 export function createHost(report: HostAPI["report"], notify: HostAPI["notify"]): HostAPI {
   let contextMenu: Menu | undefined;
   let contextItems: MenuItem[] = [];
   let activities = 0;
+  const replacementGuards = new Set<() => Promise<boolean>>();
   return {
     version: 1, getDocument: () => book,
     getWindowId: () => getCurrentWindow().label,
@@ -179,6 +186,14 @@ export function createHost(report: HostAPI["report"], notify: HostAPI["notify"])
       dropListeners.add(listener);
       if (pendingDrop) {const paths = pendingDrop; pendingDrop = null; queueMicrotask(() => listener(paths));}
       return () => {dropListeners.delete(listener);};
+    },
+    onBeforeDocumentReplace: listener => {
+      replacementGuards.add(listener);
+      return () => {replacementGuards.delete(listener);};
+    },
+    prepareDocumentReplace: async () => {
+      for (const guard of replacementGuards) if (!(await guard())) return false;
+      return true;
     },
     setBusy: value => {activities = Math.max(0,activities+(value ? 1 : -1)); activityListeners.forEach(fn => fn(activities > 0));},
     cancelTask: async id => {

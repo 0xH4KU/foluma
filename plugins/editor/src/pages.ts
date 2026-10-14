@@ -1,6 +1,7 @@
 import { t } from "../../../sdk/i18n.ts";
 import type { Book, Changes, Metadata, Page } from "../../../sdk/types.ts";
-import { pageSize, spreadGroups } from "../../../sdk/page-layout.ts";
+import { PAGE_TOOLS_ID, appearanceData, pageSize, remapPageData, spreadGroups, type PageColor } from "../../../sdk/page-layout.ts";
+import { REVIEW_EXTENSION_ID, reviewData, spreadMarks, type SpreadMark } from "../../../sdk/review.ts";
 export { pageSize, readingPages, spreadGroups } from "../../../sdk/page-layout.ts";
 
 export function parseRange(text: string, pages: Page[]): string[] {
@@ -32,6 +33,7 @@ export function splitPages(book: Book, ids: Set<string>, ratio = 0.5): Changes {
   if (!Number.isFinite(ratio) || ratio < 0.05 || ratio > 0.95)
     throw new Error(t("Split position must be between 5% and 95%"));
   let cover = book.metadata.cover_id;
+  const origins = new Map<string, string[]>();
   const pages = book.pages.flatMap((page) => {
     if (!ids.has(page.id) || page.kind === "blank" || page.split) return [page];
     const [x, y, w, h] = page.crop!;
@@ -61,10 +63,11 @@ export function splitPages(book: Book, ids: Set<string>, ratio = 0.5): Changes {
       split: { group, original: page, side: "right" },
     };
     const pair = book.metadata.direction === "rtl" ? [right, left] : [left, right];
+    for (const child of pair) origins.set(child.id, [page.id]);
     if (cover === page.id) cover = pair[0].id;
     return pair;
   });
-  return { pages, metadata: { cover_id: cover } };
+  return { pages, metadata: { cover_id: cover }, extensions: remapPageData(book, pages, origins) };
 }
 
 export function isPair(a: Page | undefined, b: Page | undefined): boolean {
@@ -81,6 +84,7 @@ export function isPair(a: Page | undefined, b: Page | undefined): boolean {
 export function restorePages(book: Book, ids: Set<string>): Changes {
   const pages: Page[] = [];
   let cover = book.metadata.cover_id;
+  const origins = new Map<string, string[]>();
   for (let i = 0; i < book.pages.length; i++) {
     const a = book.pages[i],
       b = book.pages[i + 1];
@@ -88,10 +92,11 @@ export function restorePages(book: Book, ids: Set<string>): Changes {
       const original = structuredClone(a.split!.original);
       if (cover === a.id || cover === b.id) cover = original.id;
       pages.push(original);
+      origins.set(original.id, [a.id, b.id]);
       i++;
     } else pages.push(a);
   }
-  return { pages, metadata: { cover_id: cover } };
+  return { pages, metadata: { cover_id: cover }, extensions: remapPageData(book, pages, origins) };
 }
 
 export function spreadPages(book: Book, selectedId: string | null, gap: boolean): (Page | null)[] {
@@ -142,11 +147,15 @@ type PresetPage =
       asset_id?: string;
       crop: [number, number, number, number];
       rotation?: Page["rotation"];
+      color?: PageColor;
+      no_margins?: boolean;
       split?: {
         group: string;
         side: "left" | "right";
         original_crop: [number, number, number, number];
         original_rotation?: Page["rotation"];
+        original_color?: PageColor;
+        original_no_margins?: boolean;
       };
     };
 export type Preset = {
@@ -155,13 +164,15 @@ export type Preset = {
   pages: PresetPage[];
   cover_index: number;
   metadata: Pick<Metadata, "direction" | "cover_only">;
+  spreads?: [number, number][];
 };
 
 export function createPreset(book: Book): { payload: Preset; asset_ids: string[] } {
   const assets = new Set<string>();
+  const appearance = appearanceData(book), colors = appearance.colors, noMargins = new Set(appearance.no_margins);
   const pages = book.pages.map((page): PresetPage => {
     if (page.kind === "blank") return { kind: "blank", width: page.width, height: page.height };
-    const sourcePage = book.assets[page.asset_id!].source_page;
+    const sourcePage = book.assets[page.asset_id!].source_page ? page.source_page || book.assets[page.asset_id!].source_page : undefined;
     if (!sourcePage) assets.add(page.asset_id!);
     return {
       kind: sourcePage ? "source" : "inserted",
@@ -169,12 +180,16 @@ export function createPreset(book: Book): { payload: Preset; asset_ids: string[]
       asset_id: sourcePage ? undefined : page.asset_id,
       crop: page.crop!,
       rotation: page.rotation,
+      color: colors[page.id] || "white",
+      no_margins: noMargins.has(page.id),
       split: page.split
         ? {
             group: page.split.group,
             side: page.split.side,
             original_crop: page.split.original.crop!,
             original_rotation: page.split.original.rotation,
+            original_color: colors[page.split.original.id] || "white",
+            original_no_margins: noMargins.has(page.split.original.id),
           }
         : undefined,
     };
@@ -186,6 +201,8 @@ export function createPreset(book: Book): { payload: Preset; asset_ids: string[]
       pages,
       cover_index: book.pages.findIndex((p) => p.id === book.metadata.cover_id),
       metadata: { direction: book.metadata.direction, cover_only: book.metadata.cover_only },
+      spreads: spreadMarks(book).map(pair => pair.map(id => book.pages.findIndex(page => page.id === id)))
+        .filter(pair => pair.every(index => index >= 0)) as [number, number][],
     },
     asset_ids: [...assets],
   };
@@ -204,7 +221,26 @@ export function applyPreset(book: Book, payload: Preset, remap: Record<string, s
       .filter(([, a]) => a.source_page)
       .map(([id, a]) => [a.source_page!, id]),
   );
+  for (const page of book.pages) if (page.kind === "image" && page.source_page && book.assets[page.asset_id!].source_page)
+    originals.set(page.source_page, page.asset_id!);
   const groups = new Map<string, { id: string; original: Page }>();
+  const origins = new Map<string, string[]>(), geometry = new Map<string, string[]>(), sources = new Map<string, string[]>();
+  const primary = new Map<string, string>(), children = new Map<string, string[]>(), used = new Set<string>();
+  const identity = (page: Page) => book.assets[page.asset_id!].source_page
+    ? `source:${page.source_page || book.assets[page.asset_id!].source_page}` : page.asset_id!;
+  const key = (page: Page) => JSON.stringify([page.asset_id, page.source_page || 0, page.crop, page.rotation || 0]);
+  for (const page of [...book.pages, ...book.pages.flatMap(page => page.split ? [page.split.original] : [])].reverse()) {
+    if (page.kind !== "image") continue;
+    const matching = geometry.get(key(page)) || [];
+    matching.push(page.id);
+    geometry.set(key(page), matching);
+  }
+  for (const page of book.pages.slice().reverse()) {
+    if (page.kind !== "image") continue;
+    const source = sources.get(identity(page)) || [];
+    source.push(page.id); sources.set(identity(page), source); primary.set(identity(page), page.id);
+    if (page.split) children.set(page.split.original.id, [...(children.get(page.split.original.id) || []), page.id]);
+  }
   const pages = payload.pages.map((item): Page => {
     const id = crypto.randomUUID();
     if (item.kind === "blank") return { id, kind: "blank", width: item.width, height: item.height };
@@ -215,6 +251,11 @@ export function applyPreset(book: Book, payload: Preset, remap: Record<string, s
     if (!assetId || !book.assets[assetId])
       throw new Error(t("Missing preset asset or source page {0}", item.source_page || "?"));
     const asset = book.assets[assetId];
+    if (item.color !== undefined && item.color !== "white" && item.color !== "black" ||
+        item.no_margins !== undefined && typeof item.no_margins !== "boolean" ||
+        item.split?.original_color !== undefined && !["white", "black"].includes(item.split.original_color) ||
+        item.split?.original_no_margins !== undefined && typeof item.split.original_no_margins !== "boolean")
+      throw new Error(t("Unsupported layout preset"));
     const page: Page = {
       id,
       kind: "image",
@@ -225,6 +266,14 @@ export function applyPreset(book: Book, payload: Preset, remap: Record<string, s
       height: asset.height,
       source_page: item.kind === "source" ? item.source_page : null,
     };
+    const sourceId = item.kind === "source" ? `source:${item.source_page}` : item.asset_id!;
+    const source = sources.get(sourceId);
+    while (source?.length && used.has(source[source.length - 1])) source.pop();
+    const previous = geometry.get(key({ ...page, asset_id: item.kind === "inserted" ? item.asset_id : assetId }))?.pop()
+      || source?.pop() || primary.get(sourceId);
+    const previousIds = previous ? [previous, ...(children.get(previous) || [])] : [];
+    previousIds.forEach(identifier => used.add(identifier));
+    origins.set(id, previousIds);
     if (item.split) {
       let group = groups.get(item.split.group);
       if (!group) {
@@ -233,6 +282,8 @@ export function applyPreset(book: Book, payload: Preset, remap: Record<string, s
           original: { ...page, id: crypto.randomUUID(), crop: item.split.original_crop, rotation: item.split.original_rotation || 0 },
         };
         groups.set(item.split.group, group);
+        const original = geometry.get(key(group.original))?.pop() || primary.get(sourceId);
+        origins.set(group.original.id, original ? [original] : []);
       }
       page.split = { group: group.id, original: group.original, side: item.split.side };
     }
@@ -240,8 +291,39 @@ export function applyPreset(book: Book, payload: Preset, remap: Record<string, s
   });
   // A preset describes its source range. Keep later target pages in their current order.
   pages.push(...book.pages.filter((p) => (p.source_page || 0) > payload.source_pages));
+  const extensions = remapPageData(book, pages, origins);
+  if (payload.pages.some(item => item.kind !== "blank" && (item.color !== undefined || item.no_margins !== undefined ||
+      item.split?.original_color !== undefined || item.split?.original_no_margins !== undefined))) {
+    const data = appearanceData({ ...book, pages, extensions: { ...book.extensions, ...extensions } });
+    const noMargins = new Set(data.no_margins);
+    payload.pages.forEach((item, index) => {
+      if (item.kind === "blank") return;
+      if (item.color) data.colors[pages[index].id] = item.color;
+      if (item.no_margins === true) noMargins.add(pages[index].id);
+      else if (item.no_margins === false) noMargins.delete(pages[index].id);
+      if (item.split) {
+        const originalId = pages[index].split!.original.id;
+        if (item.split.original_color) data.colors[originalId] = item.split.original_color;
+        if (item.split.original_no_margins === true) noMargins.add(originalId);
+        else if (item.split.original_no_margins === false) noMargins.delete(originalId);
+      }
+    });
+    extensions[PAGE_TOOLS_ID] = { ...data, no_margins: [...noMargins] };
+  }
+  if (payload.spreads !== undefined) {
+    if (!Array.isArray(payload.spreads) || payload.spreads.some(pair => !Array.isArray(pair) || pair.length !== 2 ||
+        !pair.every(index => Number.isInteger(index) && index >= 0 && index < payload.pages.length && pages[index].kind === "image") || pair[0] === pair[1]))
+      throw new Error(t("Unsupported layout preset"));
+    const target = { ...book, pages, extensions: { ...book.extensions, ...extensions } };
+    const kept = new Set(pages.slice(payload.pages.length).map(page => page.id));
+    extensions[REVIEW_EXTENSION_ID] = { ...reviewData(target), spreads: [
+      ...payload.spreads.map(pair => pair.map(index => pages[index].id) as SpreadMark),
+      ...spreadMarks(target).filter(pair => pair.every(id => kept.has(id))),
+    ] };
+  }
   return {
     pages,
+    extensions,
     metadata: {
       direction: payload.metadata.direction,
       cover_only: payload.metadata.cover_only,

@@ -4,6 +4,7 @@ import re
 
 from .image_types import ImageStream, PdfImageError
 from .object_parser import _read_pdf_object
+from .png import decompress_bounded
 
 
 def _image_from_xref(doc, xref: int, index: int) -> ImageStream | None:
@@ -111,7 +112,19 @@ def _normalize_xref_color_space(doc, color_space: bytes | None) -> bytes | None:
     if generation != 0:
         return color_space
     expected = (highest_index + 1) * 3
-    palette = doc.xref_stream(palette_xref)
+    if highest_index > 255:
+        raise PdfImageError("Indexed palettes cannot exceed 256 colors")
+    length = _xref_object(doc, palette_xref, "Length")
+    if not length or not re.fullmatch(rb"\d+", length) or int(length) > 1_000_000:
+        raise PdfImageError("Indexed palette stream is too large")
+    image_filter = _xref_object(doc, palette_xref, "Filter")
+    if image_filter is not None and not re.fullmatch(rb"/FlateDecode|\[\s*/FlateDecode\s*\]", image_filter):
+        return color_space
+    palette = doc.xref_stream_raw(palette_xref)
+    if not palette:
+        return color_space
+    if image_filter is not None:
+        palette = decompress_bounded(palette, 256 * 3)
     if not palette or len(palette) < expected:
         return color_space
     return (

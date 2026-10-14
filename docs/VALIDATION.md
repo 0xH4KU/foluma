@@ -1,5 +1,17 @@
 # Foluma 0.1 validation
 
+## Maintenance audit (2026-10-14)
+
+All 87 Python tests and 43 TypeScript tests passed, along with Ruff, strict TypeScript including unused-symbol checks, the desktop/editor/page-tools builds, Rust cargo check and whitespace checks. Regressions cover atomic multi-extension edits and undo, page appearance/review/spread remapping through split/restore/presets, repeated EPUB source images, bounded image/palette decompression, plugin metadata reads, failed-install rollback and concurrent download/settings/removal operations.
+
+A generated compressed payload advertised as an 8×8 image expanded to 8 MiB before the fix. The new rejection test stays below 1 MB of traced Python allocation and also rejects truncated/excess image data; valid pixels still round-trip. Unreachable predictor decoding and the unused imported-book settings branch were removed.
+
+Bundled-list measurements used the existing ten native packages in build/engine. Inspection previously unpacked about 535.7 MB in 0.85 s. It now reads 66,958 bytes of metadata in 0.054 s; a repeated listing reads no package payload and took 0.0002 s. These are local warm-storage measurements, not external-disk guarantees. Downloads and staging release the document lock; a concurrent removal invalidates the install commit, and unrelated processing preference writes survive.
+
+Playwright exercised the actual desktop and plugin bundles through an isolated synthetic Tauri bridge in Chromium. A 1,000-page book initially rendered 11 crop-workspace thumbnails; scrolling and selecting page 1,000 passed. The independent crop view communicated through the real BroadcastChannel, and numeric crop, color and margin drafts survived cache clearing. Cancelling document replacement kept the book/drafts; confirming discard replaced it and disabled the originating crop view. A project file-drop event reached project import without opening the hidden editor's batch dialog.
+
+Editor 0.4.9, page tools 0.1.6, PDF import 0.1.2 and Traditional Chinese 0.4.23 are prepared as development packages. Local super-resolution benchmark/runtime directories were moved to macOS Trash (20,950 files, 1,912,434,744 bytes); the original input PDF's file state was unchanged. No dependency was added. Native macOS dialogs/window movement, reading applications and a fresh release bundle were not exercised in this pass.
+
 ## Independent crop window and lighter blank suggestions (2026-10-13)
 
 Page tools 0.1.5 uses the existing native tool-window host for crop controls, with a BroadcastChannel scoped to its originating window and document. Changes must match the currently selected page and revision and pass shared crop validation before entering the workspace's draft map. The window can move outside the main app and onto other displays, stays open across page changes and draft commits, and disables controls while its originating workspace is unavailable. The host exposes an optional window-ID getter; older hosts retain inline controls. Native tool windows keep logical ownership through their labels and URL parameters instead of macOS child-window attachment, and accept the first mouse click when inactive.

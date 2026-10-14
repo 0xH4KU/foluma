@@ -23,7 +23,7 @@ export type Book = {
   extensions: Record<string, unknown>; project_path: string | null;
   dirty: boolean; can_undo: boolean; can_redo: boolean;
 };
-export type Changes = {pages?: Page[]; metadata?: Partial<Metadata>; extension?: {id: string; data: unknown}};
+export type Changes = {pages?: Page[]; metadata?: Partial<Metadata>; extension?: {id: string; data: unknown}; extensions?: Record<string, unknown>};
 export type ReviewData = {review: string[]; [key: string]: unknown};
 export type Task = {
   id: string; state: "queued" | "running" | "completed" | "cancelled" | "failed"; operation: string;
@@ -66,6 +66,8 @@ export interface HostAPI {
   setBusy?(busy: boolean): void;
   cancelTask?(id?: string): Promise<void>;
   onFileDrop?(listener: (paths: string[]) => void): () => void;
+  onBeforeDocumentReplace?(listener: () => Promise<boolean>): () => void;
+  prepareDocumentReplace?(): Promise<boolean>;
   getExportPreferences?(): {directory: string; dpi: RenderResolution; concurrency?: number};
   getFormats?(): Plugin[];
   setOutputDirectory?(directory: string): void;

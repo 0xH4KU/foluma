@@ -3,6 +3,47 @@ import {test} from "node:test";
 import type {Book} from "../sdk/types.ts";
 import type {Task} from "../sdk/types.ts";
 
+test("mounted workspaces receive drops only while visible and do not need remounting", async () => {
+  (globalThis as any).window = {location: {search: ""}};
+  const {createHost, createWorkspaceHost, dropFiles} = await import("../desktop/bridge.ts");
+  const host = createHost(error => {throw error;}, () => {});
+  let editorVisible = false;
+  const called: string[] = [];
+  const editor = createWorkspaceHost(host, () => editorVisible);
+  const series = createWorkspaceHost(host, () => !editorVisible);
+  const offEditor = editor.onFileDrop!(() => called.push("editor"));
+  const offSeries = series.onFileDrop!(() => called.push("series"));
+  dropFiles(["first.pdf"]);
+  assert.deepEqual(called, ["series"]);
+  editorVisible = true;
+  dropFiles(["second.pdf"]);
+  assert.deepEqual(called, ["series", "editor"]);
+  offEditor(); offSeries();
+  delete (globalThis as any).window;
+});
+
+test("document replacement consults every mounted draft guard and preserves drafts when cancelled", async () => {
+  (globalThis as any).window = {location: {search: ""}};
+  const {createHost} = await import("../desktop/bridge.ts");
+  const host = createHost(error => {throw error;}, () => {});
+  let accepted = false, checks = 0, discarded = 0;
+  const stop = host.onBeforeDocumentReplace!(async () => {
+    checks++;
+    if (!accepted) return false;
+    discarded++;
+    return true;
+  });
+  assert.equal(await host.prepareDocumentReplace!(), false);
+  assert.equal(discarded, 0);
+  accepted = true;
+  assert.equal(await host.prepareDocumentReplace!(), true);
+  assert.equal(discarded, 1);
+  stop();
+  assert.equal(await host.prepareDocumentReplace!(), true);
+  assert.equal(checks, 2);
+  delete (globalThis as any).window;
+});
+
 test("document RPC acknowledgements update the active revision before notifications arrive", async () => {
   const before = {schema:1,id:"active",revision:0,pages:[],metadata:{title:"Before"}} as unknown as Book;
   const after = {...before,revision:1,metadata:{...before.metadata,title:"After"}};

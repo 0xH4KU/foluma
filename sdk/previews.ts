@@ -1,6 +1,13 @@
 import { useEffect, useState } from "react";
 import type { Book, HostAPI, Page } from "./types.ts";
 
+export function visibleRange(count: number, top: number, height: number, rowHeight: number, columns: number) {
+  return {
+    first: Math.max(0, Math.floor(top / rowHeight) - 2) * columns,
+    last: Math.min(count, (Math.ceil((top + height) / rowHeight) + 2) * columns),
+  };
+}
+
 export function previewKey(book: Book, page: Page, size: number) {
   const asset = book.assets?.[page.asset_id || ""];
   const source = book.sources?.[asset?.source_id || asset?.derived_from?.source_id || ""];

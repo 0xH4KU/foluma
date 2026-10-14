@@ -17,6 +17,7 @@ import {
 import { moveBefore } from "../sdk/order.ts";
 import { REVIEW_EXTENSION_ID, reviewData } from "../sdk/review.ts";
 import { setSpreadMarks, spreadMarks, spreadRecommendations, toggleSpreadMark } from "../plugins/editor/src/spreads.ts";
+import { PAGE_TOOLS_ID, appearanceData, pageColors, pagesWithoutMargins } from "../sdk/page-layout.ts";
 
 function fixture(count = 4): Book {
   const pages: Page[] = Array.from({ length: count }, (_, index) => index + 1).map((n) => ({
@@ -55,6 +56,69 @@ function fixture(count = 4): Book {
     project_path: null,
   };
 }
+
+test("page replacement preserves review, appearance, split restoration and portable spread marks together", () => {
+  const book = fixture();
+  book.extensions[REVIEW_EXTENSION_ID] = { review: ["page-2"], spreads: [["page-2", "page-3"]], extra: "keep" };
+  book.extensions[PAGE_TOOLS_ID] = { colors: { "page-2": "black" }, no_margins: ["page-2"], extra: "keep" };
+  const replace = (before: Book, changes: ReturnType<typeof splitPages>): Book => ({ ...before,
+    pages: changes.pages!, metadata: { ...before.metadata, ...changes.metadata },
+    extensions: { ...before.extensions, ...changes.extensions },
+  });
+  const split = replace(book, splitPages(book, new Set(["page-2"])));
+  const halves = split.pages.filter(page => page.split);
+  assert.deepEqual(reviewData(split).review, halves.map(page => page.id));
+  for (const page of halves) {
+    assert.equal(pageColors(split)[page.id], "black");
+    assert.ok(pagesWithoutMargins(split).includes(page.id));
+  }
+  split.extensions[PAGE_TOOLS_ID] = { ...appearanceData(split), colors: { ...appearanceData(split).colors, "page-4": "white" } };
+  const restored = replace(split, restorePages(split, new Set([halves[0].id])));
+  assert.equal(pageColors(restored)["page-2"], "black");
+  assert.deepEqual(pagesWithoutMargins(restored), ["page-2"]);
+  assert.deepEqual(reviewData(restored).review, ["page-2"]);
+  assert.equal(spreadRecommendations(restored, true).spreads[0].problem, "");
+  assert.equal((restored.extensions[PAGE_TOOLS_ID] as {extra: string}).extra, "keep");
+  const splitPreset = createPreset(split);
+  const splitTarget = replace(fixture(), applyPreset(fixture(), splitPreset.payload, {}));
+  const restoredTarget = replace(splitTarget, restorePages(splitTarget, new Set([splitTarget.pages[1].id])));
+  assert.equal(pageColors(restoredTarget)[restoredTarget.pages[1].id], "black");
+  assert.ok(pagesWithoutMargins(restoredTarget).includes(restoredTarget.pages[1].id));
+  const preset = createPreset(book);
+  const applied = replace(book, applyPreset(book, preset.payload, {}));
+  assert.deepEqual(reviewData(applied).review, [applied.pages[1].id]);
+  assert.deepEqual(spreadMarks(applied), [[applied.pages[1].id, applied.pages[2].id]]);
+  assert.equal(spreadRecommendations(applied, true).spreads[0].aligned, true);
+  assert.equal(pageColors(applied)[applied.pages[1].id], "black");
+  assert.deepEqual(pagesWithoutMargins(applied), [applied.pages[1].id]);
+  const target = fixture();
+  target.extensions[PAGE_TOOLS_ID] = { colors: { "page-4": "black" }, no_margins: ["page-4"] };
+  const portable = replace(target, applyPreset(target, preset.payload, {}));
+  assert.equal(pageColors(portable)[portable.pages[1].id], "black");
+  assert.equal(pageColors(portable)[portable.pages[3].id], "white");
+  assert.deepEqual(pagesWithoutMargins(portable), [portable.pages[1].id]);
+  const legacy = structuredClone(preset.payload);
+  delete legacy.spreads;
+  for (const page of legacy.pages) if (page.kind !== "blank") { delete page.color; delete page.no_margins; }
+  const legacyApplied = replace(book, applyPreset(book, legacy, {}));
+  assert.deepEqual(spreadMarks(legacyApplied), [[legacyApplied.pages[1].id, legacyApplied.pages[2].id]]);
+  assert.equal(pageColors(legacyApplied)[legacyApplied.pages[1].id], "black");
+  assert.throws(() => applyPreset(book, { ...preset.payload, spreads: [[0, 99]] }, {}), /Unsupported layout preset/);
+  const defaults = fixture();
+  const defaultSplit = replace(defaults, splitPages(defaults, new Set(["page-2"])));
+  const children = defaultSplit.pages.filter(page => page.split);
+  defaultSplit.extensions[PAGE_TOOLS_ID] = {
+    colors: Object.fromEntries(children.map(page => [page.id, "black"])), no_margins: children.map(page => page.id),
+  };
+  const defaultRestored = replace(defaultSplit, restorePages(defaultSplit, new Set([children[0].id])));
+  assert.equal(pageColors(defaultRestored)["page-2"], "white");
+  assert.deepEqual(pagesWithoutMargins(defaultRestored), []);
+  const repeated = fixture();
+  for (const page of repeated.pages) page.asset_id = "asset-1";
+  const repeatedApplied = replace(repeated, applyPreset(repeated, createPreset(repeated).payload, {}));
+  assert.equal(repeatedApplied.pages.length, repeated.pages.length);
+  assert.deepEqual(repeatedApplied.pages.map(page => page.source_page), [1, 2, 3, 4]);
+});
 
 test("the shared review contract reads legacy storage, removes stale marks and preserves other extension data", () => {
   const book = fixture();

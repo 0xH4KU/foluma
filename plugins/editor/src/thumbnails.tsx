@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import type { Book, HostAPI, Page } from "../../../sdk/types";
 import { t } from "../../../sdk/i18n";
 import { Icon } from "../../../sdk/icons";
-import { usePagePreview } from "../../../sdk/previews";
+import { usePagePreview, visibleRange } from "../../../sdk/previews";
 import { spreadGroups } from "./pages";
 
 export type ViewState = {
@@ -203,11 +203,7 @@ export function Thumbnails({
         ? 2
         : Math.max(1, Math.floor((viewport.width - 6) / 86));
   const rowHeight = view === "list" ? 29 : 166;
-  const first = Math.max(0, Math.floor(viewport.top / rowHeight) - 2) * columns;
-  const last = Math.min(
-    cells.length,
-    (Math.ceil((viewport.top + viewport.height) / rowHeight) + 2) * columns,
-  );
+  const { first, last } = visibleRange(cells.length, viewport.top, viewport.height, rowHeight, columns);
   useEffect(() => {
     const node = container.current!;
     node.scrollTop = initialScroll;

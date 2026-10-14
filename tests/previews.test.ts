@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { visibleRange } from "../sdk/previews.ts";
 import {setImmediate} from "node:timers/promises";
 import {test} from "node:test";
 import {createPreviewLoader} from "../desktop/previews.ts";
@@ -89,4 +90,16 @@ test("preview identity survives metadata saves and changes when image content or
   saved.sources.source.sha256 = "before";
   saved.assets.asset.xref = 5;
   assert.notEqual(previewKey(saved, page, 1024), key);
+});
+
+
+test("virtual page lists render a bounded window and reach the last page", () => {
+  assert.deepEqual(visibleRange(0, 0, 600, 176, 2), {first: 0, last: 0});
+  assert.deepEqual(visibleRange(10000, 0, 600, 176, 2), {first: 0, last: 12});
+  const middle = visibleRange(10000, 88000, 600, 176, 2);
+  assert.equal(middle.first, 996);
+  assert.equal(middle.last - middle.first, 16);
+  const end = visibleRange(10000, 879400, 600, 176, 2);
+  assert.equal(end.last, 10000);
+  assert.ok(end.last - end.first <= 16);
 });

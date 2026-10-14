@@ -20,6 +20,8 @@ def image_to_epub_member(image: ImageStream, *, compression_level: int = 6) -> t
 
 
 def flate_image_to_png(image: ImageStream, *, compression_level: int = 6) -> bytes:
+    if not 0 < image.width <= 100000 or not 0 < image.height <= 100000 or image.width * image.height > 100_000_000:
+        raise PdfImageError("Image dimensions are out of range")
     predictor = _decode_parm_int(image.decode_parms, b"Predictor", 1)
     columns = _decode_parm_int(image.decode_parms, b"Columns", image.width)
     colors = _decode_parm_int(image.decode_parms, b"Colors", _png_channel_count(image.color_space))
@@ -29,16 +31,30 @@ def flate_image_to_png(image: ImageStream, *, compression_level: int = 6) -> byt
         raise PdfImageError(f"Unsupported Columns {columns}; expected image width {image.width}")
     if bpc != image.bits_per_component:
         raise PdfImageError(f"DecodeParms BitsPerComponent {bpc} does not match image")
+    if colors != _png_channel_count(image.color_space) or bpc not in (1, 2, 4, 8, 16):
+        raise PdfImageError("Unsupported image channels or bit depth")
 
     color_type, palette = _png_color(image.color_space, bpc)
     if 10 <= predictor <= 15:
         return make_png_from_compressed_rows(image.width, image.height, bpc, color_type, image.data, palette)
 
-    raw = zlib.decompress(image.data)
-    scanlines = _undo_predictor(raw, predictor, columns, colors, bpc, image.height)
+    if predictor != 1:
+        raise PdfImageError(f"Unsupported Flate predictor: {predictor}")
+    expected = _png_row_length(image.width, bpc, color_type) * image.height
+    scanlines = decompress_bounded(image.data, expected)
+    if len(scanlines) != expected:
+        raise PdfImageError(f"Unexpected raw image length {len(scanlines)}; expected {expected}")
     return make_png_from_scanlines(
         image.width, image.height, bpc, color_type, scanlines, palette, compression_level=compression_level
     )
+
+
+def decompress_bounded(data: bytes, limit: int) -> bytes:
+    decoder = zlib.decompressobj()
+    raw = decoder.decompress(data, limit + 1)
+    if len(raw) > limit or not decoder.eof:
+        raise PdfImageError("Compressed image exceeds its size limit or is incomplete")
+    return raw
 
 
 def _decode_parm_int(decode_parms: bytes | None, key: bytes, default: int) -> int:
@@ -66,6 +82,8 @@ def _png_color(color_space: bytes | None, bits_per_component: int) -> tuple[int,
             raise PdfImageError("DeviceRGB PNG output supports 8 bits per component only")
         return 2, None
     if color_space.startswith(b"[/Indexed"):
+        if bits_per_component == 16:
+            raise PdfImageError("Indexed PNG output supports up to 8 bits per component")
         return 3, _indexed_palette(color_space)
     raise PdfImageError(f"Unsupported ColorSpace: {color_space!r}")
 
@@ -75,6 +93,8 @@ def _indexed_palette(color_space: bytes) -> bytes:
     if not match:
         raise PdfImageError(f"Unsupported indexed ColorSpace: {color_space!r}")
     highest_index = int(match.group(1))
+    if highest_index > 255:
+        raise PdfImageError("Indexed palettes cannot exceed 256 colors")
     palette_obj = match.group(2).strip()
     if palette_obj.startswith(b"("):
         palette = decode_pdf_literal_string(palette_obj)
@@ -87,74 +107,6 @@ def _indexed_palette(color_space: bytes) -> bytes:
     if len(palette) < expected:
         raise PdfImageError(f"Indexed palette is too short: {len(palette)} < {expected}")
     return palette[:expected]
-
-
-def _undo_predictor(
-    raw: bytes,
-    predictor: int,
-    columns: int,
-    colors: int,
-    bits_per_component: int,
-    height: int,
-) -> bytes:
-    row_length = (columns * colors * bits_per_component + 7) // 8
-    if predictor == 1:
-        expected = row_length * height
-        if len(raw) != expected:
-            raise PdfImageError(f"Unexpected raw image length {len(raw)}; expected {expected}")
-        return raw
-    if not 10 <= predictor <= 15:
-        raise PdfImageError(f"Unsupported Flate predictor: {predictor}")
-
-    stride = row_length + 1
-    expected = stride * height
-    if len(raw) != expected:
-        raise PdfImageError(f"Unexpected predicted image length {len(raw)}; expected {expected}")
-
-    bpp = max(1, (colors * bits_per_component + 7) // 8)
-    out = bytearray()
-    prev = bytes(row_length)
-    for row in range(height):
-        offset = row * stride
-        filter_type = raw[offset]
-        scanline = bytearray(raw[offset + 1 : offset + stride])
-        if filter_type == 0:
-            pass
-        elif filter_type == 1:
-            for i in range(row_length):
-                left = scanline[i - bpp] if i >= bpp else 0
-                scanline[i] = (scanline[i] + left) & 0xFF
-        elif filter_type == 2:
-            for i in range(row_length):
-                scanline[i] = (scanline[i] + prev[i]) & 0xFF
-        elif filter_type == 3:
-            for i in range(row_length):
-                left = scanline[i - bpp] if i >= bpp else 0
-                up = prev[i]
-                scanline[i] = (scanline[i] + ((left + up) // 2)) & 0xFF
-        elif filter_type == 4:
-            for i in range(row_length):
-                left = scanline[i - bpp] if i >= bpp else 0
-                up = prev[i]
-                up_left = prev[i - bpp] if i >= bpp else 0
-                scanline[i] = (scanline[i] + _paeth(left, up, up_left)) & 0xFF
-        else:
-            raise PdfImageError(f"Unsupported PNG predictor filter byte: {filter_type}")
-        out.extend(scanline)
-        prev = bytes(scanline)
-    return bytes(out)
-
-
-def _paeth(left: int, up: int, up_left: int) -> int:
-    p = left + up - up_left
-    pa = abs(p - left)
-    pb = abs(p - up)
-    pc = abs(p - up_left)
-    if pa <= pb and pa <= pc:
-        return left
-    if pb <= pc:
-        return up
-    return up_left
 
 
 def _png_chunk(kind: bytes, payload: bytes) -> bytes:

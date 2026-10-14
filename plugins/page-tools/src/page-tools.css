@@ -15,8 +15,10 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .workspace { min-height: 0; flex: 1; overflow: hidden; display: grid; grid-template-columns: 240px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
 .page-list { border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; background: var(--side); }
 .panel-title { padding: 10px 12px; border-bottom: 1px solid var(--line); font-weight: 600; }
-.thumbnails { min-height: 0; flex: 1; overflow: auto; padding: 8px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: start; gap: 8px; }
-.thumbnail { min-width: 0; padding: 6px; text-align: left; }
+.thumbnails { min-height: 0; flex: 1; overflow: auto; padding: 8px; }
+.thumbnail-height { position: relative; }
+.thumbnail-grid { position: absolute; left: 0; right: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: 168px; gap: 8px; }
+.thumbnail { min-width: 0; height: 168px; padding: 6px; text-align: left; }
 .thumbnail.selected { box-shadow: inset 0 0 0 1px var(--accent); }
 .thumbnail-image { display: flex; height: 118px; align-items: center; justify-content: center; margin-bottom: 5px; color: #888; }
 .thumbnail img { max-height: 94%; max-width: 94%; object-fit: contain; }

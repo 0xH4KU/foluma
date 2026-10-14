@@ -32,6 +32,8 @@ Choose **Crop…** to open a small independent tool window with **Top**, **Left*
 
 **Detect all page colors** is a separate button. It scans every image page using cached small previews and shows progress with cancellation. It samples each visible edge, including draft crops, and recognizes opposite black borders even when the other edges contain light artwork. Uncertain or conflicting edges show **Check color**; select those pages and choose **White** or **Black** while viewing the result. Detection and manual changes are preview edits until **Apply** saves them together. **Discard preview edits** leaves the book unchanged. Applied crops, colors and per-page margins support undo/redo and survive saving, reopening and disabling the plugin. An edit from another window makes an existing draft stale; discard it before preparing another draft.
 
+With the updated app and page tools 0.1.6, clearing cached previews keeps pending crop/margin edits. Opening another book, closing a project or quitting asks before discarding those drafts; cancel to return and Apply them. The thumbnail list loads nearby rows and keeps the selected page reachable in large books.
+
 EPUB import **0.1.6** can reopen these exports while retaining crops, confirmed colors, per-page margins and marked spreads. Older imported books without appearance data default to white with the extra inset.
 
 ### Optional formats
@@ -89,6 +91,8 @@ The desktop layout uses a toolbar, workspace sidebar, page list, preview, inspec
 - Mark a spread by selecting a page, then Option-clicking an adjacent image page (Alt on Windows/Linux), or select two adjacent image pages and use **Mark selected pages as a spread** in the context menu. A book icon identifies marked pages. Option-click the same pair again or choose **Remove spread mark** to clear it. Marks are saved with the project and support undo/redo.
 - Open **Blank suggestions…** to see each marked spread's current pairing and the ranges where blank pages can align them. A compact independent window opens beside the main window when screen space permits; drag its title bar anywhere, including outside the app or onto another display, and resize it as needed. Click a reference position to select that page in the main editor, then use the existing blank-before/after actions or B / Shift+B. Previews and suggestions update after edits, undo/redo and changes to reading or cover settings. Suggestions use the current page order and leading-blank preview setting; source page numbers are only labels. Removed, separated or excluded marked pages require correction or removal of the mark before recommendations are shown. Closing the tool window keeps the book open.
 - Use **Presets → Apply preset to PDFs…** to apply a portable layout preset to books with matching page structures and export them separately.
+
+Editor 0.4.9 also carries confirmed margin colors, per-page margin exceptions and marked spreads in new presets. Older presets remain readable and remap existing page data when possible. Splitting inherits the page's appearance; restoring a split returns its original appearance. Use the updated app together with these plugins so page and extension edits commit atomically.
 
 **Simulate leading blank** previews the page pairing used by readers such as Apple Books. It does not insert a blank into the document or exported EPUB.
 

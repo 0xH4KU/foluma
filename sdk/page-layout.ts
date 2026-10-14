@@ -1,4 +1,4 @@
-import { spreadMarks } from "./review.ts";
+import { REVIEW_EXTENSION_ID, reviewData, spreadMarks } from "./review.ts";
 import type { Book, Page } from "./types.ts";
 
 export const PAGE_TOOLS_ID = "org.foluma.page-tools";
@@ -6,19 +6,64 @@ export const PAGE_MARGIN = 0.02;
 export type PageColor = "white" | "black";
 export type CropMargins = [number, number, number, number]; // left, top, right, bottom in displayed orientation
 
+export function appearanceData(book: Book) {
+  const value = book.extensions[PAGE_TOOLS_ID];
+  const data = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const pages = new Set(book.pages.flatMap(page => page.kind === "image"
+    ? [page.id, ...(page.split ? [page.split.original.id] : [])] : []));
+  const colors = data.colors && typeof data.colors === "object" && !Array.isArray(data.colors)
+    ? Object.fromEntries(Object.entries(data.colors).filter(([id, color]) =>
+      pages.has(id) && (color === "white" || color === "black"))) as Record<string, PageColor> : {};
+  const ids = new Set(Array.isArray(data.no_margins) ? data.no_margins : []);
+  return { ...data, colors, no_margins: [...pages].filter(id => ids.has(id)) };
+}
+
 export function pageColors(book: Book): Record<string, PageColor> {
-  const data = book.extensions[PAGE_TOOLS_ID] as { colors?: unknown } | undefined;
-  const colors = data?.colors;
-  if (!colors || typeof colors !== "object" || Array.isArray(colors)) return {};
-  const pages = new Set(book.pages.filter(page => page.kind === "image").map(page => page.id));
-  return Object.fromEntries(Object.entries(colors).filter(([id, color]) =>
-    pages.has(id) && (color === "white" || color === "black"))) as Record<string, PageColor>;
+  const colors = appearanceData(book).colors;
+  return Object.fromEntries(book.pages.filter(page => page.kind === "image" && colors[page.id])
+    .map(page => [page.id, colors[page.id]]));
 }
 
 export function pagesWithoutMargins(book: Book): string[] {
-  const data = book.extensions[PAGE_TOOLS_ID] as { no_margins?: unknown } | undefined;
-  const ids = data?.no_margins;
-  return Array.isArray(ids) ? book.pages.filter(page => page.kind === "image" && ids.includes(page.id)).map(page => page.id) : [];
+  const ids = new Set(appearanceData(book).no_margins);
+  return book.pages.filter(page => page.kind === "image" && ids.has(page.id)).map(page => page.id);
+}
+
+export function remapPageData(book: Book, pages: Page[], origins: Map<string, string[]>): Record<string, unknown> {
+  const extensions: Record<string, unknown> = {};
+  const targets = new Map<string, string[]>();
+  for (const page of pages) for (const id of origins.get(page.id) || [page.id]) {
+    const ids = targets.get(id) || [];
+    ids.push(page.id);
+    targets.set(id, ids);
+  }
+  if (book.extensions[REVIEW_EXTENSION_ID]) {
+    const data = reviewData(book), marked = new Set(data.review);
+    extensions[REVIEW_EXTENSION_ID] = {
+      ...data,
+      review: pages.filter(page => (origins.get(page.id) || [page.id]).some(id => marked.has(id))).map(page => page.id),
+      ...(Array.isArray(data.spreads) ? { spreads: spreadMarks(book).map(pair => {
+        const mapped = pair.map(id => targets.get(id)?.length === 1 ? targets.get(id)![0] : id);
+        return mapped[0] === mapped[1] ? pair : mapped;
+      }) } : {}),
+    };
+  }
+  if (book.extensions[PAGE_TOOLS_ID]) {
+    const data = appearanceData(book), colors = { ...data.colors }, savedMargins = new Set(data.no_margins), noMargins = new Set(savedMargins);
+    const originals = new Set(book.pages.flatMap(page => page.split ? [page.split.original.id] : []));
+    for (const page of [...pages, ...pages.flatMap(page => page.split ? [page.split.original] : [])]) {
+      if (page.kind !== "image") continue;
+      const ids = origins.get(page.id) || [page.id];
+      const original = [page.id, ...ids].find(id => originals.has(id));
+      const color = original ? data.colors[original] || "white" : colors[page.id] || ids.map(id => data.colors[id]).find(Boolean);
+      if (color) colors[page.id] = color;
+      if (original ? savedMargins.has(original) : ids.some(id => savedMargins.has(id))) noMargins.add(page.id);
+      else noMargins.delete(page.id);
+    }
+    extensions[PAGE_TOOLS_ID] = appearanceData({ ...book, pages,
+      extensions: { ...book.extensions, [PAGE_TOOLS_ID]: { ...data, colors, no_margins: [...noMargins] } } });
+  }
+  return extensions;
 }
 
 export function cropBox(page: Page): [number, number, number, number] {

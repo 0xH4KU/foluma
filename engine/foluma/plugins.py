@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import copy
 import os
 import platform
 import re
 import shutil
 import stat
 import tempfile
+import threading
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -24,17 +26,23 @@ def platform_id() -> str:
     return f"{system}-{machine}"
 
 
+def package_members(archive: ZipFile, directory: Path):
+    members = archive.infolist()
+    if len(members) > 5000 or sum(m.file_size for m in members) > MAX_PACKAGE:
+        raise ValueError(t("Package is too large (limit: 256 MB / 5000 files)"))
+    names = set()
+    for member in members:
+        target = contained(directory, member.filename)
+        if target in names or stat.S_ISLNK(member.external_attr >> 16) or member.flag_bits & 1:
+            raise ValueError(t("Package contains duplicate paths, symbolic links or encrypted files"))
+        names.add(target)
+    return members
+
+
 def unpack(path: Path, directory: Path) -> None:
     with ZipFile(path) as archive:
-        members = archive.infolist()
-        if len(members) > 5000 or sum(m.file_size for m in members) > MAX_PACKAGE:
-            raise ValueError(t("Package is too large (limit: 256 MB / 5000 files)"))
-        names = set()
-        for member in members:
+        for member in package_members(archive, directory):
             target = contained(directory, member.filename)
-            if target in names or stat.S_ISLNK(member.external_attr >> 16) or member.flag_bits & 1:
-                raise ValueError(t("Package contains duplicate paths, symbolic links or encrypted files"))
-            names.add(target)
             if member.is_dir():
                 target.mkdir(parents=True, exist_ok=True)
                 continue
@@ -154,9 +162,12 @@ def download(url: str, target: Path, limit: int = MAX_PACKAGE) -> None:
 
 
 class Plugins:
-    def __init__(self, data: Path, safe: bool = False, bundled_editor: Path | None = None):
+    def __init__(self, data: Path, safe: bool = False, bundled_editor: Path | None = None, *, lock=None):
         self.data = data
+        self.lock = lock or threading.RLock()
         self.bundled_directory = bundled_editor.parent if bundled_editor else None
+        self._bundled_stamp = None
+        self._bundled: list[tuple[Path, dict]] = []
         self.root = data / "plugins"
         self.root.mkdir(parents=True, exist_ok=True)
         self.config_path = data / "plugins.json"
@@ -303,13 +314,18 @@ class Plugins:
     def bundled(self) -> list[dict]:
         if not self.bundled_directory:
             return []
-        return [self.inspect(str(path)) for path in sorted(self.bundled_directory.glob("*.mte-plugin"))]
+        paths = sorted(self.bundled_directory.glob("*.mte-plugin"))
+        stamp = [(path, path.stat().st_size, path.stat().st_mtime_ns) for path in paths]
+        if stamp != self._bundled_stamp:
+            self._bundled = [(path, self.inspect(str(path))) for path in paths]
+            self._bundled_stamp = stamp
+        return [copy.deepcopy(manifest) for _path, manifest in self._bundled]
 
     def install_bundled(self, plugin_id: str) -> dict:
-        if self.bundled_directory:
-            for path in self.bundled_directory.glob("*.mte-plugin"):
-                if self.inspect(str(path))["id"] == plugin_id:
-                    return self.install(str(path), expected_id=plugin_id)
+        self.bundled()
+        for path, manifest in self._bundled:
+            if manifest["id"] == plugin_id:
+                return self.install(str(path), expected_id=plugin_id)
         raise ValueError(t("Bundled package not found"))
 
     def set_locale(self, code: str) -> dict:
@@ -320,11 +336,33 @@ class Plugins:
         return self.locale()
 
     def inspect(self, path: str) -> dict:
-        with tempfile.TemporaryDirectory(dir=self.data) as temp:
-            unpack(Path(path), Path(temp))
-            return manifest_at(Path(temp))
+        with tempfile.TemporaryDirectory(dir=self.data) as temp, ZipFile(path) as archive:
+            root = Path(temp).resolve()
+            files = {contained(root, member.filename): member for member in package_members(archive, root)
+                     if not member.is_dir()}
+            manifest_path = root / "manifest.json"
+            if manifest_path not in files:
+                raise ValueError(t("Plugin file is missing: {0}", "manifest.json"))
+            manifest_path.write_bytes(archive.read(files[manifest_path]))
+            manifest = parse_json(manifest_path.read_text("utf-8"))
+            if isinstance(manifest, dict):
+                ui, workers, language = (manifest.get(key, {}) for key in ("ui", "workers", "language"))
+                references = ([ui[key] for key in ("entry", "style") if key in ui] if isinstance(ui, dict) else [])
+                references += list(workers.values()) if isinstance(workers, dict) else []
+                for relative in references:
+                    target = contained(root, relative)
+                    if target in files and target != manifest_path:
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        target.touch()
+                if isinstance(language, dict) and isinstance(language.get("messages"), str):
+                    target = contained(root, language["messages"])
+                    if target in files:
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        target.write_bytes(archive.read(files[target]))
+            return manifest_at(root)
 
-    def install(self, path: str, sha256: str | None = None, expected_id: str | None = None) -> dict:
+    def install(self, path: str, sha256: str | None = None, expected_id: str | None = None,
+                expected_installed: tuple[str, dict | None] | None = None) -> dict:
         source = Path(path)
         if sha256 is not None and digest(source) != sha256:
             raise ValueError(t("Plugin SHA-256 verification failed"))
@@ -335,25 +373,36 @@ class Plugins:
             manifest = manifest_at(stage)
             if expected_id and manifest["id"] != expected_id:
                 raise ValueError(t("Downloaded plugin ID does not match the catalog"))
-            if manifest.get("language"):
-                for plugin_id, item in self.config.get("installed", {}).items():
-                    if plugin_id != manifest["id"]:
-                        other = manifest_at(self.directory(plugin_id, item["version"]))
-                        if other.get("language", {}).get("locale") == manifest["language"]["locale"]:
-                            raise ValueError(t("A pack for this language is already installed"))
-            dest = self.directory(manifest["id"], manifest["version"])
-            if dest.exists():
-                if manifest.get("language") and manifest["id"] not in self.config.get("installed", {}):
+            with self.lock:
+                if expected_installed is not None:
+                    identifier, previous = expected_installed
+                    if self.config.get("installed", {}).get(identifier) != previous:
+                        raise ValueError(t("Plugin settings changed during download. Please retry."))
+                if manifest.get("language"):
+                    for plugin_id, item in self.config.get("installed", {}).items():
+                        if plugin_id != manifest["id"]:
+                            other = manifest_at(self.directory(plugin_id, item["version"]))
+                            if other.get("language", {}).get("locale") == manifest["language"]["locale"]:
+                                raise ValueError(t("A pack for this language is already installed"))
+                dest = self.directory(manifest["id"], manifest["version"])
+                if dest.exists():
+                    if manifest.get("language") and manifest["id"] not in self.config.get("installed", {}):
+                        shutil.rmtree(dest)
+                    else:
+                        raise ValueError(t("This version is already installed; use a new version number for a new package"))
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(stage, dest)
+                config = self.config | {"installed": self.config.get("installed", {}) | {
+                    manifest["id"]: {"version": manifest["version"], "enabled": True}}}
+                try:
+                    atomic_json(self.config_path, config)
+                except Exception:
                     shutil.rmtree(dest)
-                else:
-                    raise ValueError(t("This version is already installed; use a new version number for a new package"))
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(stage, dest)
-        self.config.setdefault("installed", {})[manifest["id"]] = {"version": manifest["version"], "enabled": True}
-        if manifest.get("language") and not self.safe:
-            self.active[manifest["id"]] = manifest
-        atomic_json(self.config_path, self.config)
-        return self.list()
+                    raise
+                self.config = config
+                if manifest.get("language") and not self.safe:
+                    self.active[manifest["id"]] = manifest
+                return self.list()
 
     def set_enabled(self, plugin_id: str, enabled: bool) -> dict:
         if type(enabled) is not bool:
@@ -422,8 +471,10 @@ class Plugins:
                 raise ValueError(t("Official package is missing verification data"))
 
     def install_official(self, plugin_id: str) -> dict:
+        with self.lock:
+            previous = copy.deepcopy(self.config.get("installed", {}).get(plugin_id))
         item = next(i for i in self.catalog()["plugins"] if i["id"] == plugin_id)
         with tempfile.TemporaryDirectory(dir=self.data) as temp:
             package = Path(temp) / "download.mte-plugin"
             download(item["url"], package)
-            return self.install(str(package), item["sha256"], plugin_id)
+            return self.install(str(package), item["sha256"], plugin_id, (plugin_id, previous))

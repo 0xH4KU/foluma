@@ -21,6 +21,7 @@ import {
   connect,
   bindDocument,
   createHost,
+  createWorkspaceHost,
   dropFiles,
   getTasks,
   resourceUrl,
@@ -52,6 +53,9 @@ function PluginWorkspace({
   const container = useRef<HTMLDivElement>(null);
   const [error, setError] = useState("");
   const [visited, setVisited] = useState(false);
+  const visibility = useRef(visible);
+  visibility.current = visible;
+  const workspaceHost = useMemo(() => createWorkspaceHost(host, () => visibility.current), [host]);
   useEffect(() => {
     if (visible) setVisited(true);
   }, [visible]);
@@ -74,7 +78,7 @@ function PluginWorkspace({
     shadow.append(root);
     import(/* @vite-ignore */ resourceUrl(base + plugin.ui!.entry))
       .then((module) => {
-        if (!cancelled) dispose = module.mount(root, host);
+        if (!cancelled) dispose = module.mount(root, workspaceHost);
       })
       .catch((reason) => setError(String(reason)));
     return () => {
@@ -82,7 +86,7 @@ function PluginWorkspace({
       dispose?.();
       shadow.replaceChildren();
     };
-  }, [plugin.id, plugin.version, host, visited]);
+  }, [plugin.id, plugin.version, workspaceHost, visited]);
   return (
     <div className="workspace" hidden={!visible}>
       {error && (
@@ -617,7 +621,7 @@ function App({entryId}: {entryId?: string}) {
             .filter((plugin) => plugin.ui)
             .map((plugin) => (
               <PluginWorkspace
-                key={`${plugin.id}:${previewGeneration}`}
+                key={plugin.id}
                 plugin={plugin}
                 host={host}
                 visible={plugin.id === tab}

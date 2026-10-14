@@ -193,9 +193,7 @@ class Series:
             return next((item for item in self.state["items"] if item["document_id"] == session.book["id"]), None)
         return None
 
-    def open_book(self, item: dict, session: Session, *, imported=False, activate=True, persisted=False):
-        if imported and item["settings"]:
-            session.apply(session.book["id"], session.book["revision"], {"metadata": item["settings"]})
+    def open_book(self, item: dict, session: Session, *, activate=True, persisted=False):
         if activate:
             self.state["current_id"] = item["id"]
         self.remember(item, session, persisted=persisted)
