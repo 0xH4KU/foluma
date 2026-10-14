@@ -527,12 +527,14 @@ class FormatPluginTests(unittest.TestCase):
                         "changes": {"extension": {"id": "org.foluma.editor", "data": {"spreads": [marked]}}}})
                     colors = {marked[0]: "black", marked[1]: "white", reading[0]["id"]: "black"}
                     book = self.engine.call("document.apply", {"document_id": book["id"], "base_revision": book["revision"],
-                        "changes": {"extension": {"id": "org.foluma.page-tools", "data": {"colors": colors}}}})
+                        "changes": {"extension": {"id": "org.foluma.page-tools", "data": {
+                            "colors": colors, "no_margins": [reading[0]["id"], "gone"]}}}})
                     path = self.root / f"{direction}-{cover_only}.epub"
                     self.task("export", document_id=book["id"], base_revision=book["revision"], path=str(path))
                     with ZipFile(path) as archive:
                         css = archive.read("EPUB/styles/page.css").decode()
                         self.assertIn("width: 96vw;", css)
+                        self.assertIn(".no-margins .page-image", css)
                         self.assertNotIn("prefers-color-scheme", css)
                         package = ET.fromstring(archive.read("EPUB/content.opf"))
                         refs = list(package.find("o:spine", ns))
@@ -544,6 +546,8 @@ class FormatPluginTests(unittest.TestCase):
                             root = ET.fromstring(archive.read(f"EPUB/pages/{pages.index(candidate) + 1:06d}.xhtml"))
                             svg = root.find(".//s:svg", ns)
                             if candidate["kind"] == "image":
+                                self.assertEqual("no-margins" in root.find("h:body", ns).get("class").split(),
+                                                 candidate["id"] == reading[0]["id"])
                                 alignment = ("xMaxYMid" if side == "left" else "xMinYMid") if candidate["id"] in marked else "xMidYMid"
                                 self.assertEqual(svg.get("preserveAspectRatio"), alignment + " meet")
                                 if candidate["id"] in marked:
@@ -551,6 +555,11 @@ class FormatPluginTests(unittest.TestCase):
                                 self.assertEqual(root.get("style"), "background: " + ("#000" if colors.get(candidate["id"]) == "black" else "#fff"))
                                 left, top, right, bottom = crop_box(candidate)
                                 self.assertEqual(svg.get("viewBox"), f"0 0 {right-left} {bottom-top}")
+                                clip = svg.find("s:svg", ns)
+                                self.assertEqual((clip.get("width"), clip.get("height"), clip.get("overflow")),
+                                                 (str(right-left), str(bottom-top), "hidden"))
+                                image = clip.find("s:image", ns)
+                                self.assertEqual((image.get("x"), image.get("y")), (str(-left), str(-top)))
                         self.assertEqual(archive.read(f"EPUB/images/{pages[0]['asset_id']}.jpg"), original)
                         self.assertEqual(marked_styles[0], marked_styles[1])
                         if not cover_only:
@@ -562,9 +571,33 @@ class FormatPluginTests(unittest.TestCase):
                     self.assertEqual(restored["metadata"]["direction"], direction)
                     restored_colors = restored["extensions"]["org.foluma.page-tools"]["colors"]
                     self.assertEqual(restored_colors[restored_reading[3]["id"]], "black")
+                    self.assertEqual(restored["extensions"]["org.foluma.page-tools"]["no_margins"],
+                                     [restored_reading[0]["id"]])
                     self.assertEqual(restored["extensions"]["org.foluma.editor"]["spreads"],
                                      [[candidate["id"] for candidate in restored_reading[3:5]]])
                     self.engine.call("document.release", {"document_id": restored["id"]})
+
+    def test_per_page_margins_survive_history_and_storage_without_the_editing_plugin(self):
+        book = self.task("import", path=str(self.pdf))
+        identifier = "org.foluma.page-tools"
+        self.assertNotIn(identifier, self.engine.plugins.active)
+        appearance = {"colors": {book["pages"][0]["id"]: "black"}, "no_margins": [book["pages"][0]["id"]]}
+        book = self.engine.call("document.apply", {"document_id": book["id"], "base_revision": book["revision"],
+            "changes": {"extension": {"id": identifier, "data": appearance}}})
+        self.assertNotIn(identifier, self.engine.call("document.undo", {"document_id": book["id"]})["extensions"])
+        book = self.engine.call("document.redo", {"document_id": book["id"]})
+        self.assertEqual(book["extensions"][identifier], appearance)
+        project = self.root / "margins.mteproj"
+        save_project(self.engine.session.book, project)
+        reopened = open_project(project)
+        self.assertEqual(reopened["extensions"][identifier], appearance)
+        path = self.root / "without-margins.epub"
+        self.task("export", document_id=book["id"], base_revision=book["revision"], path=str(path))
+        with ZipFile(path) as archive:
+            ns = {"h": "http://www.w3.org/1999/xhtml"}
+            root = ET.fromstring(archive.read("EPUB/pages/000001.xhtml"))
+            self.assertIn("no-margins", root.find("h:body", ns).get("class").split())
+            self.assertEqual(root.find(".//h:meta[@name='viewport']", ns).get("content"), "width=1750, height=2480")
 
     def test_epub_rejects_invalid_or_misaligned_spreads_without_publishing(self):
         book = self.task("import", path=str(self.pdf))
@@ -775,6 +808,10 @@ class FormatPluginTests(unittest.TestCase):
             ({page_member: image_page.replace('href="../images/', 'href="../../../images/').encode()}, "inside the archive"),
             ({page_member: image_page.replace('href="../images/', 'href="../%FF/').encode()}, "inside the archive"),
             ({"EPUB/styles/page.css": b"svg {transform: rotate(90deg);}"}, "Only simple image pages"),
+            ({"EPUB/styles/page.css": b"svg {width:100%;height:100%;}"}, "Only simple image pages"),
+            ({page_member: image_page.replace('overflow="hidden">', 'overflow="visible">').encode()}, "Only simple image pages"),
+            ({page_member: image_page.replace('<svg width=', '<svg x="1" width=').encode()}, "Only simple image pages"),
+            ({page_member: image_page.replace('<svg width=', '<svg viewBox="0 0 80 120" width=').encode()}, "Only simple image pages"),
             ({"EPUB/styles/page.css": b":root {transform: rotate(90deg);}"}, "Only simple image pages"),
             ({"EPUB/styles/page.css": b":root {color-scheme: invalid;}"}, "Only simple image pages"),
             ({"EPUB/styles/page.css": b"@media screen {svg {transform: rotate(90deg);}}"}, "Only simple image pages"),

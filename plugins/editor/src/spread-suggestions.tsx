@@ -1,9 +1,24 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Book, HostAPI, Page } from "../../../sdk/types";
 import { t } from "../../../sdk/i18n";
 import { spreadGroups } from "./pages";
 import { spreadRecommendations, type SpreadMark } from "./spreads";
 import { PageImage } from "./thumbnails";
+
+function SuggestionImage({ book, page, host }: { book: Book; page: Page; host: HostAPI }) {
+  const frame = useRef<HTMLSpanElement>(null);
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    const node = frame.current;
+    if (!node) return;
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) { setVisible(true); observer.disconnect(); }
+    }, { root: node.closest("dialog"), rootMargin: "120px" });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+  return <span ref={frame}>{visible ? <PageImage book={book} page={page} host={host} size={320} /> : "…"}</span>;
+}
 
 export function SpreadSuggestions({ book, host, gap, busy, select, unmark, close }: {
   book: Book;
@@ -24,8 +39,8 @@ export function SpreadSuggestions({ book, host, gap, busy, select, unmark, close
       if (previous?.isConnected) previous.focus();
     };
   }, []);
-  const { spreads, suggestions } = spreadRecommendations(book, gap);
-  const groups = spreadGroups(book, gap);
+  const { spreads, suggestions } = useMemo(() => spreadRecommendations(book, gap), [book, gap]);
+  const groups = useMemo(() => spreadGroups(book, gap), [book, gap]);
   const pairs = new Map(groups.flatMap((group) => group.flatMap((page) => page ? [[page.id, group] as const] : [])));
   const positions = new Map(book.pages.map((page, index) => [page.id, index + 1]));
   const pages = new Map(book.pages.map((page) => [page.id, page]));
@@ -39,7 +54,7 @@ export function SpreadSuggestions({ book, host, gap, busy, select, unmark, close
   const preview = (page: Page | null, ids: SpreadMark, slot: number) => page ? (
     <button key={page.id} className={`spread-suggestion-page ${ids.includes(page.id) ? "marked" : ""}`}
       aria-label={label(page.id)} onClick={() => select(page.id)}>
-      <span><PageImage book={book} page={page} host={host} size={640} /></span>
+      <SuggestionImage book={book} page={page} host={host} />
       <small>{positions.get(page.id)}{page.source_page ? ` · ${t("Source page {0}", page.source_page)}` : ""}</small>
     </button>
   ) : <div key={`gap-${slot}`} className="spread-suggestion-gap">{t("Preview only")}</div>;

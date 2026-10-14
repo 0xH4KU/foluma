@@ -15,8 +15,23 @@ export function pageColors(book: Book): Record<string, PageColor> {
     pages.has(id) && (color === "white" || color === "black"))) as Record<string, PageColor>;
 }
 
+export function pagesWithoutMargins(book: Book): string[] {
+  const data = book.extensions[PAGE_TOOLS_ID] as { no_margins?: unknown } | undefined;
+  const ids = data?.no_margins;
+  return Array.isArray(ids) ? book.pages.filter(page => page.kind === "image" && ids.includes(page.id)).map(page => page.id) : [];
+}
+
+export function cropBox(page: Page): [number, number, number, number] {
+  // Match Python's ties-to-even rounding in crop_box.
+  const round = (value: number) => value % 1 === 0.5 ? Math.floor(value) + Math.floor(value) % 2 : Math.round(value);
+  const [x, y, w, h] = page.crop || [0, 0, 1, 1];
+  const left = Math.min(page.width - 1, round(x * page.width)), top = Math.min(page.height - 1, round(y * page.height));
+  return [left, top, Math.min(page.width, Math.max(left + 1, round((x + w) * page.width))),
+    Math.min(page.height, Math.max(top + 1, round((y + h) * page.height)))];
+}
+
 export function pageSize(page: Page): [number, number] {
-  const width = page.width * (page.crop?.[2] || 1), height = page.height * (page.crop?.[3] || 1);
+  const [left, top, right, bottom] = cropBox(page), width = right - left, height = bottom - top;
   return (page.rotation || 0) % 180 ? [height, width] : [width, height];
 }
 
@@ -54,9 +69,10 @@ export function cropFromMargins(page: Page, margins: CropMargins): Page["crop"] 
   return [x + width * left, y + height * top, width * (1 - left - right), height * (1 - top - bottom)];
 }
 
-export function imagePlacement(width: number, height: number, viewport: [number, number], side?: "left" | "right", heightRatio = 1) {
+export function imagePlacement(width: number, height: number, viewport: [number, number], side?: "left" | "right", heightRatio = 1,
+  noMargins = false) {
   const [vw, vh] = viewport;
-  const margin = side ? 0 : PAGE_MARGIN;
+  const margin = side || noMargins ? 0 : PAGE_MARGIN;
   const availableWidth = vw * (1 - 2 * margin), availableHeight = vh * (side ? heightRatio : 1 - 2 * margin);
   const scale = Math.min(availableWidth / width, availableHeight / height);
   const w = width * scale, h = height * scale;

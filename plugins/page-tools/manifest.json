@@ -1,7 +1,7 @@
 {
   "id": "org.foluma.page-tools",
   "name": "Crop and margins",
-  "version": "0.1.1",
+  "version": "0.1.5",
   "api_version": 1,
   "description": "Crop pages, detect black or white margins and check the exported facing-page layout.",
   "platforms": ["all"],

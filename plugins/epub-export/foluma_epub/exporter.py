@@ -50,6 +50,9 @@ def export_epub(book: dict, path: str, progress=lambda *_: None, *,
     colors = appearance.get("colors", {}) if isinstance(appearance, dict) else {}
     if not isinstance(colors, dict):
         colors = {}
+    no_margins = appearance.get("no_margins", []) if isinstance(appearance, dict) else []
+    if not isinstance(no_margins, list):
+        no_margins = []
 
     def payload(asset_id):
         def load():
@@ -83,6 +86,7 @@ def export_epub(book: dict, path: str, progress=lambda *_: None, *,
                 crop_height=bottom - top,
                 is_spread=page["id"] in joined,
                 background="black" if colors.get(page["id"]) == "black" else "white",
+                no_margins=page["id"] in no_margins,
             )
         )
     cover = next(p for p in book["pages"] if p["id"] == meta["cover_id"])

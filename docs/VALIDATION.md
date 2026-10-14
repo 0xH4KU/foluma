@@ -1,5 +1,27 @@
 # Foluma 0.1 validation
 
+## Independent crop window and lighter blank suggestions (2026-10-13)
+
+Page tools 0.1.5 uses the existing native tool-window host for crop controls, with a BroadcastChannel scoped to its originating window and document. Changes must match the currently selected page and revision and pass shared crop validation before entering the workspace's draft map. The window can move outside the main app and onto other displays, stays open across page changes and draft commits, and disables controls while its originating workspace is unavailable. The host exposes an optional window-ID getter; older hosts retain inline controls. Native tool windows keep logical ownership through their labels and URL parameters instead of macOS child-window attachment, and accept the first mouse click when inactive.
+
+Editor 0.4.8 limits Blank suggestions storage updates to its own book's preview-gap setting, caches pairing calculations between document changes, and loads only visible or nearby suggestion images at 320 pixels instead of eagerly decoding 640-pixel previews for every spread. The crop window has a shorter native title, a small page caption, evenly spaced cross-shaped controls, integrated percentage units and compact step buttons; its native close button replaces the duplicate content close button. Traditional Chinese 0.4.22 includes the new labels. At the user's request, only compilation and packaging are performed; native synchronization, dragging smoothness and the new visual layout have not been measured in this update.
+
+Compilation completed. Signing the existing app bundle was blocked because that bundle was running; packaging the compiled binary into `build/native-crop-target/` completed successfully without stopping it. Delivery artifacts are `artifacts/Foluma-0.1.1-native-crop-arm64.dmg` and `artifacts/Foluma-native-crop-plugins-macos-arm64.zip`. The app retains its ad-hoc signature without notarization. The updated app and plugins must both be installed for the native crop-window channel and independent window behavior.
+
+## Floating crop controls (2026-10-13)
+
+Page tools 0.1.3 replaces the crop dialog's separate image and confirmation button with a draggable non-modal panel. Four percentage fields form a cross and edit the existing per-page crop drafts directly, synchronizing the central facing-page preview. The panel stays mounted across page selection, Apply and Discard; blank pages and stale drafts disable edits without dismissing it. The title supports pointer dragging and arrow-key movement, Escape closes the panel, and resize bounds keep it reachable. Traditional Chinese 0.4.20 includes the movement hint. At the user's request, no new functional tests or browser/native practice checks are performed for this update; packaging retains the required compilation steps.
+
+The Tauri release build completed, including TypeScript compilation, plugin bundles, native workers, the engine and macOS app/DMG. Delivery artifacts are `artifacts/Foluma-0.1.1-floating-crop-arm64.dmg` and `artifacts/Foluma-floating-crop-plugins-macos-arm64.zip`. The app retains its ad-hoc signature without notarization.
+
+## Per-page margins and border detection (2026-10-13)
+
+Page tools 0.1.2 adds a reversible per-page switch for the extra 2% inset while retaining the common EPUB canvas and proportional fitting. Border detection evaluates opposite edges separately; both supplied 2702 × 3840 manga pages were detected as black with a confident result using the actual 320-pixel preview input. EPUB export 0.2.1 clips source images to integer crop bounds, and EPUB import 0.1.6 retains the per-page margin exceptions. Traditional Chinese 0.4.19 includes the new controls; editor 0.4.7 uses the same integer page-size calculation.
+
+Before the user requested packaging without further tests, 81 Python tests and 39 TypeScript tests passed, together with Ruff, strict TypeScript and application/page-tools builds. Browser checks through an isolated real-engine bridge covered detection of the supplied pages, margin drafts and Apply, crop drafts on a rotated page, discard, undo/redo and rejection of stale margin edits. Ordinary pages and marked spreads matched exported SVG geometry within 0.02 display pixels, including background colors, fixed viewport dimensions and clipping. The leading virtual gap uses an inset outline so its border does not shrink the adjacent page. Further reader and native-app practice tests are left to the user.
+
+The existing Tauri release workflow rebuilt the macOS arm64 app, disk image, engine and independent plugin packages. The task artifacts are `artifacts/Foluma-0.1.1-crop-margins-arm64.dmg` and `artifacts/Foluma-crop-margins-plugins-macos-arm64.zip`; the latter contains the five updated plugins and installation instructions. The app retains its existing ad-hoc signature without notarization. No additional functional tests were run after the user's instruction.
+
 ## Crop and page margins (2026-10-12)
 
 The EPUB exporter now has one layout: ordinary pages have a 2% inset and marked pairs align to the spine at a shared display height. The optional Crop and margins workspace provides a thumbnail list, facing-page preview, reversible crop drafts, whole-book edge-color detection with progress/cancellation, and manual white/black choices before Apply. Confirmed appearance data remains in projects without the editing plugin.

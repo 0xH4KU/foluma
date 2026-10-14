@@ -63,16 +63,18 @@ function EditorHost({ host }: { host: HostAPI }) {
 }
 
 function SpreadTool({ host, book }: { host: HostAPI; book: Book | null }) {
-  const [, refresh] = useState(0);
+  const [gap, setGap] = useState(() => readView(book).gap);
   const [busy, setBusy] = useState(false);
   const execute = useMemo(() => createActionRunner(host, setBusy), [host]);
   useEffect(() => {
-    const changed = () => refresh(value => value + 1);
+    const changed = (event: StorageEvent) => {
+      if (event.key === `foluma.editor.view.${book?.id}` || event.key === null) setGap(readView(book).gap);
+    };
     window.addEventListener("storage", changed);
     return () => window.removeEventListener("storage", changed);
-  }, []);
+  }, [book?.id]);
   if (!book) return <p>{t("Open a book first")}</p>;
-  return <div className="spread-tool"><SpreadSuggestions book={book} host={host} gap={readView(book).gap} busy={busy}
+  return <div className="spread-tool"><SpreadSuggestions book={book} host={host} gap={gap} busy={busy}
     select={id => void host.selectPage?.(id).catch(host.report)}
     unmark={ids => void execute(() => host.apply(book, setSpreadMarks(book, spreadMarks(book).filter(pair => !pair.some(id => ids.includes(id))))))}
     close={() => void host.closeWindow?.().catch(host.report)} /></div>;

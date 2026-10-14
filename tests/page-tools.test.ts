@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { cropFromMargins, imagePlacement, joinedSpread, pageColors, spreadGroups } from "../sdk/page-layout.ts";
+import { cropBox, cropFromMargins, imagePlacement, joinedSpread, pageColors, pageSize, pagesWithoutMargins, spreadGroups } from "../sdk/page-layout.ts";
 import { detectColor } from "../plugins/page-tools/src/detect-color.ts";
 import type { Book, Page } from "../sdk/types.ts";
 
@@ -47,6 +47,31 @@ test("ordinary pages have four margins while marked facing pages meet at the spi
   assert.equal(joinedSpread(book, [book.pages[1], { id: "c", kind: "blank", width: 200, height: 100 }]), false);
 });
 
+test("disabling a page's extra margins keeps the canvas and image proportions", () => {
+  assert.deepEqual(imagePlacement(1000, 1000, [1000, 1000], undefined, 1, true),
+    { x: 0, y: 0, width: 1000, height: 1000 });
+  assert.deepEqual(imagePlacement(1000, 500, [1000, 1000], undefined, 1, true),
+    { x: 0, y: 250, width: 1000, height: 500 });
+  const book = fixture();
+  book.extensions["org.foluma.page-tools"] = { no_margins: ["a", "a", "b", "gone", 1, null] };
+  assert.deepEqual(pagesWithoutMargins(book), ["a", "b"]);
+  book.pages[0] = { id: "a", kind: "blank", width: 100, height: 100 };
+  assert.deepEqual(pagesWithoutMargins(book), ["b"]);
+  for (const value of [null, [], "bad", { no_margins: "b" }, { no_margins: {} }]) {
+    book.extensions["org.foluma.page-tools"] = value;
+    assert.deepEqual(pagesWithoutMargins(book), []);
+  }
+});
+
+test("preview crop dimensions match the export's integer bounds, rounding and rotation", () => {
+  const page: Page = { ...fixture().pages[0], width: 17, height: 13, crop: [0.13, 0.17, 0.53, 0.41] };
+  assert.deepEqual(cropBox(page), [2, 2, 11, 8]);
+  assert.deepEqual(pageSize(page), [9, 6]);
+  assert.deepEqual(pageSize({ ...page, rotation: 90 }), [6, 9]);
+  assert.deepEqual(cropBox({ ...page, width: 10, height: 10, crop: [0.05, 0.25, 0.8, 0.4] }), [0, 2, 8, 6]);
+  assert.deepEqual(pageSize({ ...page, width: 1, height: 1, crop: [0.99, 0.99, 0.01, 0.01] }), [1, 1]);
+});
+
 test("confirmed page colors survive without the tool and ignore malformed or stale entries", () => {
   const book = fixture();
   book.extensions["org.foluma.page-tools"] = { colors: { a: "black", b: "white", c: "red", gone: "black" } };
@@ -77,4 +102,23 @@ test("color detection uses the visible border, tolerates noise and flags mixed e
   for (let offset = mixed.length / 2; offset < mixed.length; offset += 4) mixed.set([255, 255, 255, 255], offset);
   assert.deepEqual(detectColor(mixed, 100, 100), { color: "white", certain: false });
   assert.deepEqual(detectColor(new Uint8ClampedArray(100 * 100 * 4), 100, 100), { color: "white", certain: true });
+});
+
+test("opposite black borders remain black when the other edges contain light artwork", () => {
+  for (const horizontal of [false, true]) {
+    const data = pixels(128, 245);
+    for (let y = 0; y < 100; y++) for (let x = 0; x < 100; x++) {
+      const [across, along] = horizontal ? [y, x] : [x, y];
+      if (across >= 95 || across < 5 && along < 63) data.set([0, 0, 0, 255], (y * 100 + x) * 4);
+    }
+    assert.deepEqual(detectColor(data, 100, 100), { color: "black", certain: true });
+    assert.deepEqual(detectColor(data, 100, 100, [10, 10, 10, 10]), { color: "white", certain: true });
+  }
+  const scannerLine = pixels(245, 0);
+  for (let y = 0; y < 100; y++) scannerLine.set([0, 0, 0, 255], y * 100 * 4);
+  assert.deepEqual(detectColor(scannerLine, 100, 100), { color: "white", certain: true });
+  const conflicting = pixels(255, 255);
+  for (let y = 0; y < 100; y++) for (let x = 0; x < 100; x++)
+    if (x < 5 || x >= 95) conflicting.set([0, 0, 0, 255], (y * 100 + x) * 4);
+  assert.deepEqual(detectColor(conflicting, 100, 100), { color: "black", certain: false });
 });

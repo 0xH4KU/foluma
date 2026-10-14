@@ -142,6 +142,7 @@ def check_css(payload, member, root):
         css = re.sub(r"/\*.*?\*/", "", payload.decode("utf-8-sig"), flags=re.DOTALL)
     except UnicodeError as error:
         raise unsupported(member) from error
+    main_svg = next((node for node in root.iter() if node.tag == f"{SVG}svg"), None)
     end, stack = 0, []
     for bracket in re.finditer(r"[{}]", css):
         if bracket[0] == "{":
@@ -160,6 +161,8 @@ def check_css(payload, member, root):
                 if nodes:
                     style = css[start:bracket.start()]
                     check_style(style, member)
+                    if any(node.tag == f"{SVG}svg" and node is not main_svg for node in nodes):
+                        raise unsupported(member)
                     if any(node.tag in (f"{SVG}image", f"{SVG}rect") for node in nodes) and re.search(
                             r"(?:^|;)\s*(?:width|height|max-width|max-height)\s*:", style, flags=re.IGNORECASE):
                         raise unsupported(member)
@@ -178,7 +181,7 @@ def number(value, member):
     return result
 
 
-def page(archive, member, resources, load_image, colors=None, spread_ids=None):
+def page(archive, member, resources, load_image, colors=None, spread_ids=None, no_margins=None):
     media_type = resources.get(member, {}).get("media-type")
     if media_type in IMAGE_TYPES:
         return load_image(member)
@@ -222,7 +225,7 @@ def page(archive, member, resources, load_image, colors=None, spread_ids=None):
     for shape in images + rectangles:
         if shape.tag in (f"{SVG}image", f"{SVG}rect") and shape.get("style"):
             raise unsupported(member)
-    if len(images) > 1 or len(svgs) > 1:
+    if len(images) > 1 or len(svgs) > 2:
         raise unsupported(member)
     if svgs:
         svg = svgs[0]
@@ -232,16 +235,25 @@ def page(archive, member, resources, load_image, colors=None, spread_ids=None):
         left, top, width, height = bounds
         if svg.get("preserveAspectRatio", "xMidYMid meet") not in ("xMidYMid meet", "xMinYMid meet", "xMaxYMid meet", "none"):
             raise unsupported(member)
+        image_parent = svg
+        if len(svgs) == 2:
+            clip = svgs[1]
+            if (clip not in list(svg) or clip.get("viewBox") is not None or clip.get("style") is not None
+                    or clip.get("preserveAspectRatio") is not None or clip.get("overflow") != "hidden"
+                    or (number(clip.get("x", "0"), member), number(clip.get("y", "0"), member),
+                        number(clip.get("width"), member), number(clip.get("height"), member)) != tuple(bounds)):
+                raise unsupported(member)
+            image_parent = clip
         if not images and len(rectangles) == 1:
             rectangle = rectangles[0]
             rectangle_width = width if rectangle.get("width") == "100%" else number(rectangle.get("width"), member)
             rectangle_height = height if rectangle.get("height") == "100%" else number(rectangle.get("height"), member)
-            if (rectangle not in list(svg) or rectangle.get("fill", "").lower() not in ("white", "#fff", "#ffffff")
+            if (len(svgs) != 1 or rectangle not in list(svg) or rectangle.get("fill", "").lower() not in ("white", "#fff", "#ffffff")
                     or number(rectangle.get("x", "0"), member) != left or number(rectangle.get("y", "0"), member) != top
                     or (rectangle_width, rectangle_height) != (width, height) or not width.is_integer() or not height.is_integer()):
                 raise unsupported(member)
             return {"id": new_id(), "kind": "blank", "width": int(width), "height": int(height)}
-        if len(images) != 1 or rectangles or images[0].tag != f"{SVG}image" or images[0] not in list(svg):
+        if len(images) != 1 or rectangles or images[0].tag != f"{SVG}image" or images[0] not in list(image_parent):
             raise unsupported(member)
         image = images[0]
         result = load_image(reference(member, image.get("href") or image.get("{http://www.w3.org/1999/xlink}href", "")))
@@ -258,6 +270,8 @@ def page(archive, member, resources, load_image, colors=None, spread_ids=None):
             colors[result["id"]] = "black" if background[1] == "#000" else "white"
         if "spread" in body.get("class", "").split() and spread_ids is not None:
             spread_ids.add(result["id"])
+        if "no-margins" in body.get("class", "").split() and no_margins is not None:
+            no_margins.append(result["id"])
         return result
     if len(images) != 1 or rectangles:
         raise unsupported(member)
@@ -351,13 +365,13 @@ def handle(operation: str, params: dict, book: dict | None, progress):
                 extracted.unlink()
             return copy.deepcopy(cached[member]) | {"id": new_id()}
 
-        colors, spread_ids = {}, set()
+        colors, spread_ids, no_margins = {}, set(), []
         progress(0, len(members), t("Importing EPUB pages"))
         for number, member in enumerate(members, 1):
-            book["pages"].append(page(archive, member, resources, load_image, colors, spread_ids) | {"source_page": number})
+            book["pages"].append(page(archive, member, resources, load_image, colors, spread_ids, no_margins) | {"source_page": number})
             progress(number, len(members), t("Importing EPUB pages"))
-        if colors:
-            book["extensions"]["org.foluma.page-tools"] = {"colors": colors}
+        if colors or no_margins:
+            book["extensions"]["org.foluma.page-tools"] = {"colors": colors, "no_margins": no_margins}
         spreads = [[a["id"], b["id"]] for a, b in zip(book["pages"][1::2], book["pages"][2::2])
                    if a["id"] in spread_ids and b["id"] in spread_ids]
         if spreads:

@@ -37,6 +37,7 @@ class EpubPage:
     crop_height: int | None = None
     is_spread: bool = False
     background: str = "white"
+    no_margins: bool = False
 
     def load_image_data(self) -> bytes:
         if self.image_data_loader is not None:
@@ -425,7 +426,7 @@ html, body {
   background: #fff;
 }
 
-svg {
+.page-image {
   display: block;
   position: absolute;
   left: 2vw;
@@ -434,7 +435,7 @@ svg {
   height: 96vh;
 }
 
-.spread svg {
+.spread .page-image, .no-margins .page-image {
   left: 0;
   top: 0;
   width: 100vw;
@@ -463,9 +464,11 @@ def _page_xhtml(title: str, page: EpubPage, language: str, viewport: tuple[int, 
     <meta name="viewport" content="width={viewport_width}, height={viewport_height}"/>
     <link rel="stylesheet" type="text/css" href="../styles/page.css"/>
   </head>
-  <body class="{'spread' if side else 'page'}" style="background: {background}">
-    <svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="{viewport_width}" height="{viewport_height}" viewBox="0 0 {page_width} {page_height}" preserveAspectRatio="{alignment} meet" overflow="hidden" role="img" aria-label="Page {page.index}"{scale_style}>
-      <image x="{image_x}" y="{-page.crop_y}" width="{page.width}" height="{page.height}" href="{href}"/>
+  <body class="{'spread' if side else 'page'}{' no-margins' if page.no_margins else ''}" style="background: {background}">
+    <svg xmlns="http://www.w3.org/2000/svg" class="page-image" version="1.1" width="{viewport_width}" height="{viewport_height}" viewBox="0 0 {page_width} {page_height}" preserveAspectRatio="{alignment} meet" overflow="hidden" role="img" aria-label="Page {page.index}"{scale_style}>
+      <svg width="{page_width}" height="{page_height}" overflow="hidden">
+        <image x="{image_x}" y="{-page.crop_y}" width="{page.width}" height="{page.height}" href="{href}"/>
+      </svg>
     </svg>
   </body>
 </html>
@@ -485,7 +488,7 @@ def _blank_page_xhtml(title: str, page: EpubPage, language: str, viewport: tuple
     <link rel="stylesheet" type="text/css" href="../styles/page.css"/>
   </head>
   <body>
-    <svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="{viewport_width}" height="{viewport_height}" viewBox="0 0 {viewport_width} {viewport_height}" preserveAspectRatio="xMidYMid meet" role="presentation" aria-label="{html.escape(page.label, quote=True)}">
+    <svg xmlns="http://www.w3.org/2000/svg" class="page-image" version="1.1" width="{viewport_width}" height="{viewport_height}" viewBox="0 0 {viewport_width} {viewport_height}" preserveAspectRatio="xMidYMid meet" role="presentation" aria-label="{html.escape(page.label, quote=True)}">
       <rect width="{viewport_width}" height="{viewport_height}" fill="#ffffff"/>
     </svg>
   </body>

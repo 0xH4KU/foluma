@@ -3,10 +3,10 @@ import { createRoot } from "react-dom/client";
 import { createActionRunner } from "../../../sdk/actions.ts";
 import { getLocale, setLocale, subscribeLocale, t } from "../../../sdk/i18n.ts";
 import { usePagePreview } from "../../../sdk/previews.ts";
-import { PAGE_TOOLS_ID, cropFromMargins, imagePlacement, joinedSpread, pageColors, pageSize, spreadGroups,
+import { PAGE_TOOLS_ID, cropBox, cropFromMargins, imagePlacement, joinedSpread, pageColors, pageSize, pagesWithoutMargins, spreadGroups,
   type CropMargins, type PageColor } from "../../../sdk/page-layout.ts";
 import type { Book, HostAPI, Page } from "../../../sdk/types.ts";
-import { CropDialog } from "./crop-dialog.tsx";
+import { CropControls, CropTool, useCropChannel, type CropState } from "./crop-controls.tsx";
 import { detectColor } from "./detect-color.ts";
 import "./page-tools.css";
 
@@ -34,16 +34,18 @@ function Thumbnail({ book, page, host, selected, color, uncertain, select }: {
   </button>;
 }
 
-function PreviewPage({ book, page, host, viewport, side, heightRatio, margins, color, selected, select }: {
+function PreviewPage({ book, page, host, viewport, side, heightRatio, margins, noMargins, color, selected, select }: {
   book: Book; page: Page; host: HostAPI; viewport: [number, number]; side?: "left" | "right";
-  heightRatio: number; margins: CropMargins; color: PageColor; selected: boolean; select: () => void;
+  heightRatio: number; margins: CropMargins; noMargins: boolean; color: PageColor; selected: boolean; select: () => void;
 }) {
   const { url, error } = usePagePreview(book, page, host, 1600);
   const [width, height] = pageSize(page);
-  const left = width * margins[0] / 100, top = height * margins[1] / 100;
-  const croppedWidth = width * (1 - (margins[0] + margins[2]) / 100);
-  const croppedHeight = height * (1 - (margins[1] + margins[3]) / 100);
-  const placement = imagePlacement(croppedWidth, croppedHeight, viewport, side, heightRatio);
+  const cropped = { ...page, crop: cropFromMargins(page, margins) };
+  const [croppedWidth, croppedHeight] = pageSize(cropped);
+  const [x, y, right, bottom] = cropBox(page), [cx, cy, cr, cb] = cropBox(cropped);
+  const [left, top] = page.rotation === 90 ? [bottom - cb, cx - x] : page.rotation === 180 ? [right - cr, bottom - cb]
+    : page.rotation === 270 ? [cy - y, right - cr] : [cx - x, cy - y];
+  const placement = imagePlacement(croppedWidth, croppedHeight, viewport, side, heightRatio, noMargins);
   return <button className={`preview-page ${selected ? "selected" : ""}`} style={{ background: color }}
     aria-pressed={selected} aria-label={t("Select page {0}", book.pages.indexOf(page) + 1)} onClick={select}>
     <svg viewBox={`0 0 ${viewport[0]} ${viewport[1]}`} role="img" aria-label={t("Page {0}", book.pages.indexOf(page) + 1)}>
@@ -60,6 +62,7 @@ function PageTools({ book, host }: { book: Book; host: HostAPI }) {
   const [focus, setFocus] = useState(book.pages[0]?.id);
   const [crops, setCrops] = useState<Record<string, CropMargins>>({});
   const [colors, setColors] = useState<Record<string, PageColor>>({});
+  const [noMargins, setNoMargins] = useState<Record<string, boolean>>({});
   const [uncertain, setUncertain] = useState<string[]>([]);
   const [baseRevision, setBaseRevision] = useState<number | null>(null);
   const [cropping, setCropping] = useState(false);
@@ -82,13 +85,45 @@ function PageTools({ book, host }: { book: Book; host: HostAPI }) {
     const [width, height] = pageSize(cropped);
     return viewport[0] * height / (viewport[1] * width);
   })) : 1;
-  const dirty = Object.keys(crops).length > 0 || Object.keys(colors).length > 0;
+  const dirty = Object.keys(crops).length > 0 || Object.keys(colors).length > 0 || Object.keys(noMargins).length > 0;
   const stale = baseRevision !== null && baseRevision !== book.revision;
   const editable = !busy && !stale && current?.kind === "image";
   const savedColors = pageColors(book);
+  const savedNoMargins = pagesWithoutMargins(book);
   const colorFor = (page: Page) => page.kind === "blank" ? "white" : colors[page.id] || savedColors[page.id] || "white";
+  const noMarginsFor = (page: Page) => noMargins[page.id] ?? savedNoMargins.includes(page.id);
   const beginDraft = () => setBaseRevision(old => old ?? book.revision);
-  const clear = () => { setCrops({}); setColors({}); setUncertain([]); setBaseRevision(null); setCropping(false); setStatus(""); };
+  const clear = () => { setCrops({}); setColors({}); setNoMargins({}); setUncertain([]); setBaseRevision(null); setStatus(""); };
+  const changeCrop = (margins: CropMargins) => {
+    if (!current || !editable) return;
+    cropFromMargins(current, margins);
+    beginDraft(); setCrops(old => ({ ...old, [current.id]: margins }));
+    setUncertain(old => [...new Set([...old, current.id])]); setStatus("");
+  };
+  const channel = useCropChannel(book, host);
+  const cropState: CropState = {
+    pageId: current?.id || null, revision: book.revision,
+    title: current ? t("Page {0}", book.pages.indexOf(current) + 1) : t("No pages"),
+    margins: current && crops[current.id] || [0, 0, 0, 0], disabled: !editable,
+  };
+  const latestCrop = useRef({ state: cropState, change: changeCrop });
+  latestCrop.current = { state: cropState, change: changeCrop };
+  useEffect(() => {
+    if (!channel) return;
+    channel.onmessage = ({ data }) => {
+      const { state, change } = latestCrop.current;
+      if (data?.type === "request") channel.postMessage({ type: "state", state });
+      if (data?.type !== "change") return;
+      if (data.pageId === state.pageId && data.revision === state.revision && !state.disabled &&
+          Array.isArray(data.margins) && data.margins.length === 4) {
+        try { change(data.margins as CropMargins); return; } catch (error) { host.report(error); }
+      }
+      channel.postMessage({ type: "state", state });
+    };
+    return () => { channel.onmessage = null; };
+  }, [channel, host]);
+  useEffect(() => { channel?.postMessage({ type: "state", state: cropState }); },
+    [channel, book.revision, current?.id, crops, editable, cropState.title]);
   useEffect(() => () => scanner.current?.abort(), []);
   useEffect(() => host.onPageSelect?.(setFocus), [host]);
   useEffect(() => {
@@ -148,6 +183,7 @@ function PageTools({ book, host }: { book: Book; host: HostAPI }) {
         ? { ...page, crop: cropFromMargins(page, crops[page.id]) } : page) } : {}),
       extension: { id: PAGE_TOOLS_ID, data: {
         ...(data && typeof data === "object" && !Array.isArray(data) ? data : {}), colors: { ...savedColors, ...colors },
+        no_margins: book.pages.filter(page => page.kind === "image" && noMarginsFor(page)).map(page => page.id),
       } },
     });
     clear(); setStatus(t("Crop and margin changes applied."));
@@ -185,17 +221,29 @@ function PageTools({ book, host }: { book: Book; host: HostAPI }) {
       </aside>
       <section className="preview-panel" aria-label={t("Spread preview with margins")}>
         <div className="page-controls"><strong>{current ? t("Page {0}", book.pages.indexOf(current) + 1) : t("No pages")}</strong>
-          <button disabled={!editable} onClick={() => { beginDraft(); setCropping(true); }}>{t("Crop…")}</button>
+          <button disabled={!editable} aria-haspopup="dialog" onClick={() => {
+            if (channel && host.openWindow) void execute(() => host.openWindow!({ plugin: PAGE_TOOLS_ID, view: "crop",
+              title: t("Crop"), width: 300, height: 280 }));
+            else setCropping(true);
+          }}>{t("Crop…")}</button>
+          <label className="margin-toggle"><input type="checkbox" disabled={!editable || joined}
+            checked={!!current && !joined && !noMarginsFor(current)} onChange={event => {
+              if (!current) return;
+              const noMargin = !event.target.checked;
+              beginDraft(); setNoMargins(old => ({ ...old, [current.id]: noMargin })); setStatus("");
+            }} />{t("Add page margins")}</label>
           <div className="margin-colors" role="group" aria-labelledby="margin-color-label"><span id="margin-color-label">{t("Margin color")}</span>
             <button disabled={!editable} aria-pressed={!!current && colorFor(current) === "white"} onClick={() => chooseColor("white")}>{t("White")}</button>
             <button disabled={!editable} aria-pressed={!!current && colorFor(current) === "black"} onClick={() => chooseColor("black")}>{t("Black")}</button>
           </div>
           {joined && <span className="spread-label">{t("Marked spread")}</span>}
         </div>
+        <p className="preview-note">{t("EPUB page size: {0} × {1}. Turning off margins removes the 2% inset; space needed to keep image proportions remains.", viewport[0], viewport[1])}</p>
         <div className="preview-stage" ref={stage}>
           <div className="spread-preview" style={{ height: previewHeight, width: previewHeight * viewport[0] / viewport[1] * group.length }}>
             {group.map((page, slot) => page ? <PreviewPage key={page.id} book={book} page={page} host={host} viewport={viewport}
               side={joined ? slot === 0 ? "left" : "right" : undefined} heightRatio={heightRatio} margins={crops[page.id] || [0, 0, 0, 0]}
+              noMargins={noMarginsFor(page)}
               color={colorFor(page)} selected={current?.id === page.id} select={() => { if (!busy) setFocus(page.id); }} />
               : <div className="virtual-gap" key={slot}>{t("Preview only")}</div>)}
           </div>
@@ -206,12 +254,7 @@ function PageTools({ book, host }: { book: Book; host: HostAPI }) {
       </section>
     </div>
     <footer className="status" role="status">{status || (dirty ? t("Preview edits are not saved. Apply to keep them.") : t("Select a page to crop. Detect all colors when ready."))}</footer>
-    {cropping && current && !stale && <CropDialog key={current.id} book={book} page={current} host={host} initial={crops[current.id] || [0, 0, 0, 0]}
-      close={() => { setCropping(false); if (!dirty) setBaseRevision(null); }} apply={margins => {
-        beginDraft(); setCrops(old => ({ ...old, [current.id]: margins })); setCropping(false);
-        setUncertain(old => [...new Set([...old, current.id])]);
-        setStatus("");
-      }} />}
+    {cropping && <CropControls {...cropState} close={() => setCropping(false)} change={changeCrop} />}
   </div>;
 }
 
@@ -219,7 +262,8 @@ function ToolsHost({ host }: { host: HostAPI }) {
   useSyncExternalStore(subscribeLocale, getLocale);
   const [book, setBook] = useState(host.getDocument());
   useEffect(() => host.subscribe(setBook), [host]);
-  return book ? <PageTools key={book.id} book={book} host={host} /> : <p className="empty">{t("Open a book first")}</p>;
+  return book ? host.view === "crop" ? <CropTool key={book.id} book={book} host={host} />
+    : <PageTools key={book.id} book={book} host={host} /> : <p className="empty">{t("Open a book first")}</p>;
 }
 
 export function mount(element: HTMLElement, host: HostAPI) {

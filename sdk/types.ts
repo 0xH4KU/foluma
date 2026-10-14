@@ -55,6 +55,7 @@ export type Series = {id: string; name: string; roots: string[]; current_id: str
 export interface HostAPI {
   version: 1;
   view?: string;
+  getWindowId?(): string;
   openWindow?(options: {plugin: string; view: string; title: string; width: number; height: number}): Promise<void>;
   closeWindow?(): Promise<void>;
   selectPage?(id: string): Promise<void>;

@@ -149,6 +149,7 @@ export function createHost(report: HostAPI["report"], notify: HostAPI["notify"])
   let activities = 0;
   return {
     version: 1, getDocument: () => book,
+    getWindowId: () => getCurrentWindow().label,
     view: new URLSearchParams(window.location?.search || "").get("view") || undefined,
     openWindow: async options => {
       if (!/^[a-z0-9-]{1,64}$/.test(options.view) || !Number.isFinite(options.width) || !Number.isFinite(options.height) ||

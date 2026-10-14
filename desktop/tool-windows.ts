@@ -39,12 +39,13 @@ export async function openToolWindow(options: Parameters<NonNullable<HostAPI["op
   const label = `tool-${parent.label}__${options.plugin.replaceAll(".", "_")}__${options.view}${documentId ? `__${documentId}` : ""}`;
   const existing = await WebviewWindow.getByLabel(label);
   if (existing) { await existing.show(); await existing.setFocus(); return; }
+  // Logical ownership uses the label; a native parent would couple movement on macOS.
   const window = new WebviewWindow(label, {
     url: `index.html?${new URLSearchParams({plugin: options.plugin, view: options.view, parent: parent.label,
       ...(documentId ? {document: documentId} : {})})}`,
     title: options.title, width: options.width, height: options.height,
     minWidth: 280, minHeight: 260, maximizable: false, minimizable: false,
-    visible: false, skipTaskbar: true, parent: parent.label,
+    visible: false, skipTaskbar: true, acceptFirstMouse: true,
   });
   await new Promise<void>((resolve, reject) => {
     void window.once("tauri://created", () => resolve());
