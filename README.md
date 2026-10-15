@@ -48,7 +48,7 @@ EPUB import supports image books, not arbitrary reflowable or scripted publicati
 
 ## Getting started
 
-Foluma **0.1.1** is available for **macOS Apple Silicon**. Download the disk image or app archive from the [latest release](https://github.com/0xH4KU/foluma/releases/latest), open it, and move **Foluma.app** to **Applications**. The packaged app includes its engine and plugins, so end users do not need Python, Node.js or Rust. You can also [build from source](docs/DEVELOPMENT.md).
+Foluma **0.1.2** is available for **macOS Apple Silicon**. Download the disk image or app archive from the [latest release](https://github.com/0xH4KU/foluma/releases/latest), open it, and move **Foluma.app** to **Applications**. The packaged app includes its engine and plugins, so end users do not need Python, Node.js or Rust. You can also [build from source](docs/DEVELOPMENT.md).
 
 This build uses an ad-hoc signature and is not notarized. macOS may require you to allow the app under **System Settings → Privacy & Security** after attempting to open it.
 

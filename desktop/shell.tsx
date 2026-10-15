@@ -352,7 +352,7 @@ export function Sidebar({
         </dl>
       </div>
       <div className="sidebar-foot">
-        <span>Foluma 0.1.1</span>
+        <span>Foluma 0.1.2</span>
         <span>{t("Loaded plugins: {0}", plugins.active.length)}</span>
       </div>
     </aside>
