@@ -39,6 +39,7 @@ import { Toolbar, DocumentBar, Sidebar, ImportProgress, StatusBar } from "./shel
 import { Preferences } from "./preferences";
 import { ProjectWizard } from "./project-wizard";
 import { closeBookWindows } from "./tool-windows";
+import { initializeTheme } from "./theme";
 import "./style.css";
 
 function PluginWorkspace({
@@ -182,6 +183,7 @@ function App({entryId}: {entryId?: string}) {
     replaceAllowed,
     importBook,
     openVolume,
+    completeReview,
     saveProject,
     exportBook,
     openProject,
@@ -392,6 +394,12 @@ function App({entryId}: {entryId?: string}) {
     const shortcuts = (event: KeyboardEvent) => {
       if (!(event.metaKey || event.ctrlKey) || busy || !ready) return;
       const key = event.key.toLowerCase();
+      if (key === "enter" && event.shiftKey && !event.repeat && !event.isComposing &&
+          !event.composedPath().some(node => node instanceof HTMLDialogElement) &&
+          !entryId && tab !== "series" && volume && (!volume.reviewed || nextVolume)) {
+        event.preventDefault();
+        completeReview(volume, nextVolume || undefined);
+      }
       if (key === "s") {
         event.preventDefault();
         if (book) void saveProject();
@@ -479,6 +487,7 @@ function App({entryId}: {entryId?: string}) {
         run={run}
         navigate={navigate}
         openVolume={openVolume}
+        onCompleteReview={entryId || !volume ? undefined : () => completeReview(volume, nextVolume || undefined)}
         showReview={tab !== "series"}
       />
       </div>
@@ -677,4 +686,5 @@ function ToolApp({ id }: { id: string }) {
 
 const tool = new URLSearchParams(window.location.search).get("plugin");
 const entry = new URLSearchParams(window.location.search).get("entry") || undefined;
+initializeTheme();
 createRoot(document.getElementById("root")!).render(tool ? <ToolApp id={tool} /> : <App entryId={entry} />);

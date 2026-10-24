@@ -44,6 +44,17 @@ def validate_crop(crop) -> None:
         raise ValueError(t("Crop extends outside the image"))
 
 
+def validate_deskew(angle) -> None:
+    if type(angle) not in (int, float) or not math.isfinite(angle) or not -10 <= angle <= 10:
+        raise ValueError(t("Fine rotation must be between -10° and 10°."))
+
+
+def page_background(book: dict, page_id: str) -> str:
+    appearance = book.get("extensions", {}).get("org.foluma.page-tools", {})
+    colors = appearance.get("colors", {}) if isinstance(appearance, dict) else {}
+    return "black" if isinstance(colors, dict) and colors.get(page_id) == "black" else "white"
+
+
 INFORMATION_FIELDS = ("title", "author", "language", "direction", "cover_only")
 REVIEW_EXTENSION_ID = "org.foluma.editor"  # Shared API 1 review contract; preserve existing projects and plugins.
 
@@ -133,6 +144,9 @@ def validate(book: dict) -> None:
         rotation = page.get("rotation", 0)
         if type(rotation) is not int or rotation not in (0, 90, 180, 270) or (rotation and page["kind"] != "image"):
             raise ValueError(t("Rotation must be 0, 90, 180 or 270 degrees for image pages."))
+        validate_deskew(page.get("deskew", 0))
+        if page.get("deskew") and page["kind"] != "image":
+            raise ValueError(t("Only image pages can be rotated."))
         for name in ("width", "height"):
             if type(page.get(name)) is not int or not 0 < page[name] <= 100000:
                 raise ValueError(t("Invalid page size"))
@@ -162,6 +176,7 @@ def validate(book: dict) -> None:
                 validate_crop(original.get("crop"))
                 if type(original.get("rotation", 0)) is not int or original.get("rotation", 0) not in (0, 90, 180, 270):
                     raise ValueError(t("Invalid original page rotation"))
+                validate_deskew(original.get("deskew", 0))
     images = [p["id"] for p in book["pages"] if p["kind"] == "image"]
     if meta.get("cover_id") not in images:
         meta["cover_id"] = images[0] if images else None

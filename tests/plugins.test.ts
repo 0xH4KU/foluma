@@ -1,7 +1,34 @@
 import assert from "node:assert/strict";
 import {test} from "node:test";
-import {availablePlugins, groupPlugins, pluginCategory, pluginUpdates, uniquePlugins} from "../desktop/plugins.ts";
+import {availablePlugins, groupPlugins, installPluginUpdate, pluginCategory, pluginUpdates, uniquePlugins} from "../desktop/plugins.ts";
 import type {Plugin} from "../sdk/types.ts";
+import type {HostAPI} from "../sdk/types.ts";
+
+test("single and bulk updates use the selected source, retain disabled plugins and propagate installation failures", async () => {
+  const current: Plugin = {id:"editor",name:"Editor",version:"1.0.0",api_version:1,platforms:["all"],enabled:false};
+  const included = {...current,version:"1.1.0"};
+  const official = {...current,version:"1.2.0"};
+  const calls: {method:string;params:unknown}[] = [];
+  let failure: string | null = null;
+  const host = {rpc: async (method:string,params:unknown) => {
+    calls.push({method,params});
+    if (method === failure) throw new Error("Update failed");
+  }} as Pick<HostAPI,"rpc">;
+  await installPluginUpdate(host,current,included,[included]);
+  assert.deepEqual(calls.splice(0),[
+    {method:"plugins.install_bundled",params:{id:"editor"}},
+    {method:"plugins.set_enabled",params:{id:"editor",enabled:false}},
+  ]);
+  await installPluginUpdate(host,{...current,enabled:true},official,[included]);
+  assert.deepEqual(calls.splice(0),[{method:"plugins.install_official",params:{id:"editor"}}]);
+  failure = "plugins.install_official";
+  await assert.rejects(installPluginUpdate(host,current,official,[included]),/Update failed/);
+  assert.deepEqual(calls.splice(0),[{method:"plugins.install_official",params:{id:"editor"}}],
+    "a failed install must not change activation");
+  failure = "plugins.set_enabled";
+  await assert.rejects(installPluginUpdate(host,current,included,[included]),/Update failed/,
+    "a failed attempt to restore disabled state must remain visible to the caller");
+});
 
 test("plugin categories deduplicate sources, keep updates on installed plugins and preserve capabilities", () => {
   const base = {version:"0.1.0",api_version:1,platforms:["all"]};

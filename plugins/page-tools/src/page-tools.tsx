@@ -3,10 +3,10 @@ import { createRoot } from "react-dom/client";
 import { createActionRunner } from "../../../sdk/actions.ts";
 import { getLocale, setLocale, subscribeLocale, t } from "../../../sdk/i18n.ts";
 import { usePagePreview, visibleRange } from "../../../sdk/previews.ts";
-import { PAGE_TOOLS_ID, appearanceData, cropBox, cropFromMargins, imagePlacement, joinedSpread, pageColors, pageSize, pagesWithoutMargins, spreadGroups,
+import { PAGE_TOOLS_ID, appearanceData, cropFromMargins, imagePlacement, joinedSpread, pageColors, pageSize, pagesWithoutMargins, spreadGroups, validDeskew,
   type CropMargins, type PageColor } from "../../../sdk/page-layout.ts";
 import type { Book, HostAPI, Page } from "../../../sdk/types.ts";
-import { CropControls, CropTool, useCropChannel, type CropState } from "./crop-controls.tsx";
+import { CropControls, CropTool, useCropChannel, type CropEdit, type CropState } from "./crop-controls.tsx";
 import { detectColor } from "./detect-color.ts";
 import "./page-tools.css";
 
@@ -16,7 +16,7 @@ function Thumbnail({ book, page, host, position, selected, color, uncertain, sel
   const { url, error } = usePagePreview(book, page, host, 320);
   return <button className={`thumbnail ${selected ? "selected" : ""}`} aria-pressed={selected}
     title={uncertain ? t("Check this page's margin color") : undefined} onClick={select}>
-    <span className="thumbnail-image" style={{ background: color }}>
+    <span className="thumbnail-image" style={{ background: color, color: color === "black" ? "white" : "#25282c" }}>
       {page.kind === "blank" ? <span className="blank-image" /> : url ? <img src={url} alt="" draggable={false} />
         : <span title={error}>{error ? t("Preview unavailable") : "…"}</span>}
     </span>
@@ -26,23 +26,18 @@ function Thumbnail({ book, page, host, position, selected, color, uncertain, sel
   </button>;
 }
 
-function PreviewPage({ book, page, host, viewport, side, heightRatio, margins, noMargins, color, selected, select }: {
-  book: Book; page: Page; host: HostAPI; viewport: [number, number]; side?: "left" | "right";
-  heightRatio: number; margins: CropMargins; noMargins: boolean; color: PageColor; selected: boolean; select: () => void;
+function PreviewPage({ book, page, edited, host, viewport, side, heightRatio, noMargins, color, selected, select }: {
+  book: Book; page: Page; edited: Page; host: HostAPI; viewport: [number, number]; side?: "left" | "right";
+  heightRatio: number; noMargins: boolean; color: PageColor; selected: boolean; select: () => void;
 }) {
-  const { url, error } = usePagePreview(book, page, host, 1600);
-  const [width, height] = pageSize(page);
-  const cropped = { ...page, crop: cropFromMargins(page, margins) };
-  const [croppedWidth, croppedHeight] = pageSize(cropped);
-  const [x, y, right, bottom] = cropBox(page), [cx, cy, cr, cb] = cropBox(cropped);
-  const [left, top] = page.rotation === 90 ? [bottom - cb, cx - x] : page.rotation === 180 ? [right - cr, bottom - cb]
-    : page.rotation === 270 ? [cy - y, right - cr] : [cx - x, cy - y];
-  const placement = imagePlacement(croppedWidth, croppedHeight, viewport, side, heightRatio, noMargins);
-  return <button className={`preview-page ${selected ? "selected" : ""}`} style={{ background: color }}
+  const { url, error } = usePagePreview(book, edited, host, 1600);
+  const [width, height] = pageSize(edited);
+  const placement = imagePlacement(width, height, viewport, side, heightRatio, noMargins);
+  return <button className={`preview-page ${selected ? "selected" : ""}`} style={{ background: color, color: color === "black" ? "white" : "#25282c" }}
     aria-pressed={selected} aria-label={t("Select page {0}", book.pages.indexOf(page) + 1)} onClick={select}>
     <svg viewBox={`0 0 ${viewport[0]} ${viewport[1]}`} role="img" aria-label={t("Page {0}", book.pages.indexOf(page) + 1)}>
       {page.kind === "blank" ? <rect width="100%" height="100%" fill="white" /> : url &&
-        <svg {...placement} viewBox={`${left} ${top} ${croppedWidth} ${croppedHeight}`} overflow="hidden">
+        <svg {...placement} viewBox={`0 0 ${width} ${height}`} overflow="hidden">
           <image href={url} width={width} height={height} preserveAspectRatio="none" />
         </svg>}
     </svg>
@@ -52,7 +47,7 @@ function PreviewPage({ book, page, host, viewport, side, heightRatio, margins, n
 
 function PageTools({ book, host }: { book: Book; host: HostAPI }) {
   const [focus, setFocus] = useState(book.pages[0]?.id);
-  const [crops, setCrops] = useState<Record<string, CropMargins>>({});
+  const [edits, setEdits] = useState<Record<string, CropEdit>>({});
   const [colors, setColors] = useState<Record<string, PageColor>>({});
   const [noMargins, setNoMargins] = useState<Record<string, boolean>>({});
   const [uncertain, setUncertain] = useState<string[]>([]);
@@ -69,6 +64,7 @@ function PageTools({ book, host }: { book: Book; host: HostAPI }) {
   const scanner = useRef<AbortController | null>(null);
   const execute = useMemo(() => createActionRunner(host, setBusy), [host]);
   const current = book.pages.find(page => page.id === focus) || book.pages[0];
+  const pageIndex = book.pages.indexOf(current);
   const groups = useMemo(() => spreadGroups(book, true), [book.pages, book.metadata.direction, book.metadata.cover_id, book.metadata.cover_only]);
   const cells = useMemo(() => groups.flatMap(pair => pair.length === 1 ? [pair[0], null] : pair), [groups]);
   const positions = useMemo(() => new Map(book.pages.map((page, index) => [page.id, index + 1])), [book.pages]);
@@ -76,37 +72,47 @@ function PageTools({ book, host }: { book: Book; host: HostAPI }) {
   const groupIndex = Math.max(0, groups.findIndex(group => group.some(page => page?.id === current?.id)));
   const group = groups[groupIndex] || [];
   const joined = joinedSpread(book, group);
+  const editedPage = (page: Page): Page => edits[page.id]
+    ? { ...page, crop: cropFromMargins(page, edits[page.id].margins), deskew: edits[page.id].angle } : page;
   const heightRatio = joined ? Math.min(1, ...group.map(page => {
     if (!page) return 1;
-    const cropped = crops[page.id] ? { ...page, crop: cropFromMargins(page, crops[page.id]) } : page;
-    const [width, height] = pageSize(cropped);
+    const [width, height] = pageSize(editedPage(page));
     return viewport[0] * height / (viewport[1] * width);
   })) : 1;
-  const dirty = Object.keys(crops).length > 0 || Object.keys(colors).length > 0 || Object.keys(noMargins).length > 0;
+  const dirty = Object.keys(edits).length > 0 || Object.keys(colors).length > 0 || Object.keys(noMargins).length > 0;
   const stale = baseRevision !== null && baseRevision !== book.revision;
   const editable = !busy && !stale && current?.kind === "image";
   const savedColors = pageColors(book);
   const savedAppearance = appearanceData(book);
+  const previewBook = { ...book, extensions: { ...book.extensions,
+    [PAGE_TOOLS_ID]: { ...savedAppearance, colors: { ...savedColors, ...colors } } } };
   const savedNoMargins = new Set(pagesWithoutMargins(book));
   const pageIds = new Set(book.pages.map(page => page.id));
   const colorFor = (page: Page) => page.kind === "blank" ? "white" : colors[page.id] || savedColors[page.id] || "white";
   const noMarginsFor = (page: Page) => noMargins[page.id] ?? savedNoMargins.has(page.id);
   const beginDraft = () => setBaseRevision(old => old ?? book.revision);
-  const clear = () => { setCrops({}); setColors({}); setNoMargins({}); setUncertain([]); setBaseRevision(null); setStatus(""); };
-  const changeCrop = (margins: CropMargins) => {
+  const clear = () => { setEdits({}); setColors({}); setNoMargins({}); setUncertain([]); setBaseRevision(null); setStatus(""); };
+  const changeCrop = (margins: CropMargins, angle: number) => {
     if (!current || !editable) return;
     cropFromMargins(current, margins);
-    beginDraft(); setCrops(old => ({ ...old, [current.id]: margins }));
+    if (!validDeskew(angle)) throw new Error(t("Fine rotation must be between -10° and 10°."));
+    beginDraft(); setEdits(old => ({ ...old, [current.id]: { margins, angle } }));
     setUncertain(old => [...new Set([...old, current.id])]); setStatus("");
   };
-  const channel = useCropChannel(book, host);
-  const cropState: CropState = {
-    pageId: current?.id || null, revision: book.revision,
-    title: current ? t("Page {0}", book.pages.indexOf(current) + 1) : t("No pages"),
-    margins: current && crops[current.id] || [0, 0, 0, 0], disabled: !editable,
+  const channel = useCropChannel(host);
+  const navigatePage = (step: -1 | 1) => {
+    const page = book.pages[pageIndex + step];
+    if (!busy && page) setFocus(page.id);
   };
-  const latestCrop = useRef({ state: cropState, change: changeCrop, dirty, clear });
-  latestCrop.current = { state: cropState, change: changeCrop, dirty, clear };
+  const cropState: CropState = {
+    documentId: book.id, pageId: current?.id || null, revision: book.revision,
+    title: current ? t("Page {0}", book.pages.indexOf(current) + 1) : t("No pages"),
+    margins: current && edits[current.id]?.margins || [0, 0, 0, 0],
+    angle: current ? edits[current.id]?.angle ?? current.deskew ?? 0 : 0, disabled: !editable,
+    canPrevious: !busy && pageIndex > 0, canNext: !busy && pageIndex >= 0 && pageIndex < book.pages.length - 1,
+  };
+  const latestCrop = useRef({ state: cropState, change: changeCrop, navigate: navigatePage, dirty, clear });
+  latestCrop.current = { state: cropState, change: changeCrop, navigate: navigatePage, dirty, clear };
   const scrollThumbnail = (id: string | null | undefined) => {
     const node = thumbnails.current;
     if (!node?.clientHeight) return;
@@ -142,19 +148,26 @@ function PageTools({ book, host }: { book: Book; host: HostAPI }) {
   useEffect(() => {
     if (!channel) return;
     channel.onmessage = ({ data }) => {
-      const { state, change } = latestCrop.current;
+      const { state, change, navigate } = latestCrop.current;
       if (data?.type === "request") channel.postMessage({ type: "state", state });
+      if (data?.type === "navigate") {
+        if (data.documentId === state.documentId && data.pageId === state.pageId && data.revision === state.revision &&
+            (data.step === -1 && state.canPrevious || data.step === 1 && state.canNext)) {
+          navigate(data.step);
+        } else channel.postMessage({ type: "state", state });
+        return;
+      }
       if (data?.type !== "change") return;
-      if (data.pageId === state.pageId && data.revision === state.revision && !state.disabled &&
+      if (data.documentId === state.documentId && data.pageId === state.pageId && data.revision === state.revision && !state.disabled &&
           Array.isArray(data.margins) && data.margins.length === 4) {
-        try { change(data.margins as CropMargins); return; } catch (error) { host.report(error); }
+        try { change(data.margins as CropMargins, data.angle); return; } catch (error) { host.report(error); }
       }
       channel.postMessage({ type: "state", state });
     };
     return () => { channel.onmessage = null; };
   }, [channel, host]);
   useEffect(() => { channel?.postMessage({ type: "state", state: cropState }); },
-    [channel, book.revision, current?.id, crops, editable, cropState.title]);
+    [channel, book.id, book.revision, current?.id, edits, editable, cropState.title, cropState.canPrevious, cropState.canNext]);
   useEffect(() => () => scanner.current?.abort(), []);
   useEffect(() => host.onPageSelect?.(setFocus), [host]);
   useEffect(() => {
@@ -181,7 +194,7 @@ function PageTools({ book, host }: { book: Book; host: HostAPI }) {
     const scan = async () => {
       while (cursor < pages.length && !controller.signal.aborted) {
         const page = pages[cursor++];
-        const url = await host.preview(book, page, 320, controller.signal);
+        const url = await host.preview(previewBook, editedPage(page), 320, controller.signal);
         const image = new Image(); image.crossOrigin = "anonymous"; image.src = url;
         await image.decode();
         if (controller.signal.aborted) return;
@@ -191,7 +204,7 @@ function PageTools({ book, host }: { book: Book; host: HostAPI }) {
         if (!context) throw new Error(t("Preview unavailable"));
         context.drawImage(image, 0, 0);
         const result = detectColor(context.getImageData(0, 0, canvas.width, canvas.height).data,
-          canvas.width, canvas.height, crops[page.id]);
+          canvas.width, canvas.height);
         detected[page.id] = result.color;
         if (!result.certain) checks.push(page.id);
         setProgress({ done: ++done, total: pages.length });
@@ -209,8 +222,7 @@ function PageTools({ book, host }: { book: Book; host: HostAPI }) {
   });
   const apply = () => void execute(async () => {
     await host.apply({ ...book, revision: baseRevision ?? book.revision }, {
-      ...(Object.keys(crops).length ? { pages: book.pages.map(page => crops[page.id]
-        ? { ...page, crop: cropFromMargins(page, crops[page.id]) } : page) } : {}),
+      ...(Object.keys(edits).length ? { pages: book.pages.map(editedPage) } : {}),
       extension: { id: PAGE_TOOLS_ID, data: {
         ...savedAppearance, colors: { ...savedAppearance.colors, ...colors },
         no_margins: [...savedAppearance.no_margins.filter(id => !pageIds.has(id)),
@@ -233,6 +245,11 @@ function PageTools({ book, host }: { book: Book; host: HostAPI }) {
   return <div className="page-tools">
     <header className="toolbar"><strong>{t("Crop and margins")}</strong>
       <button disabled={busy || stale || !book.pages.some(page => page.kind === "image")} onClick={detectAll}>{t("Detect all page colors")}</button>
+      <button disabled={busy || stale || !book.pages.some(page => page.kind === "image" && !noMarginsFor(page))} onClick={() => {
+        beginDraft();
+        setNoMargins(Object.fromEntries(book.pages.filter(page => page.kind === "image").map(page => [page.id, true])));
+        setStatus("");
+      }}>{t("Turn off all page margins")}</button>
       <span className="toolbar-space" />
       <button disabled={busy || dirty || !book.can_undo} onClick={() => void execute(() => host.rpc("document.undo", { document_id: book.id }))}>{t("↶ Undo")}</button>
       <button disabled={busy || dirty || !book.can_redo} onClick={() => void execute(() => host.rpc("document.redo", { document_id: book.id }))}>{t("↷ Redo")}</button>
@@ -251,7 +268,7 @@ function PageTools({ book, host }: { book: Book; host: HostAPI }) {
         }}><div className="thumbnail-height" style={{ height: Math.ceil(cells.length / 2) * 176 }}>
           <div className="thumbnail-grid" style={{ top: Math.floor(first / 2) * 176 }}>
           {cells.slice(first, last).map((page, offset) => page ?
-          <Thumbnail key={page.id} book={book} page={page} host={host} position={positions.get(page.id)!} selected={current?.id === page.id}
+          <Thumbnail key={page.id} book={previewBook} page={page} host={host} position={positions.get(page.id)!} selected={current?.id === page.id}
             color={colorFor(page)} uncertain={uncertain.includes(page.id)} select={() => { if (!busy) setFocus(page.id); }} />
           : <div className="thumbnail-gap" key={`gap-${first + offset}`}>{t("Preview only")}</div>)}
           </div></div></div>
@@ -260,7 +277,7 @@ function PageTools({ book, host }: { book: Book; host: HostAPI }) {
         <div className="page-controls"><strong>{current ? t("Page {0}", book.pages.indexOf(current) + 1) : t("No pages")}</strong>
           <button disabled={!editable} aria-haspopup="dialog" onClick={() => {
             if (channel && host.openWindow) void execute(() => host.openWindow!({ plugin: PAGE_TOOLS_ID, view: "crop",
-              title: t("Crop"), width: 300, height: 280 }));
+              title: t("Crop"), width: 300, height: 330, persistent: true }));
             else setCropping(true);
           }}>{t("Crop…")}</button>
           <label className="margin-toggle"><input type="checkbox" disabled={!editable || joined}
@@ -278,8 +295,8 @@ function PageTools({ book, host }: { book: Book; host: HostAPI }) {
         <p className="preview-note">{t("EPUB page size: {0} × {1}. Turning off margins removes the 2% inset; space needed to keep image proportions remains.", viewport[0], viewport[1])}</p>
         <div className="preview-stage" ref={stage}>
           <div className="spread-preview" style={{ height: previewHeight, width: previewHeight * viewport[0] / viewport[1] * group.length }}>
-            {group.map((page, slot) => page ? <PreviewPage key={page.id} book={book} page={page} host={host} viewport={viewport}
-              side={joined ? slot === 0 ? "left" : "right" : undefined} heightRatio={heightRatio} margins={crops[page.id] || [0, 0, 0, 0]}
+            {group.map((page, slot) => page ? <PreviewPage key={page.id} book={previewBook} page={page} edited={editedPage(page)} host={host} viewport={viewport}
+              side={joined ? slot === 0 ? "left" : "right" : undefined} heightRatio={heightRatio}
               noMargins={noMarginsFor(page)}
               color={colorFor(page)} selected={current?.id === page.id} select={() => { if (!busy) setFocus(page.id); }} />
               : <div className="virtual-gap" key={slot}>{t("Preview only")}</div>)}
@@ -291,7 +308,7 @@ function PageTools({ book, host }: { book: Book; host: HostAPI }) {
       </section>
     </div>
     <footer className="status" role="status">{status || (dirty ? t("Preview edits are not saved. Apply to keep them.") : t("Select a page to crop. Detect all colors when ready."))}</footer>
-    {cropping && <CropControls {...cropState} close={() => setCropping(false)} change={changeCrop} />}
+    {cropping && <CropControls {...cropState} close={() => setCropping(false)} change={changeCrop} navigate={navigatePage} />}
   </div>;
 }
 
@@ -299,8 +316,8 @@ function ToolsHost({ host }: { host: HostAPI }) {
   useSyncExternalStore(subscribeLocale, getLocale);
   const [book, setBook] = useState(host.getDocument());
   useEffect(() => host.subscribe(setBook), [host]);
-  return book ? host.view === "crop" ? <CropTool key={book.id} book={book} host={host} />
-    : <PageTools key={book.id} book={book} host={host} /> : <p className="empty">{t("Open a book first")}</p>;
+  return host.view === "crop" ? <CropTool host={host} />
+    : book ? <PageTools key={book.id} book={book} host={host} /> : <p className="empty">{t("Open a book first")}</p>;
 }
 
 export function mount(element: HTMLElement, host: HostAPI) {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { cropBox, cropFromMargins, imagePlacement, joinedSpread, pageColors, pageSize, pagesWithoutMargins, spreadGroups } from "../sdk/page-layout.ts";
+import { cropBox, cropFromMargins, imagePlacement, joinedSpread, pageColors, pageSize, pagesWithoutMargins, spreadGroups, validDeskew } from "../sdk/page-layout.ts";
 import { detectColor } from "../plugins/page-tools/src/detect-color.ts";
 import type { Book, Page } from "../sdk/types.ts";
 
@@ -70,6 +70,16 @@ test("preview crop dimensions match the export's integer bounds, rounding and ro
   assert.deepEqual(pageSize({ ...page, rotation: 90 }), [6, 9]);
   assert.deepEqual(cropBox({ ...page, width: 10, height: 10, crop: [0.05, 0.25, 0.8, 0.4] }), [0, 2, 8, 6]);
   assert.deepEqual(pageSize({ ...page, width: 1, height: 1, crop: [0.99, 0.99, 0.01, 0.01] }), [1, 1]);
+});
+
+test("fine rotation accepts signed small angles and keeps the crop canvas dimensions", () => {
+  const page = fixture().pages[0];
+  for (const angle of [-10, -1.2, 0, 0.1, 10]) {
+    assert.ok(validDeskew(angle));
+    assert.deepEqual(pageSize({...page, deskew: angle}), pageSize(page));
+    assert.deepEqual(cropFromMargins({...page, deskew: angle}, [10, 20, 30, 40]), cropFromMargins(page, [10, 20, 30, 40]));
+  }
+  for (const angle of [-10.1, 10.1, NaN, Infinity, true, "1", null, undefined]) assert.equal(validDeskew(angle), false);
 });
 
 test("confirmed page colors survive without the tool and ignore malformed or stale entries", () => {

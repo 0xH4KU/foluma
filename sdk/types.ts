@@ -3,6 +3,7 @@ export type Page = {
   id: string; kind: "image" | "blank"; width: number; height: number;
   asset_id?: string; crop?: [number, number, number, number]; source_page?: number | null;
   rotation?: 0 | 90 | 180 | 270;
+  deskew?: number;
   split?: { group: string; original: Page; side: "left" | "right" };
 };
 export type Asset = {
@@ -56,7 +57,7 @@ export interface HostAPI {
   version: 1;
   view?: string;
   getWindowId?(): string;
-  openWindow?(options: {plugin: string; view: string; title: string; width: number; height: number}): Promise<void>;
+  openWindow?(options: {plugin: string; view: string; title: string; width: number; height: number; persistent?: boolean}): Promise<void>;
   closeWindow?(): Promise<void>;
   selectPage?(id: string): Promise<void>;
   onPageSelect?(listener: (id: string) => void): () => void;

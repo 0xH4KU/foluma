@@ -3,8 +3,18 @@ import type { Book, Page } from "./types.ts";
 
 export const PAGE_TOOLS_ID = "org.foluma.page-tools";
 export const PAGE_MARGIN = 0.02;
+export const MAX_DESKEW = 10;
 export type PageColor = "white" | "black";
 export type CropMargins = [number, number, number, number]; // left, top, right, bottom in displayed orientation
+
+export function validDeskew(angle: unknown): angle is number {
+  return typeof angle === "number" && Number.isFinite(angle) && Math.abs(angle) <= MAX_DESKEW;
+}
+
+export function pageBackground(book: Book, pageId: string): PageColor {
+  const colors = (book.extensions?.[PAGE_TOOLS_ID] as {colors?: Record<string, unknown>} | undefined)?.colors;
+  return colors && typeof colors === "object" && !Array.isArray(colors) && colors[pageId] === "black" ? "black" : "white";
+}
 
 export function appearanceData(book: Book) {
   const value = book.extensions[PAGE_TOOLS_ID];

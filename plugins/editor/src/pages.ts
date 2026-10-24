@@ -1,6 +1,6 @@
 import { t } from "../../../sdk/i18n.ts";
 import type { Book, Changes, Metadata, Page } from "../../../sdk/types.ts";
-import { PAGE_TOOLS_ID, appearanceData, pageSize, remapPageData, spreadGroups, type PageColor } from "../../../sdk/page-layout.ts";
+import { PAGE_TOOLS_ID, appearanceData, pageSize, remapPageData, spreadGroups, validDeskew, type PageColor } from "../../../sdk/page-layout.ts";
 import { REVIEW_EXTENSION_ID, reviewData, spreadMarks, type SpreadMark } from "../../../sdk/review.ts";
 export { pageSize, readingPages, spreadGroups } from "../../../sdk/page-layout.ts";
 
@@ -147,6 +147,7 @@ type PresetPage =
       asset_id?: string;
       crop: [number, number, number, number];
       rotation?: Page["rotation"];
+      deskew?: number;
       color?: PageColor;
       no_margins?: boolean;
       split?: {
@@ -154,6 +155,7 @@ type PresetPage =
         side: "left" | "right";
         original_crop: [number, number, number, number];
         original_rotation?: Page["rotation"];
+        original_deskew?: number;
         original_color?: PageColor;
         original_no_margins?: boolean;
       };
@@ -180,6 +182,7 @@ export function createPreset(book: Book): { payload: Preset; asset_ids: string[]
       asset_id: sourcePage ? undefined : page.asset_id,
       crop: page.crop!,
       rotation: page.rotation,
+      deskew: page.deskew,
       color: colors[page.id] || "white",
       no_margins: noMargins.has(page.id),
       split: page.split
@@ -188,6 +191,7 @@ export function createPreset(book: Book): { payload: Preset; asset_ids: string[]
             side: page.split.side,
             original_crop: page.split.original.crop!,
             original_rotation: page.split.original.rotation,
+            original_deskew: page.split.original.deskew,
             original_color: colors[page.split.original.id] || "white",
             original_no_margins: noMargins.has(page.split.original.id),
           }
@@ -228,7 +232,7 @@ export function applyPreset(book: Book, payload: Preset, remap: Record<string, s
   const primary = new Map<string, string>(), children = new Map<string, string[]>(), used = new Set<string>();
   const identity = (page: Page) => book.assets[page.asset_id!].source_page
     ? `source:${page.source_page || book.assets[page.asset_id!].source_page}` : page.asset_id!;
-  const key = (page: Page) => JSON.stringify([page.asset_id, page.source_page || 0, page.crop, page.rotation || 0]);
+  const key = (page: Page) => JSON.stringify([page.asset_id, page.source_page || 0, page.crop, page.rotation || 0, page.deskew || 0]);
   for (const page of [...book.pages, ...book.pages.flatMap(page => page.split ? [page.split.original] : [])].reverse()) {
     if (page.kind !== "image") continue;
     const matching = geometry.get(key(page)) || [];
@@ -254,7 +258,9 @@ export function applyPreset(book: Book, payload: Preset, remap: Record<string, s
     if (item.color !== undefined && item.color !== "white" && item.color !== "black" ||
         item.no_margins !== undefined && typeof item.no_margins !== "boolean" ||
         item.split?.original_color !== undefined && !["white", "black"].includes(item.split.original_color) ||
-        item.split?.original_no_margins !== undefined && typeof item.split.original_no_margins !== "boolean")
+        item.split?.original_no_margins !== undefined && typeof item.split.original_no_margins !== "boolean" ||
+        item.deskew !== undefined && !validDeskew(item.deskew) ||
+        item.split?.original_deskew !== undefined && !validDeskew(item.split.original_deskew))
       throw new Error(t("Unsupported layout preset"));
     const page: Page = {
       id,
@@ -262,6 +268,7 @@ export function applyPreset(book: Book, payload: Preset, remap: Record<string, s
       asset_id: assetId,
       crop: item.crop,
       ...(item.rotation ? { rotation: item.rotation } : {}),
+      ...(item.deskew ? { deskew: item.deskew } : {}),
       width: asset.width,
       height: asset.height,
       source_page: item.kind === "source" ? item.source_page : null,
@@ -281,6 +288,8 @@ export function applyPreset(book: Book, payload: Preset, remap: Record<string, s
           id: crypto.randomUUID(),
           original: { ...page, id: crypto.randomUUID(), crop: item.split.original_crop, rotation: item.split.original_rotation || 0 },
         };
+        if (item.split.original_deskew) group.original.deskew = item.split.original_deskew;
+        else delete group.original.deskew;
         groups.set(item.split.group, group);
         const original = geometry.get(key(group.original))?.pop() || primary.get(sourceId);
         origins.set(group.original.id, original ? [original] : []);

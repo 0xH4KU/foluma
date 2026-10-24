@@ -15,7 +15,17 @@ from zipfile import ZIP_DEFLATED, ZipFile
 from . import __version__
 from .cache import PreviewCache
 from .i18n import messages, t
-from .model import EngineError, Session, information_patch, new_id, review_unchanged, validate
+from .model import (
+    EngineError,
+    Session,
+    information_patch,
+    new_id,
+    page_background,
+    review_unchanged,
+    validate,
+    validate_crop,
+    validate_deskew,
+)
 from .plugins import Plugins, platform_id, unpack
 from .series import FolderProject, Series, preview_inputs
 from .storage import atomic_json, contained, copy_asset, digest, link_or_copy, open_project, parse_json, save_project
@@ -268,10 +278,22 @@ class Engine:
         if method == "document.preview":
             def snapshot():
                 current = self.document(p).book
-                page = next(page for page in current["pages"] if page["id"] == p["page_id"])
+                page = copy.deepcopy(next(page for page in current["pages"] if page["id"] == p["page_id"]))
+                if "crop" in p:
+                    validate_crop(p["crop"])
+                    page["crop"] = copy.deepcopy(p["crop"])
+                if "deskew" in p:
+                    validate_deskew(p["deskew"])
+                    if p["deskew"] and page["kind"] != "image":
+                        raise ValueError(t("Only image pages can be rotated."))
+                    page["deskew"] = p["deskew"]
+                background = p.get("background", page_background(current, page["id"]))
+                if background not in ("black", "white"):
+                    raise ValueError(t("Invalid page background"))
                 return copy.deepcopy({
                     "id": current["id"], "pages": [page],
                     "assets": {page["asset_id"]: current["assets"][page["asset_id"]]} if page["kind"] == "image" else {},
+                    "extensions": {"org.foluma.page-tools": {"colors": {page["id"]: background}}},
                 })
             size = p.get("size", 320)
             return self.cache.preview(
@@ -789,7 +811,7 @@ class Engine:
             with tempfile.TemporaryDirectory(prefix=".foluma-", dir=target.parent) as temp:
                 staged = Path(temp) / target.name
                 args = {"book": book, "path": str(staged)}
-                if operation == "export" and any(page.get("rotation") for page in book["pages"]):
+                if operation == "export" and any(page.get("rotation") or page.get("deskew") for page in book["pages"]):
                     args["book"] = self.run_worker("images.prepare_export", {"book": book, "directory": str(Path(temp) / "rotated")}, job)
                 if provider:
                     args.update(plugin_id=provider["id"], options=p.get("options", {}))

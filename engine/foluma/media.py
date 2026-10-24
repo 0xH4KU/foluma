@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import copy
 import io
+from contextlib import nullcontext
 from pathlib import Path
 from zipfile import ZIP_STORED, ZipFile
 
 from PIL import Image, ImageOps
 
 from .i18n import t
-from .model import image_page, new_id, validate
+from .model import image_page, new_id, page_background, validate
 from .storage import check_sources, copy_asset, preview_path
 
 
@@ -31,11 +32,19 @@ def crop_box(page: dict) -> tuple[int, int, int, int]:
 ROTATIONS = {90: Image.Transpose.ROTATE_270, 180: Image.Transpose.ROTATE_180, 270: Image.Transpose.ROTATE_90}
 
 
+def deskew_image(book: dict, page: dict, image: Image.Image) -> Image.Image:
+    mode = "RGBA" if "A" in image.getbands() or "transparency" in image.info else "RGB"
+    with image.convert(mode) as source:
+        return source.rotate(-page["deskew"], resample=Image.Resampling.BICUBIC,
+                             fillcolor=page_background(book, page["id"]))
+
+
 def page_image(book: dict, page: dict) -> Image.Image:
     with Image.open(io.BytesIO(load_asset(book, page["asset_id"]))) as original:
         if original.size != (page["width"], page["height"]):
             raise ValueError(t("Asset dimensions do not match the project. Please import again."))
-        image = original.crop(crop_box(page))
+        with deskew_image(book, page, original) if page.get("deskew") else nullcontext(original) as source:
+            image = source.crop(crop_box(page))
     if page.get("rotation"):
         rotated = image.transpose(ROTATIONS[page["rotation"]])
         image.close()
@@ -49,37 +58,39 @@ def export_snapshot(book: dict, directory: str, progress=lambda *_: None) -> dic
     output = Path(directory)
     output.mkdir(parents=True, exist_ok=True)
     variants = {}
-    rotated = [page for page in snapshot["pages"] if page.get("rotation")]
+    rotated = [page for page in snapshot["pages"] if page.get("rotation") or page.get("deskew")]
     progress(0, len(rotated), t("Preparing rotated images"))
     for number, page in enumerate(rotated, 1):
-        rotation, original_id = page["rotation"], page["asset_id"]
+        rotation, original_id = page.get("rotation", 0), page["asset_id"]
         width, height = page["width"], page["height"]
         left, top, right, bottom = crop_box(page)
-        key = original_id, rotation
+        key = original_id, rotation, page.get("deskew", 0), page_background(book, page["id"]) if page.get("deskew") else None
         if key not in variants:
             with Image.open(io.BytesIO(load_asset(book, original_id))) as image:
                 if image.size != (width, height):
                     raise ValueError(t("Asset dimensions do not match the project. Please import again."))
-                with image.transpose(ROTATIONS[rotation]) as transformed:
-                    if transformed.mode == "CMYK":
-                        transformed = transformed.convert("RGB")
-                    identifier = new_id()
-                    path = output / f"{identifier}.png"
-                    transformed.save(path, "PNG")
-                    asset = {"kind": "file", "path": str(path), "width": transformed.width, "height": transformed.height, "ext": "png"}
-                    snapshot["assets"][identifier] = asset
-                    variants[key] = identifier
+                with deskew_image(book, page, image) if page.get("deskew") else nullcontext(image) as source:
+                    with source.transpose(ROTATIONS[rotation]) if rotation else source.copy() as transformed:
+                        if transformed.mode == "CMYK":
+                            transformed = transformed.convert("RGB")
+                        identifier = new_id()
+                        path = output / f"{identifier}.png"
+                        transformed.save(path, "PNG")
+                        asset = {"kind": "file", "path": str(path), "width": transformed.width, "height": transformed.height, "ext": "png"}
+                        snapshot["assets"][identifier] = asset
+                        variants[key] = identifier
         identifier = variants[key]
         asset = snapshot["assets"][identifier]
         if rotation == 90:
             left, top, right, bottom = height - bottom, left, height - top, right
         elif rotation == 180:
             left, top, right, bottom = width - right, height - bottom, width - left, height - top
-        else:
+        elif rotation == 270:
             left, top, right, bottom = top, width - right, bottom, width - left
         page.update(asset_id=identifier, width=asset["width"], height=asset["height"],
                     crop=[left / asset["width"], top / asset["height"], (right - left) / asset["width"], (bottom - top) / asset["height"]])
-        page.pop("rotation")
+        page.pop("rotation", None)
+        page.pop("deskew", None)
         page.pop("split", None)
         progress(number, len(rotated), t("Preparing rotated images"))
     validate(snapshot)

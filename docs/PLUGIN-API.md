@@ -19,6 +19,8 @@ Plugins are trusted local code. The shadow root isolates styles, **not privilege
 
 ## Host interface
 
+The desktop supplies light/dark CSS color variables from `sdk/theme.css`, inherited through workspace shadow roots and tool windows. Use these variables for interface surfaces and text; avoid redefining them on `:host`, which would override the user's theme. Include fallback colors for variables beyond the original `ink`, `muted`, `paper`, `surface`, `side`, `line`, `accent` and `hover` palette so plugins remain usable on older API 1 hosts. Keep document image colors independent of the interface appearance.
+
 The source of truth is [`sdk/types.ts`](../sdk/types.ts). The host optionally provides `getLocale`/`subscribeLocale` for live translation updates, `contextMenu` for native menus, `setBusy`/`cancelTask` for multi-step work, and `onFileDrop` for book files routed to the editor. `getFormats?()` returns active plugin manifests with a `format` declaration; do not assume PDF or EPUB is always available. New methods are optional additions to API 1. The host supplies document snapshots, subscriptions, atomic `apply(book, changes)`, `preview`, native file dialogs, confirmation, status/error reporting and `task`/`rpc` methods. A plugin's UI stores only selections, focus and view preferences. Do not keep a mutable parallel document model. A workspace mounts on its first visit and stays mounted while hidden, preserving its UI state across navigation; resize handlers should ignore zero-sized hidden containers.
 
 `getExportPreferences?()` returns the most recent output `directory` and the current rendering `dpi`; `setOutputDirectory?(directory)` remembers a new output location. Older hosts can fall back to an empty directory and Auto resolution. `notify(message, {label, run}?)` can attach a reversible action; an empty message clears the existing notice. `confirm(message, title?, okLabel?)` supports an action-specific confirmation label.
@@ -26,6 +28,8 @@ The source of truth is [`sdk/types.ts`](../sdk/types.ts). The host optionally pr
 `onBeforeDocumentReplace?(guard)` registers an async draft guard and returns an unsubscribe function. The desktop calls `prepareDocumentReplace?()` before switching or closing books; a guard returning `false` keeps the current book open. Hidden workspaces retain their guards and drafts. Cache clearing preserves the workspace instance, while file drops reach only visible plugin workspaces. Draft safeguards require the updated host; older hosts can still mount the plugin.
 
 `host.preview(book, page, size, signal?)` accepts an optional `AbortSignal`. Abort on unmount or when the requested page changes. The host shares matching requests, drops queued work when all consumers cancel, runs at most two previews and prioritizes larger previews over thumbnails. Already running previews finish and populate the cache. Older hosts ignore the optional signal, so views should also ignore results after cancellation.
+
+The updated host previews the supplied page's `crop` and `deskew` without saving them. `deskew` is an optional finite angle from −10 to +10 degrees, clockwise, applied to the original image before cropping and quarter-turn `rotation`. It keeps the image dimensions and fills exposed corners with its confirmed black or white margin color. Images with fine rotation are resampled for previews and finished exports; original assets stay unchanged. Presets and split originals retain the angle.
 
 Every edit uses `document_id` and `base_revision`. Stale edits fail without partial changes. Keep page IDs when moving pages; create UUIDs for inserted or split pages. Assets are immutable and shared between page crops. Crops are normalized `[x, y, width, height]`. The host owns history, retaining up to 100 metadata snapshots. Unknown `extensions[plugin_id]` JSON survives save/open even when its plugin is absent. To change reading direction, apply a metadata-only change; the engine reorders adjacent matching split pairs while preserving page IDs and cover selection.
 
@@ -61,7 +65,7 @@ Review marks are a shared document contract: `ReviewData` in `sdk/types.ts`, wit
 | `document.release` | `document_id`; releases a background document after batch processing |
 | `app.locale` | Optional `code`; reads or persists the active interface language and returns available languages and messages |
 | `plugins.bundled`, `plugins.install_bundled` | List included offline packages or install one by `id` |
-| `document.preview` | `document_id`, `page_id`, `size` (64–2048); managed resource path |
+| `document.preview` | `document_id`, `page_id`, `size` (64–2048), optional draft `crop`, `deskew` and `background` (`black` or `white`); managed resource path without document edits |
 | `project.open` | `path` to a `.mteproj` directory |
 | `project.save` | Document reference + `path` |
 | `project.relink` | Document reference + `source_id`, `path`; SHA-256 must match |
@@ -87,9 +91,11 @@ Managed projects automatically preparse unsaved books with rendering disabled. C
 
 The optional `host.openWindow({plugin, view, title, width, height})` opens or focuses a native tool window for that active UI plugin, view, document and originating window. Its `mount` entry receives the same document host API with `host.view` set to the requested view. The host loads only active installed UI entry points; document changes continue through the shared engine and revision checks. Tools stay bound to their originating document when the main editor switches books. Tool windows initially use free space beside their parent, may be dragged outside it, and close independently. The native windows are peers; labels and the originating-window URL parameter retain ownership for selection, session retention and closing, without coupling their movement to a native parent. Older hosts without this method can retain an inline fallback.
 
+Pass `persistent: true` to reuse one tool window for that originating window, plugin and view across books. This window is not bound to a document; the plugin synchronizes its controls with its originating editor. Crop tools use a channel scoped to that editor window and check document ID, page ID and revision before accepting changes. Their controls stay mounted while books change and pause when the originating editor has no book open.
+
 `host.selectPage(id)` requests selection in the originating editor and focuses its window; editors receive the request through `host.onPageSelect(listener)`. Requests are checked against that editor's document. `host.closeWindow()` closes the calling tool window. API 1 remains compatible because these methods are optional.
 
-`host.getWindowId?()` returns the calling window's label. Page tools uses it with the tool URL's `parent` parameter and document ID to scope a BroadcastChannel between one workspace and its crop window. Draft edits remain in the originating workspace; change messages must match its selected page and revision, and pass the existing crop validation before changing a draft. Closing the tool keeps drafts, and an unavailable originating workspace disables its controls.
+`host.getWindowId?()` returns the calling window's label. Page tools uses it with the tool URL's `parent` parameter to scope a BroadcastChannel between one workspace and its crop window across books. Draft edits remain in the originating workspace; change messages must match its document, selected page and revision, and pass the existing crop validation before changing a draft. Closing the tool keeps drafts, and an unavailable originating workspace disables its controls.
 
 ## Format plugins
 

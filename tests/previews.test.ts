@@ -81,7 +81,7 @@ test("preview identity survives metadata saves and changes when image content or
   saved.revision++;
   saved.metadata.title = "After";
   assert.equal(previewKey(saved, saved.pages[0], 1024), key);
-  for (const changed of [{rotation:90 as const}, {crop:[0,0,0.5,1] as Page["crop"]}, {width:30}, {kind:"blank" as const}]) {
+  for (const changed of [{rotation:90 as const}, {deskew:1.2}, {crop:[0,0,0.5,1] as Page["crop"]}, {width:30}, {kind:"blank" as const}]) {
     assert.notEqual(previewKey(book, {...page,...changed}, 1024), key);
   }
   assert.notEqual(previewKey(book, page, 320), key);
@@ -90,6 +90,10 @@ test("preview identity survives metadata saves and changes when image content or
   saved.sources.source.sha256 = "before";
   saved.assets.asset.xref = 5;
   assert.notEqual(previewKey(saved, page, 1024), key);
+  const angled = {...page, deskew: -1.2};
+  const white = previewKey(book, angled, 1024);
+  saved.extensions = {"org.foluma.page-tools": {colors: {page: "black"}}};
+  assert.notEqual(previewKey(saved, angled, 1024), white, "fine-rotation previews must include their corner fill color");
 });
 
 

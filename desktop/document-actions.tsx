@@ -5,7 +5,19 @@ import { documentRef } from "../sdk/types";
 import { t } from "../sdk/i18n";
 import { flushMetadata, type MetadataDraft } from "./metadata";
 import { createActionRunner } from "../sdk/actions";
+import { reviewData } from "../sdk/review";
 import { closeBookWindows } from "./tool-windows";
+
+export async function setBookReviewed(host: HostAPI, volume: SeriesItem, reviewed: boolean) {
+  const book = host.getDocument();
+  const marks = book?.id === volume.document_id ? reviewData(book).review.length : volume.review_count || 0;
+  if (reviewed && marks && !(await host.confirm(
+    t("{0} pages still need attention. Mark this book reviewed anyway?", marks),
+    t("Complete book review"), t("Mark book reviewed"),
+  ))) return false;
+  await host.rpc("series.review", { id: volume.id, reviewed, allow_pending: reviewed && marks > 0 });
+  return true;
+}
 
 export type MetadataEditor = {
   draft: Partial<Metadata>;
@@ -214,28 +226,38 @@ export function useDocumentActions(
     },
     [host, replaceAllowed, dpi, run],
   );
+  const loadVolume = async (item: SeriesItem) => {
+    try {
+      await host.task<Book>({ operation: "series.open", entry_id: item.id });
+    } catch (error) {
+      const data = (error as { data?: { kind: string; pages: number[] } }).data;
+      if (data?.kind !== "render_required") throw error;
+      if (
+        !(await host.confirm(
+          t(
+            "{0} pages in this book require rendering. Render them as PNG using {1}?",
+            data.pages.length,
+            dpi === "auto" ? t("Auto resolution") : `${dpi} DPI`,
+          ),
+        ))
+      )
+        return false;
+      await host.task<Book>({ operation: "series.open", entry_id: item.id, render: true, dpi });
+    }
+    setOutput("");
+    return true;
+  };
   const openVolume = (item: SeriesItem) =>
     void run(async () => {
       if (!(await replaceAllowed())) return;
-      try {
-        await host.task<Book>({ operation: "series.open", entry_id: item.id });
-      } catch (error) {
-        const data = (error as { data?: { kind: string; pages: number[] } }).data;
-        if (data?.kind !== "render_required") throw error;
-        if (
-          !(await host.confirm(
-            t(
-              "{0} pages in this book require rendering. Render them as PNG using {1}?",
-              data.pages.length,
-              dpi === "auto" ? t("Auto resolution") : `${dpi} DPI`,
-            ),
-          ))
-        )
-          return;
-        await host.task<Book>({ operation: "series.open", entry_id: item.id, render: true, dpi });
-      }
-      setTab(editorAvailable ? "org.foluma.editor" : "convert");
-      setOutput("");
+      if (await loadVolume(item)) setTab(editorAvailable ? "org.foluma.editor" : "convert");
+    }, false);
+  const completeReview = (volume: SeriesItem, next?: SeriesItem) =>
+    void run(async () => {
+      if (!(await replaceAllowed(t("Complete book review")))) return;
+      if (!(await setBookReviewed(host, volume, true))) return;
+      if (next) await loadVolume(next);
+      else host.notify(t("All books reviewed"));
     }, false);
   const saveProject = () => run(saveBook);
   const exportBook = async (): Promise<void> => {
@@ -300,6 +322,7 @@ export function useDocumentActions(
     replaceAllowed,
     importBook,
     openVolume,
+    completeReview,
     saveProject,
     exportBook,
     openProject,

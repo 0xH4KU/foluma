@@ -1,9 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import type { HostAPI, Plugin, PluginList, ProcessingSettings, RenderResolution } from "../sdk/types";
 import { t, setLocale, type Locale } from "../sdk/i18n";
 import { StorageSettings } from "./storage";
 import { closeBookWindows } from "./tool-windows";
+import { getThemePreference, setThemePreference, subscribeTheme, type ThemePreference } from "./theme";
 
 export function Preferences({
   host,
@@ -34,6 +35,7 @@ export function Preferences({
   refreshPreviews: () => void;
   prepare: () => Promise<void>;
 }) {
+  const theme = useSyncExternalStore(subscribeTheme, getThemePreference);
   const importers = plugins.active.filter((plugin) => plugin.format?.direction === "import");
   const [processing, setProcessing] = useState<ProcessingSettings | null>(null);
   const [canvas, setCanvas] = useState<[number | string, number | string] | null>(null);
@@ -73,6 +75,20 @@ export function Preferences({
       <div className="page-heading">
         <h1>{t("Preferences")}</h1>
       </div>
+      <article className="settings-row">
+        <div>
+          <h2>{t("Appearance")}</h2>
+          <p>{t("Choose the interface appearance. Book pages keep their original colors.")}</p>
+        </div>
+        <label>
+          {t("Color theme")}
+          <select value={theme} onChange={event => setThemePreference(event.target.value as ThemePreference)}>
+            <option value="system">{t("Follow system")}</option>
+            <option value="light">{t("Light")}</option>
+            <option value="dark">{t("Dark")}</option>
+          </select>
+        </label>
+      </article>
       <article className="settings-row">
         <div>
           <h2>{t("Background processing")}</h2>

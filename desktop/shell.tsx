@@ -5,6 +5,7 @@ import { t } from "../sdk/i18n";
 import { Icon } from "../sdk/icons";
 import { ExportVariantSelect } from "../sdk/export-variant";
 import type { useExportSettings } from "../sdk/export-settings";
+import { setBookReviewed } from "./document-actions";
 
 type RunAction = (action: () => Promise<unknown>, commit?: boolean) => Promise<void>;
 
@@ -159,6 +160,7 @@ export function DocumentBar({
   run,
   navigate,
   openVolume,
+  onCompleteReview,
   showReview,
 }: {
   series: Series | null;
@@ -174,6 +176,7 @@ export function DocumentBar({
   run: RunAction;
   navigate: (tab: string) => Promise<void>;
   openVolume: (item: SeriesItem) => void;
+  onCompleteReview?: () => void;
   showReview: boolean;
 }) {
   return (
@@ -221,24 +224,7 @@ export function DocumentBar({
               disabled={busy}
               onChange={(event) => {
                 const reviewed = event.target.checked;
-                void run(async () => {
-                  const marks = volume.review_count || 0;
-                  if (
-                    reviewed &&
-                    marks &&
-                    !(await host.confirm(
-                      t("{0} pages still need attention. Mark this book reviewed anyway?", marks),
-                      t("Complete book review"),
-                      t("Mark book reviewed"),
-                    ))
-                  )
-                    return;
-                  await host.rpc("series.review", {
-                    id: volume.id,
-                    reviewed,
-                    allow_pending: reviewed && marks > 0,
-                  });
-                });
+                void run(() => setBookReviewed(host, volume, reviewed));
               }}
             />
             {t("Book reviewed")}
@@ -252,6 +238,14 @@ export function DocumentBar({
           >
             {t("Next unreviewed")}
           </button>
+          {onCompleteReview && <button
+            disabled={busy || volume.reviewed && !nextVolume}
+            title={t("Complete book review (⌘⇧Enter)")}
+            aria-keyshortcuts="Meta+Shift+Enter Control+Shift+Enter"
+            onClick={onCompleteReview}
+          >
+            {t(nextVolume ? "Complete and next" : "Complete book review")}
+          </button>}
         </>
       )}
       {output && (

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { closeBookWindows, toolWindowPosition } from "../desktop/tool-windows.ts";
+import { closeBookWindows, openToolWindow, toolWindowPosition } from "../desktop/tool-windows.ts";
 
 test("tool windows use available space outside their parent, including scaled and negative-origin monitors", () => {
   const size = {width: 360, height: 480};
@@ -17,6 +17,43 @@ test("tool windows use available space outside their parent, including scaled an
   assert.ok(fallback.x >= 0 && fallback.y >= 0);
   assert.ok(fallback.x + size.width <= screen.width && fallback.y + size.height <= screen.height,
     "when there is no outside space, the complete tool window must remain visible");
+});
+
+test("persistent tools reuse their owner window across books without moving, while document tools stay bound", async () => {
+  const windows = new Set(["main"]);
+  const created: {label: string; url: string}[] = [], positioned: string[] = [], shown: string[] = [];
+  const metadata = {currentWindow: {label: "main"}};
+  (globalThis as any).window = {__TAURI_INTERNALS__: {metadata, invoke: async (command: string, args: any) => {
+    if (command === "plugin:window|get_all_windows") return [...windows];
+    if (command === "plugin:webview|create_webview_window") {created.push(args.options); windows.add(args.options.label); return;}
+    if (command === "plugin:window|outer_position") return {x: 100, y: 100};
+    if (command === "plugin:window|outer_size") return args.label.startsWith("tool-") ? {width: 300, height: 280} : {width: 1200, height: 800};
+    if (command === "plugin:window|scale_factor") return 1;
+    if (command === "plugin:window|available_monitors") return [];
+    if (command === "plugin:window|set_position") {positioned.push(args.label); return;}
+    if (command === "plugin:window|show") {shown.push(args.label); return;}
+    if (command === "plugin:window|set_focus") return;
+    assert.fail(`Unexpected window command: ${command}`);
+  }}};
+  const options = {plugin: "org.foluma.page-tools", view: "crop", title: "Crop", width: 300, height: 280, persistent: true};
+  try {
+    await openToolWindow(options, "first");
+    await openToolWindow(options, "second");
+    assert.equal(created.length, 1, "switching books must reuse the existing crop window");
+    assert.deepEqual(positioned, [created[0].label], "reopening must keep the user's window position");
+    assert.deepEqual(shown, [created[0].label, created[0].label]);
+    const persistent = new URL(created[0].url, "http://foluma.local/").searchParams;
+    assert.equal(persistent.get("parent"), "main");
+    assert.equal(persistent.has("document"), false, "persistent controls must not retain the original book");
+    for (const id of ["first", "second"]) await openToolWindow({...options, persistent: false}, id);
+    assert.equal(created.length, 3);
+    assert.equal(new URL(created[1].url, "http://foluma.local/").searchParams.get("document"), "first");
+    assert.equal(new URL(created[2].url, "http://foluma.local/").searchParams.get("document"), "second");
+    metadata.currentWindow.label = "book-other";
+    await openToolWindow(options, "first");
+    assert.equal(created.length, 4, "another editor must keep its own persistent crop window");
+    assert.notEqual(created[0].label, created[3].label);
+  } finally {delete (globalThis as any).window;}
 });
 
 test("closing peer editors waits for approval and preserves a window that cancels", async () => {

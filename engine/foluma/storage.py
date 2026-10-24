@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 from .i18n import t
-from .model import validate
+from .model import page_background, validate
 
 
 def parse_json(text: str | bytes):
@@ -69,7 +69,10 @@ def preview_path(book: dict, page_id: str, size: int, directory: Path) -> Path:
     if type(size) is not int or not 64 <= size <= 2048:
         raise ValueError(t("Preview size is out of range"))
     page = next(page for page in book["pages"] if page["id"] == page_id)
-    key = hashlib.sha256(json.dumps([book["id"], page, size], sort_keys=True).encode()).hexdigest()
+    identity = [book["id"], page, size]
+    if page.get("deskew"):
+        identity.append(page_background(book, page_id))
+    key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
     return directory / f"{key}.png"
 
 

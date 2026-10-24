@@ -127,6 +127,72 @@ class FormatPluginTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.engine.call('document.apply', {'document_id':restored['id'], 'base_revision':restored['revision'], 'changes':{'pages':pages}})
 
+    def test_fine_rotation_matches_all_finished_formats_and_preserves_originals_and_history(self):
+        for identifier in ["org.foluma.export.cbz", "org.foluma.export.pdf", "org.foluma.import.epub"]:
+            self.engine.plugins.install_bundled(identifier)
+        self.restart()
+        source = self.root / "fine-angle.png"
+        image = Image.new("RGB", (80, 120))
+        image.putdata([(x * 3, y * 2, (x + y) % 256) for y in range(120) for x in range(80)])
+        image.save(source)
+        original = source.read_bytes()
+        book = self.task("import", path=str(self.pdf))
+        book = self.task("images.import", document_id=book["id"], base_revision=book["revision"], paths=[str(source)], position=1)
+        pages = copy.deepcopy(book["pages"])
+        pages.insert(2, pages[1] | {"id": new_id()})
+        for page in pages[1:3]:
+            page.update(deskew=2.3, rotation=90, crop=[0, 0, 0.8, 0.9])
+        colors = {pages[1]["id"]: "black", pages[2]["id"]: "white"}
+        book = self.engine.call("document.apply", {"document_id": book["id"], "base_revision": book["revision"],
+            "changes": {"pages": pages, "extension": {"id": "org.foluma.page-tools", "data": {"colors": colors}}}})
+        expected = []
+        for page in pages[1:3]:
+            with image.rotate(-2.3, resample=Image.Resampling.BICUBIC, fillcolor=colors[page["id"]]) as rotated:
+                expected.append(rotated.crop(crop_box(page)).transpose(Image.Transpose.ROTATE_270))
+        self.assertNotEqual(expected[0].tobytes(), expected[1].tobytes(), "corner fill must remain page-specific")
+        for index, page in enumerate(pages[1:3]):
+            rendered = self.profile / self.engine.call("document.preview", {"document_id": book["id"], "page_id": page["id"]})
+            with Image.open(rendered) as actual:
+                self.assertEqual(actual.tobytes(), expected[index].tobytes())
+        for extension in ("cbz", "pdf", "epub"):
+            path = self.root / f"fine-angle.{extension}"
+            self.task("export", document_id=book["id"], base_revision=book["revision"], path=str(path),
+                      plugin_id=f"org.foluma.export.{extension}")
+            if extension == "cbz":
+                with ZipFile(path) as archive:
+                    for index, number in enumerate((2, 3)):
+                        with Image.open(io.BytesIO(archive.read(f"{number:05d}.png"))) as actual:
+                            self.assertEqual(actual.size, expected[index].size)
+                            self.assertEqual(actual.tobytes(), expected[index].tobytes())
+            elif extension == "pdf":
+                with fitz.open(path) as document:
+                    for index, number in enumerate((1, 2)):
+                        actual = document[number].get_pixmap(alpha=False)
+                        self.assertEqual((actual.width, actual.height), expected[index].size)
+                        self.assertEqual(actual.samples, expected[index].tobytes())
+            else:
+                restored = self.task("import", path=str(path), background=True)
+                for index, number in enumerate((1, 2)):
+                    with page_image(restored, restored["pages"][number]) as actual:
+                        self.assertEqual(actual.size, expected[index].size)
+                        self.assertEqual(actual.tobytes(), expected[index].tobytes())
+        self.assertEqual(source.read_bytes(), original)
+        self.assertEqual(self.engine.session.book["pages"], book["pages"])
+        undone = self.engine.call("document.undo", {"document_id": book["id"]})
+        self.assertNotIn("deskew", undone["pages"][1])
+        book = self.engine.call("document.redo", {"document_id": book["id"]})
+        self.assertEqual(book["pages"][1]["deskew"], 2.3)
+        project = self.root / "fine-angle.mteproj"
+        save_project(self.engine.session.book, project)
+        reopened = open_project(project)
+        self.assertEqual(reopened["pages"][1]["deskew"], 2.3)
+        originals = self.root / "fine-originals.zip"
+        export_images(reopened, [book["pages"][1]["id"]], str(originals))
+        with ZipFile(originals) as archive:
+            self.assertEqual(archive.read("00001.png"), original)
+        for result in expected:
+            result.close()
+
     def test_cbz_and_pdf_plugins_are_optional_independent_and_preserve_edited_pages(self):
         identifiers = {"org.foluma.import.cbz", "org.foluma.export.cbz", "org.foluma.export.pdf"}
         self.assertTrue(identifiers <= {plugin["id"] for plugin in self.engine.plugins.bundled()})

@@ -1,4 +1,4 @@
-import type {Plugin} from "../sdk/types";
+import type {HostAPI, Plugin} from "../sdk/types";
 
 export const pluginCategories = [
   {id: "import", name: "Import plugins"},
@@ -53,4 +53,9 @@ export function pluginUpdates(installed: Plugin[], ...sources: Plugin[][]): Plug
     }
   }
   return [...updates.values()];
+}
+
+export async function installPluginUpdate(host: Pick<HostAPI, "rpc">, current: Plugin, update: Plugin, bundled: Plugin[]) {
+  await host.rpc(bundled.includes(update) ? "plugins.install_bundled" : "plugins.install_official", { id: current.id });
+  if (current.enabled === false) await host.rpc("plugins.set_enabled", { id: current.id, enabled: false });
 }

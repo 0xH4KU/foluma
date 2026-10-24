@@ -8,6 +8,7 @@ import {ask, open, save} from "@tauri-apps/plugin-dialog";
 import type {Book, FileOptions, HostAPI, Plugin, PluginList, ProcessingSettings, Series, Task} from "../sdk/types";
 import {documentRef} from "../sdk/types.ts";
 import {createPreviewLoader} from "./previews.ts";
+import {pageBackground} from "../sdk/page-layout.ts";
 import {openToolWindow} from "./tool-windows.ts";
 
 let book: Book | null = null;
@@ -142,7 +143,9 @@ export async function task<T>(params: Record<string, unknown>, signal?: AbortSig
   });
 }
 const preview = createPreviewLoader((current, page, size) =>
-  rpc<string>("document.preview", {document_id: current.id, page_id: page.id, size}).then(resourceUrl));
+  rpc<string>("document.preview", {document_id: current.id, page_id: page.id, size,
+    ...(page.kind === "image" ? {crop: page.crop || [0, 0, 1, 1], deskew: page.deskew || 0, background: pageBackground(current, page.id)} : {}),
+  }).then(resourceUrl));
 export function createWorkspaceHost(host: HostAPI, visible: () => boolean): HostAPI {
   return { ...host, onFileDrop: listener => host.onFileDrop?.(paths => {
     if (visible()) listener(paths);
@@ -161,6 +164,7 @@ export function createHost(report: HostAPI["report"], notify: HostAPI["notify"])
     openWindow: async options => {
       if (!/^[a-z0-9-]{1,64}$/.test(options.view) || !Number.isFinite(options.width) || !Number.isFinite(options.height) ||
           options.width < 280 || options.width > 1200 || options.height < 260 || options.height > 1200 ||
+          options.persistent !== undefined && typeof options.persistent !== "boolean" ||
           typeof options.title !== "string" || options.title.length > 256)
         throw new Error(t("Invalid tool window options"));
       const plugins = await rpc<PluginList>("plugins.list");

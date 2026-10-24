@@ -36,13 +36,14 @@ export function toolWindowPosition(parent: Rect, size: {width: number; height: n
 
 export async function openToolWindow(options: Parameters<NonNullable<HostAPI["openWindow"]>>[0], documentId?: string) {
   const parent = getCurrentWindow();
-  const label = `tool-${parent.label}__${options.plugin.replaceAll(".", "_")}__${options.view}${documentId ? `__${documentId}` : ""}`;
+  const document = options.persistent ? undefined : documentId;
+  const label = `tool-${parent.label}__${options.plugin.replaceAll(".", "_")}__${options.view}${document ? `__${document}` : ""}`;
   const existing = await WebviewWindow.getByLabel(label);
   if (existing) { await existing.show(); await existing.setFocus(); return; }
   // Logical ownership uses the label; a native parent would couple movement on macOS.
   const window = new WebviewWindow(label, {
     url: `index.html?${new URLSearchParams({plugin: options.plugin, view: options.view, parent: parent.label,
-      ...(documentId ? {document: documentId} : {})})}`,
+      ...(document ? {document} : {})})}`,
     title: options.title, width: options.width, height: options.height,
     minWidth: 280, minHeight: 260, maximizable: false, minimizable: false,
     visible: false, skipTaskbar: true, acceptFirstMouse: true,

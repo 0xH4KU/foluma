@@ -14,7 +14,7 @@ from unittest.mock import patch
 from zipfile import ZipFile, ZipInfo
 
 import pymupdf as fitz
-from foluma.media import load_asset, preview
+from foluma.media import crop_box, load_asset, preview
 from foluma.model import Session, new_id
 from foluma.plugins import Plugins, platform_id
 from foluma.service import Engine
@@ -136,6 +136,42 @@ class IntegrationTests(unittest.TestCase):
             self.assertEqual(rendered.tobytes(), expected_image.tobytes())
         with Image.open(engine.data / blank_result) as rendered:
             self.assertEqual(rendered.getpixel((0, 0)), (255, 255, 255))
+
+    def test_fine_rotation_preview_is_transient_and_validates_geometry_and_fill(self):
+        engine = Engine(self.root / "fine-preview-data")
+        self.addCleanup(engine.close)
+        book = copy.deepcopy(self.book)
+        book["pages"][0]["rotation"] = 90
+        engine.session = Session(book)
+        page = book["pages"][0]
+        params = {"document_id": book["id"], "page_id": page["id"], "size": 320,
+                  "deskew": -1.2, "crop": [0, 0, 0.7, 0.8], "background": "black"}
+        result = engine.call("document.preview", params)
+        candidate = page | {"crop": params["crop"]}
+        with Image.open(io.BytesIO(load_asset(book, page["asset_id"]))) as source:
+            with source.rotate(1.2, resample=Image.Resampling.BICUBIC, fillcolor="black") as straightened:
+                with straightened.crop(crop_box(candidate)).transpose(Image.Transpose.ROTATE_270) as expected:
+                    with Image.open(engine.data / result) as actual:
+                        self.assertEqual(actual.size, expected.size)
+                        self.assertEqual(actual.tobytes(), expected.tobytes())
+        white = engine.call("document.preview", params | {"background": "white"})
+        opposite = engine.call("document.preview", params | {"deskew": 1.2})
+        self.assertEqual(len({result, white, opposite}), 3)
+        self.assertEqual(engine.session.book, book)
+        self.assertFalse(engine.session.undo_stack)
+        for angle in (True, None, "1", float("nan"), float("inf"), -10.1, 10.1):
+            with self.subTest(angle=angle):
+                with self.assertRaises(ValueError):
+                    engine.call("document.preview", params | {"deskew": angle})
+                pages = copy.deepcopy(book["pages"])
+                pages[0]["deskew"] = angle
+                with self.assertRaises(ValueError):
+                    engine.call("document.apply", {"document_id": book["id"], "base_revision": book["revision"],
+                                                   "changes": {"pages": pages}})
+        for changes in ({"crop": [-1, 0, 1, 1]}, {"crop": None}, {"background": "red"}):
+            with self.assertRaises(ValueError):
+                engine.call("document.preview", params | changes)
+        self.assertEqual(engine.session.book, book)
 
     def test_pdf_extraction_rejects_missing_image_payload(self):
         with fitz.open(self.pdf) as doc:

@@ -4,6 +4,7 @@ import { t } from "../sdk/i18n";
 import {
   availablePlugins,
   groupPlugins,
+  installPluginUpdate,
   pluginCategories,
   pluginCategory,
   pluginUpdates,
@@ -67,6 +68,8 @@ export function PluginManager({
     message?: string;
   } | null>(null);
   const [loadingCatalog, setLoadingCatalog] = useState(false);
+  const [updateProgress, setUpdateProgress] = useState<{ completed: number; total: number; name: string } | null>(null);
+  const [updateErrors, setUpdateErrors] = useState<{ id: string; name: string; message: string }[]>([]);
   const knownPlugins = uniquePlugins(catalog?.plugins || [], bundled, plugins.items);
   const includedUpdates = pluginUpdates(plugins.items, bundled);
   const updates = pluginUpdates(plugins.items, bundled, (catalog?.plugins || []).filter(
@@ -129,14 +132,47 @@ export function PluginManager({
       await host.rpc("plugins.install", { path });
       await refreshPlugins();
     });
+  const updateAll = () => void run(async () => {
+    setUpdateErrors([]);
+    let failed = 0;
+    try {
+      for (const [index, update] of updates.entries()) {
+        setUpdateProgress({ completed: index, total: updates.length, name: update.name });
+        try {
+          await installPluginUpdate(host, plugins.items.find(plugin => plugin.id === update.id)!, update, bundled);
+        } catch (error) {
+          failed++;
+          setUpdateErrors(errors => [...errors, {
+            id: update.id, name: update.name, message: error instanceof Error ? error.message : String(error),
+          }]);
+        }
+        setUpdateProgress({ completed: index + 1, total: updates.length, name: update.name });
+      }
+      await refreshPlugins();
+      host.notify(t("{0} plugins updated · {1} failed", updates.length - failed, failed));
+    } finally {
+      setUpdateProgress(null);
+    }
+  });
   return (
     <section className="content" hidden={hidden}>
       <div className="page-heading">
         <h1>{t("Plugins")}</h1>
+        {!!updates.length && <button className="plugin-update-button" disabled={busy || loadingCatalog}
+          title={t("Update all installed plugins with available updates, across categories.")}
+          onClick={updateAll}>{t("Update all ({0})", updates.length)}</button>}
         <button disabled={busy} onClick={installLocal}>
           {t("Install local package…")}
         </button>
       </div>
+      {updateProgress && <div className="notice" role="status">
+        <span>{t("Updating {0}… {1}/{2}", t(updateProgress.name), updateProgress.completed, updateProgress.total)}</span>
+        <progress aria-label={t("Plugin update progress")} value={updateProgress.completed} max={updateProgress.total}/>
+      </div>}
+      {!!updateErrors.length && <div className="notice error" role="alert"><div>
+        <strong>{t("Some plugins could not be updated. Retry them individually or choose Update all again.")}</strong>
+        <ul>{updateErrors.map(error => <li key={error.id}>{t(error.name)}: {error.message}</li>)}</ul>
+      </div></div>}
       {plugins.restart_required && (
         <div className="restart-banner">
           <span>{t("Plugin changes take effect after restarting.")}</span>
@@ -237,8 +273,8 @@ export function PluginManager({
               {update && <button className="plugin-update-button" disabled={busy}
                 aria-label={t("Update {0} to {1}", t(plugin.name), update.version)}
                 onClick={() => void run(async () => {
-                  await host.rpc(bundled.includes(update) ? "plugins.install_bundled" : "plugins.install_official", { id: plugin.id });
-                  if (plugin.enabled === false) await host.rpc("plugins.set_enabled", { id: plugin.id, enabled: false });
+                  await installPluginUpdate(host, plugin, update, bundled);
+                  setUpdateErrors(errors => errors.filter(error => error.id !== plugin.id));
                   await refreshPlugins();
                 })}>{t("Update")}</button>}
               <button
@@ -304,7 +340,7 @@ export function PluginManager({
       />
       <div className="section-title">
         <h2>{t("Official catalog")}</h2>
-        <button disabled={loadingCatalog} onClick={() => { host.notify(""); void loadCatalog(); }}>
+        <button disabled={loadingCatalog || !!updateProgress} onClick={() => { host.notify(""); void loadCatalog(); }}>
           {t(loadingCatalog ? "Loading catalog…" : "Load catalog")}
         </button>
       </div>

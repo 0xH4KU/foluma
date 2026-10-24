@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Book, HostAPI, Page } from "./types.ts";
+import { pageBackground } from "./page-layout.ts";
 
 export function visibleRange(count: number, top: number, height: number, rowHeight: number, columns: number) {
   return {
@@ -12,7 +13,8 @@ export function previewKey(book: Book, page: Page, size: number) {
   const asset = book.assets?.[page.asset_id || ""];
   const source = book.sources?.[asset?.source_id || asset?.derived_from?.source_id || ""];
   return JSON.stringify([
-    book.id, page.id, page.kind, page.asset_id, page.width, page.height, page.crop, page.rotation,
+    book.id, page.id, page.kind, page.asset_id, page.width, page.height, page.crop, page.rotation, page.deskew || 0,
+    page.deskew ? pageBackground(book, page.id) : undefined,
     size, asset?.kind, asset?.path, asset?.xref, asset?.source_page, source?.path, source?.sha256,
   ]);
 }

@@ -347,6 +347,31 @@ test("quarter-turn rotations preserve source images, split in visual coordinates
   }
 });
 
+test("fine rotation follows split pages and presets while restoration keeps the original angle", () => {
+  const original = fixture();
+  original.pages[1].deskew = -1.2;
+  const split = {...original, pages: splitPages(original, new Set(["page-2"])).pages!};
+  const children = split.pages.filter(page => page.split);
+  assert.ok(children.every(page => page.deskew === -1.2 && page.split!.original.deskew === -1.2));
+  children[0].deskew = 0.3;
+  assert.equal(rotatePages(split, new Set([children[0].id])).pages!.find(page => page.id === children[0].id)!.deskew, 0.3);
+  const preset = createPreset(split);
+  const applied = {...original, pages: applyPreset(original, preset.payload, {}).pages!};
+  assert.deepEqual(applied.pages.filter(page => page.split).map(page => page.deskew), children.map(page => page.deskew));
+  const restored = restorePages(applied, new Set(applied.pages.filter(page => page.split).map(page => page.id))).pages!;
+  assert.equal(restored[1].deskew, -1.2);
+  for (const angle of [NaN, 11, -11, true]) {
+    const invalid = structuredClone(preset.payload);
+    const item = invalid.pages.find(page => page.kind !== "blank" && page.split)!;
+    if (item.kind === "blank") throw new Error("Missing split preset page");
+    item.deskew = angle as number;
+    assert.throws(() => applyPreset(original, invalid, {}), /Unsupported layout preset/);
+    delete item.deskew;
+    item.split!.original_deskew = angle as number;
+    assert.throws(() => applyPreset(original, invalid, {}), /Unsupported layout preset/);
+  }
+});
+
 test("one blank can fix multiple marked spreads and every suggested boundary agrees with the actual preview", () => {
   const book = fixture(65);
   book.extensions[REVIEW_EXTENSION_ID] = setSpreadMarks(book, [["page-17", "page-18"], ["page-60", "page-61"]]).extension!.data;
