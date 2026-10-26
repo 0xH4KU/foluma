@@ -495,6 +495,7 @@ export function Inspector({
   splitPreview,
   setSplitPreview,
   split,
+  selectSpreadsToSplit,
   exportImages,
 }: {
   hidden: boolean;
@@ -511,6 +512,7 @@ export function Inspector({
   splitPreview: boolean;
   setSplitPreview: (value: boolean) => void;
   split: () => void;
+  selectSpreadsToSplit: () => void;
   exportImages: () => Promise<void>;
 }) {
   const index = current ? book.pages.indexOf(current) : 0;
@@ -600,6 +602,13 @@ export function Inspector({
         <details className="inspector-actions" open>
           <summary>{t("Split spreads")}</summary>
           <section>
+            <button
+              className="full-width"
+              disabled={!book.pages.some((p) => p.kind === "image" && !p.split)}
+              onClick={selectSpreadsToSplit}
+            >
+              {t("Select spreads to split")}
+            </button>
             <label>
               {t("Left portion")}
               <div className="inline-input">

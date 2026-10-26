@@ -810,25 +810,39 @@ class FormatPluginTests(unittest.TestCase):
                    b'<rootfiles><rootfile full-path="book.opf" media-type="application/oebps-package+xml"/>'
                    b'</rootfiles></container>'}
         for name in ("cover", "page", "end"):
+            href = "../image/%70age.jpg" if name == "page" else f"../image/{name}.jpg"
+            marker = "kmoetag='rotate:1'" if name == "page" else ""
+            comment = '<!-- <img src="../image/end.jpg" class="twoPage"/> -->' if name == "end" else ""
             members[f"html/{name}.html"] = (f'<!DOCTYPE html SYSTEM "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">'
                 f'<html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" href="../css/style.css"/>'
-                f'</head><body><center><div class="fs"><div><img src="../image/{name}.jpg" class="singlePage" '
-                f'style="height:100%;max-width:80px;max-height:120px;" kmoetag="rotate:1" '
-                f'kimageraw="../image/unused-original.jpg"/></div></div></center></body></html>').encode()
+                f'</head><body><center><div class="fs"><div><img src="{href}" class="singlePage" '
+                f'style="height:100%;max-width:80px;max-height:120px;" {marker} '
+                f'kimageraw="../image/unused-original.jpg"/>{comment}</div></div></center></body></html>').encode()
         with ZipFile(source, "w") as archive:
             for member, payload in members.items():
                 archive.writestr(member, payload)
         fingerprint = digest(source)
-        book = self.task("import", path=str(source))
+        with patch("foluma.storage.ZipFile", side_effect=AssertionError("Fresh imports must not rescan EPUB sources")):
+            book = self.task("import", path=str(source))
         self.assertEqual([book["assets"][candidate["asset_id"]]["member"] for candidate in book["pages"]],
                          ["image/cover.jpg", "image/page.jpg", "image/end.jpg"])
         self.assertEqual([candidate["source_page"] for candidate in book["pages"]], [1, 2, 3])
+        self.assertEqual([book["assets"][candidate["asset_id"]].get("rotated_spread") for candidate in book["pages"]],
+                         [False, True, False])
         self.assertEqual(book["metadata"]["direction"], "rtl")
         self.assertEqual(book["metadata"]["cover_id"], book["pages"][0]["id"])
         self.assertFalse(book["metadata"]["cover_only"])
         for asset in book["assets"].values():
             self.assertEqual(Path(asset["path"]).read_bytes(), images[asset["member"]])
         self.assertEqual(digest(source), fingerprint)
+        legacy = copy.deepcopy(self.engine.session.book)
+        for asset in legacy["assets"].values():
+            del asset["rotated_spread"]
+        project = self.root / "legacy-spreads.mteproj"
+        save_project(legacy, project)
+        restored = open_project(project)
+        self.assertEqual([restored["assets"][candidate["asset_id"]].get("rotated_spread") for candidate in restored["pages"]],
+                         [False, True, False])
         before = copy.deepcopy(self.engine.session.book)
         for css in (stylesheet.replace('img.twoPage', 'img.singlePage'),
                     stylesheet + 'img::before {content:"visible text";}',

@@ -19,7 +19,7 @@ class PreviewCache:
         self.limit = limit if type(limit) is int and 1_000_000_000 <= limit <= 1_000_000_000_000 else DEFAULT_LIMIT
         self.lock = lock
         self.protected_assets = protected_assets
-        self.slots = threading.Semaphore(2)
+        self.slots = threading.Semaphore(4)
         self.active: dict[Path, int] = {}
         self.timer: threading.Timer | None = None
         self.checked = 0.0

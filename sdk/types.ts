@@ -9,6 +9,7 @@ export type Page = {
 export type Asset = {
   kind: "pdf" | "file"; width: number; height: number; ext: "png" | "jpg";
   path?: string; source_id?: string; xref?: number; source_page?: number;
+  rotated_spread?: boolean;
   derived_from?: { source_id: string; page: number; dpi: number };
 };
 export type Metadata = {

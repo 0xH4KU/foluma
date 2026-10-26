@@ -4,6 +4,7 @@ import type { Book, Page } from "../sdk/types.ts";
 import {
   applyPreset,
   createPreset,
+  findSpreadsToSplit,
   insertBlankPage,
   navigatePage,
   pageSize,
@@ -425,4 +426,59 @@ test("invalidated spread relationships stay removable and suppress unsafe recomm
   cover.extensions[REVIEW_EXTENSION_ID] = setSpreadMarks(cover, [["page-1", "page-2"], ["page-2", "page-3"]]).extension!.data;
   assert.ok(spreadRecommendations(cover, true).spreads.every((spread) => spread.problem));
   assert.deepEqual(spreadRecommendations(cover, true).suggestions, []);
+});
+
+test("spread scanner finds wide spreads and 90-degree rotated portrait spreads while ignoring split or blank pages", () => {
+  const book = fixture(8);
+  for (const page of book.pages) {
+    page.width = 1120;
+    page.height = 1750;
+  }
+  book.pages[2] = { ...book.pages[2], width: 2240, height: 1750 };
+  book.pages[4] = { ...book.pages[4], width: 1750, height: 2240 };
+  book.pages[6] = { ...book.pages[6], width: 1367, height: 1750 };
+  book.pages.push({ id: "blank-wide", kind: "blank", width: 2400, height: 1600 });
+  assert.deepEqual(findSpreadsToSplit(book), {
+    wide: ["page-3"],
+    rotated: ["page-5", "page-7"],
+  });
+  const rotatedFixed = { ...book, pages: rotatePages(book, new Set(["page-5", "page-7"])).pages! };
+  assert.deepEqual(findSpreadsToSplit(rotatedFixed), {
+    wide: ["page-3", "page-5", "page-7"],
+    rotated: [],
+  });
+  const afterSplit = { ...rotatedFixed, pages: splitPages(rotatedFixed, new Set(["page-3", "page-5", "page-7"])).pages! };
+  assert.deepEqual(findSpreadsToSplit(afterSplit), { wide: [], rotated: [] });
+
+  const b5Book = fixture(20);
+  for (const page of b5Book.pages) {
+    page.width = 2557;
+    page.height = 3618;
+  }
+  b5Book.pages[0] = { ...b5Book.pages[0], width: 2532, height: 3618 };
+  b5Book.pages[4] = { ...b5Book.pages[4], width: 2559, height: 3618 };
+  b5Book.pages[11] = { ...b5Book.pages[11], width: 2558, height: 3618 };
+  b5Book.pages[18] = { ...b5Book.pages[18], width: 2713, height: 3618 };
+  assert.deepEqual(findSpreadsToSplit(b5Book), {
+    wide: [],
+    rotated: [],
+  });
+
+  for (const id of ["asset-5", "asset-12", "asset-19"]) b5Book.assets[id].rotated_spread = true;
+  assert.deepEqual(findSpreadsToSplit(b5Book), {
+    wide: [],
+    rotated: ["page-5", "page-12", "page-19"],
+  });
+  const corrected = { ...b5Book, pages: rotatePages(b5Book, new Set(["page-5", "page-12", "page-19"])).pages! };
+  assert.deepEqual(findSpreadsToSplit(corrected), {
+    wide: ["page-5", "page-12", "page-19"],
+    rotated: [],
+  });
+  const short = fixture(2);
+  short.assets["asset-2"].rotated_spread = true;
+  assert.deepEqual(findSpreadsToSplit(short), { wide: [], rotated: ["page-2"] });
+
+  const mixedResolution = fixture(4);
+  mixedResolution.pages[3] = { ...mixedResolution.pages[3], width: 2400, height: 3200 };
+  assert.deepEqual(findSpreadsToSplit(mixedResolution), { wide: [], rotated: [] });
 });

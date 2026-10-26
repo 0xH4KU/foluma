@@ -8,6 +8,7 @@ import { REVIEW_EXTENSION_ID, reviewData } from "../../../sdk/review";
 import {
   applyPreset,
   createPreset,
+  findSpreadsToSplit,
   insertBlankPage,
   isPair,
   navigatePage,
@@ -349,6 +350,45 @@ function Editor({ host, book }: { host: HostAPI; book: Book | null }) {
       host.report(error);
     }
   };
+  const selectSpreadsToSplit = () => {
+    const { wide, rotated } = findSpreadsToSplit(book);
+    if (rotated.length) {
+      const nextFlags = new Set([...flags, ...rotated]);
+      if (nextFlags.size !== flags.size) {
+        void update({
+          extension: { id: REVIEW_EXTENSION_ID, data: { ...editorData, review: [...nextFlags] } },
+        });
+      }
+    }
+    const wideAlreadySelected = wide.length > 0 && wide.length === ids.size && wide.every((id) => ids.has(id));
+    if (wide.length && (!wideAlreadySelected || !rotated.length)) {
+      setSelected(new Set(wide));
+      setFocus(wide[0]);
+      anchor.current = wide[0];
+      if (rotated.length) {
+        host.notify(
+          t(
+            "{0} wide pages selected · {1} rotated spread candidates marked for attention",
+            wide.length,
+            rotated.length,
+          ),
+        );
+      } else {
+        host.notify(t("{0} wide pages selected", wide.length));
+      }
+      return;
+    }
+    if (rotated.length) {
+      setSelected(new Set(rotated));
+      setFocus(rotated[0]);
+      anchor.current = rotated[0];
+      host.notify(
+        t("{0} rotated spread candidates selected. Rotate them 90° before splitting.", rotated.length),
+      );
+      return;
+    }
+    host.notify(t("No unsplit spread pages found"));
+  };
   const contextMenu = (id: string, at: { x: number; y: number }) => {
     if (busy || !host.contextMenu) return;
     const page = book.pages.find((p) => p.id === id)!;
@@ -569,6 +609,7 @@ function Editor({ host, book }: { host: HostAPI; book: Book | null }) {
           splitPreview={splitPreview}
           setSplitPreview={setSplitPreview}
           split={split}
+          selectSpreadsToSplit={selectSpreadsToSplit}
           exportImages={exportImages}
         />
       </div>

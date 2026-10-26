@@ -15,6 +15,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 from . import __version__
 from .cache import PreviewCache
 from .i18n import messages, t
+from .media import preview
 from .model import (
     EngineError,
     Session,
@@ -28,7 +29,17 @@ from .model import (
 )
 from .plugins import Plugins, platform_id, unpack
 from .series import FolderProject, Series, preview_inputs
-from .storage import atomic_json, contained, copy_asset, digest, link_or_copy, open_project, parse_json, save_project
+from .storage import (
+    atomic_json,
+    contained,
+    copy_asset,
+    digest,
+    link_or_copy,
+    open_project,
+    parse_json,
+    populate_epub_spreads,
+    save_project,
+)
 from .worker import job_info
 from .workers import Workers
 
@@ -227,6 +238,7 @@ class Engine:
             asset["path"] = str(
                 copy_asset(Path(asset["path"]).resolve(strict=True), self.data / "assets", asset["ext"])
             )
+        populate_epub_spreads(book)
         return book
 
     def prepare_session(self, session: Session, job: dict | None = None) -> None:
@@ -745,6 +757,8 @@ class Engine:
         return job_info(job)
 
     def run_worker(self, operation: str, params: dict, job: dict | None = None):
+        if operation == "preview":
+            return preview(**params, directory=self.data / "previews")
         if operation in ("import", "export", "materialize"):
             plugin = self.plugins.format(
                 "export" if operation == "export" else "import", params.get("path"), params.get("plugin_id")
@@ -1006,7 +1020,7 @@ def serve(data: Path, safe: bool) -> None:
             )
 
     with ThreadPoolExecutor(max_workers=4) as pool:
-        previews = ThreadPoolExecutor(max_workers=2)
+        previews = ThreadPoolExecutor(max_workers=4)
         try:
             while line := sys.stdin.buffer.readline(16 * 1024 * 1024 + 1):
                 if len(line) > 16 * 1024 * 1024:

@@ -2,16 +2,13 @@ from __future__ import annotations
 
 import copy
 import math
-import posixpath
 import re
 import shutil
 import tempfile
-import xml.etree.ElementTree as ET
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
-from xml.parsers import expat
 from zipfile import ZipFile
 
+from foluma.epub_metadata import is_rotated_image, read, reference, xml
 from foluma.i18n import t
 from foluma.media import import_images
 from foluma.model import new_id, validate
@@ -29,51 +26,6 @@ IMAGE_TYPES = {"image/jpeg": "JPEG", "image/png": "PNG", "image/webp": "WEBP"}
 
 def unsupported(member):
     return ValueError(t("EPUB page requires text or complex layout rendering: {0}. Only simple image pages are supported.", member))
-
-
-def reference(base, href):
-    try:
-        parsed = urlsplit(href)
-        path = unquote(parsed.path, errors="strict")
-    except ValueError as error:
-        raise ValueError(t("EPUB references must stay inside the archive")) from error
-    if parsed.scheme or parsed.netloc or parsed.query or path.startswith("/") or "\\" in path or "\x00" in path:
-        raise ValueError(t("EPUB references must stay inside the archive"))
-    resolved = posixpath.normpath(posixpath.join(posixpath.dirname(base), path)) if path else base
-    if not resolved or resolved == ".." or resolved.startswith("../") or re.match(r"^[A-Za-z]:", resolved):
-        raise ValueError(t("EPUB references must stay inside the archive"))
-    return resolved
-
-
-def read(archive, member, limit=1_000_000):
-    try:
-        entry = archive.getinfo(member)
-    except KeyError as error:
-        raise ValueError(t("EPUB resource is missing: {0}", member)) from error
-    if entry.is_dir() or entry.file_size > limit:
-        raise ValueError(t("EPUB XML and CSS resources cannot exceed 1 MB each"))
-    return archive.read(entry)
-
-
-def xml(archive, member, html=False):
-    payload = read(archive, member)
-    parser = expat.ParserCreate()
-
-    def reject(*_arguments):
-        raise ValueError(t("EPUB XML cannot contain entities or internal document types"))
-
-    def doctype(name, _system, _public, internal):
-        if not html or name.lower() != "html" or internal:
-            reject()
-
-    parser.StartDoctypeDeclHandler = doctype
-    parser.EntityDeclHandler = reject
-    parser.ExternalEntityRefHandler = reject
-    try:
-        parser.Parse(payload, True)
-        return ET.fromstring(payload)
-    except (ET.ParseError, expat.ExpatError) as error:
-        raise ValueError(t("Invalid EPUB XML: {0}", member)) from error
 
 
 def check_style(style, member):
@@ -181,7 +133,7 @@ def number(value, member):
     return result
 
 
-def page(archive, member, resources, load_image, colors=None, spread_ids=None, no_margins=None):
+def page(archive, member, resources, load_image, colors=None, spread_ids=None, no_margins=None, rotated_assets=None):
     media_type = resources.get(member, {}).get("media-type")
     if media_type in IMAGE_TYPES:
         return load_image(member)
@@ -276,6 +228,8 @@ def page(archive, member, resources, load_image, colors=None, spread_ids=None, n
     if len(images) != 1 or rectangles:
         raise unsupported(member)
     result = load_image(reference(member, images[0].get("src", "")))
+    if rotated_assets is not None and is_rotated_image(images[0]):
+        rotated_assets.add(result["asset_id"])
     declared_width, declared_height = images[0].get("width"), images[0].get("height")
     if declared_width and declared_height and "%" not in declared_width + declared_height:
         width, height = number(declared_width, member), number(declared_height, member)
@@ -365,10 +319,10 @@ def handle(operation: str, params: dict, book: dict | None, progress):
                 extracted.unlink()
             return copy.deepcopy(cached[member]) | {"id": new_id()}
 
-        colors, spread_ids, no_margins = {}, set(), []
+        colors, spread_ids, no_margins, rotated_assets = {}, set(), [], set()
         progress(0, len(members), t("Importing EPUB pages"))
         for number, member in enumerate(members, 1):
-            book["pages"].append(page(archive, member, resources, load_image, colors, spread_ids, no_margins) | {"source_page": number})
+            book["pages"].append(page(archive, member, resources, load_image, colors, spread_ids, no_margins, rotated_assets) | {"source_page": number})
             progress(number, len(members), t("Importing EPUB pages"))
         if colors or no_margins:
             book["extensions"]["org.foluma.page-tools"] = {"colors": colors, "no_margins": no_margins}
@@ -415,6 +369,8 @@ def handle(operation: str, params: dict, book: dict | None, progress):
             candidate["source_page"] = number
             if candidate["kind"] == "image":
                 book["assets"][candidate["asset_id"]].setdefault("source_page", number)
+        for asset_id, asset in book["assets"].items():
+            asset["rotated_spread"] = asset_id in rotated_assets
     if not any(candidate["kind"] == "image" for candidate in book["pages"]):
         raise ValueError(t("The EPUB contains no supported image pages"))
     if digest(source) != fingerprint:

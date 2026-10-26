@@ -11,7 +11,7 @@ from pathlib import Path
 import pymupdf as fitz
 from foluma.i18n import t
 from foluma.model import image_page, new_id, validate
-from foluma.storage import check_sources, copy_asset, digest, write_asset
+from foluma.storage import check_sources, digest, write_asset
 from PIL import Image
 
 from .image_extraction import _image_from_xref
@@ -162,7 +162,7 @@ def import_pdf(path: str, asset_dir: Path, render: bool = False, dpi: int | str 
                         raise ValueError(t("Page {0} is too large to render. Lower the DPI.", i + 1))
                     pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False, colorspace=fitz.csRGB)
                     pix.set_dpi(max(1, round(scale * 72)), max(1, round(scale * 72)))
-                    rendered = asset_dir / f".render-{new_id()}.png"
+                    rendered = io.BytesIO()
                     image = pix.pil_image()
                     colors = image.getcolors(256)
                     # Exact gray detection: all 256 gray levels fit, and even a slight tint keeps RGB.
@@ -170,10 +170,9 @@ def import_pdf(path: str, asset_dir: Path, render: bool = False, dpi: int | str 
                         image = image.convert("L")
                     try:
                         image.save(rendered, "PNG", compress_level=3, dpi=(pix.xres, pix.yres))
-                        stored = copy_asset(rendered, asset_dir, "png")
                     finally:
                         image.close()
-                        rendered.unlink(missing_ok=True)
+                    stored = write_asset(rendered.getvalue(), asset_dir, "png")
                     asset = {
                         "kind": "file",
                         "path": str(stored),

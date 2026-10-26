@@ -956,5 +956,10 @@
   "Updating {0}… {1}/{2}": "正在更新 {0}… {1}/{2}",
   "Plugin update progress": "插件更新進度",
   "{0} plugins updated · {1} failed": "已更新 {0} 個插件・{1} 個失敗",
-  "Some plugins could not be updated. Retry them individually or choose Update all again.": "部分插件更新失敗，可個別重試，或再次按「全部更新」。"
+  "Some plugins could not be updated. Retry them individually or choose Update all again.": "部分插件更新失敗，可個別重試，或再次按「全部更新」。",
+  "Select spreads to split": "選取待分割雙頁",
+  "{0} wide pages selected": "已選取 {0} 頁待分割橫向跨頁",
+  "{0} wide pages selected · {1} rotated spread candidates marked for attention": "已選取 {0} 頁待分割橫向跨頁・另有 {1} 頁疑似旋轉 90° 跨頁已標記待處理",
+  "{0} rotated spread candidates selected. Rotate them 90° before splitting.": "已選取 {0} 頁疑似旋轉 90° 的跨頁，請先確認並旋轉 90° 後再分割。",
+  "No unsplit spread pages found": "未發現尚未分割的雙頁跨頁"
 }

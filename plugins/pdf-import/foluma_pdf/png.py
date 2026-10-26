@@ -146,17 +146,13 @@ def make_png_from_scanlines(
     if len(scanlines) != expected:
         raise PdfImageError(f"PNG payload length {len(scanlines)}; expected {expected}")
 
-    filtered = bytearray()
-    for row in range(height):
-        start = row * row_length
-        filtered.append(0)
-        filtered.extend(scanlines[start : start + row_length])
+    filtered = b"".join(b"\x00" + scanlines[start : start + row_length] for start in range(0, expected, row_length))
     return make_png_from_compressed_rows(
         width,
         height,
         bit_depth,
         color_type,
-        zlib.compress(bytes(filtered), level=compression_level),
+        zlib.compress(filtered, level=compression_level),
         palette,
     )
 

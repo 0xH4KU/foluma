@@ -5,10 +5,14 @@ import errno
 import hashlib
 import json
 import os
+import re
 import shutil
 import tempfile
+import zlib
 from pathlib import Path
+from zipfile import BadZipFile, ZipFile
 
+from .epub_metadata import is_rotated_image, reference, xml
 from .i18n import t
 from .model import page_background, validate
 
@@ -100,14 +104,27 @@ def owned_files(root: Path, path: Path) -> list[Path]:
     return files
 
 
-def copy_asset(source: Path, directory: Path, extension: str) -> Path:
+def copy_asset(source: Path, directory: Path, extension: str, *, link: bool = False) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
-    destination = directory / f"{digest(source)}.{extension}"
-    if destination != source.resolve() and not destination.exists():
+    resolved = source.resolve(strict=True)
+    hashed = bool(re.fullmatch(rf"[a-f0-9]{{64}}\.{re.escape(extension)}", resolved.name))
+    if hashed and resolved.parent == directory.resolve():
+        return directory / resolved.name
+    destination = directory / (resolved.name if link and hashed else f"{digest(resolved)}.{extension}")
+    if destination != resolved and not destination.exists():
+        if link:
+            try:
+                os.link(resolved, destination)
+                return destination
+            except FileExistsError:
+                return destination
+            except OSError as error:
+                if error.errno not in (errno.ENOTSUP, errno.EOPNOTSUPP, errno.EXDEV):
+                    raise
         with tempfile.NamedTemporaryFile(dir=directory, delete=False) as temp:
             staged = Path(temp.name)
         try:
-            shutil.copyfile(source, staged)
+            shutil.copyfile(resolved, staged)
             os.replace(staged, destination)
         finally:
             staged.unlink(missing_ok=True)
@@ -150,7 +167,7 @@ def save_project(book: dict, directory: Path, *, relative_to: Path | None = None
         if asset["kind"] == "file":
             path = Path(asset["path"]).resolve()
             if path.parent != assets_directory:
-                path = copy_asset(path, assets_directory, asset["ext"]).resolve()
+                path = copy_asset(path, assets_directory, asset["ext"], link=True).resolve()
             elif not path.is_file():
                 raise ValueError(t("Project asset is missing: {0}", path.name))
             if str(path) != asset["path"]:
@@ -158,6 +175,41 @@ def save_project(book: dict, directory: Path, *, relative_to: Path | None = None
             asset["path"] = path.relative_to(directory).as_posix()
     atomic_json(directory / "project.json", data)
     return relocated
+
+
+def populate_epub_spreads(book: dict) -> None:
+    for source_id, source in book.get("sources", {}).items():
+        assets = [
+            asset for asset in book.get("assets", {}).values()
+            if asset.get("source_id") == source_id and asset.get("member") and "rotated_spread" not in asset
+        ]
+        if not assets:
+            continue
+        try:
+            path = Path(source["path"])
+            if path.suffix.lower() != ".epub" or not path.is_file() or digest(path) != source["sha256"]:
+                continue
+            with ZipFile(path) as archive:
+                entries = archive.infolist()
+                if len(entries) > 10_000 or sum(entry.file_size for entry in entries) > 2_000_000_000:
+                    continue
+                rotated = set()
+                for entry in entries:
+                    if not entry.filename.lower().endswith((".html", ".xhtml")):
+                        continue
+                    try:
+                        root = xml(archive, entry.filename, html=True)
+                        body = root.find("{*}body")
+                        if body is not None:
+                            for image in body.iter():
+                                if image.tag in ("img", "{http://www.w3.org/1999/xhtml}img") and is_rotated_image(image):
+                                    rotated.add(reference(entry.filename, image.get("src", "")))
+                    except (OSError, ValueError, RuntimeError, BadZipFile, EOFError, zlib.error):
+                        continue
+            for asset in assets:
+                asset["rotated_spread"] = asset["member"] in rotated
+        except (OSError, BadZipFile):
+            pass
 
 
 def open_project(directory: Path) -> dict:
@@ -169,6 +221,7 @@ def open_project(directory: Path) -> dict:
     for asset in data["assets"].values():
         if asset["kind"] == "file":
             asset["path"] = str(contained(directory, asset["path"]))
+    populate_epub_spreads(data)
     return data
 
 

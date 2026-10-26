@@ -29,6 +29,50 @@ export function rotatePages(book: Book, ids: Set<string>): Changes {
   }) };
 }
 
+export function findSpreadsToSplit(book: Book): { wide: string[]; rotated: string[] } {
+  const unsplit = book.pages.filter((page) => page.kind === "image" && !page.split);
+  const wide: string[] = [];
+  const portraits: { id: string; assetId?: string; width: number; height: number }[] = [];
+  for (const page of unsplit) {
+    const [width, height] = pageSize(page);
+    if (width > height) wide.push(page.id);
+    else portraits.push({ id: page.id, assetId: page.asset_id, width, height });
+  }
+  const marked = new Set(spreadMarks(book).flat());
+  const coverId = book.metadata.cover_id;
+  if (portraits.length < 3) {
+    return {
+      wide,
+      rotated: portraits
+        .filter((p) => p.id !== coverId && !marked.has(p.id) && book.assets[p.assetId || ""]?.rotated_spread)
+        .map((p) => p.id),
+    };
+  }
+  const median = (values: number[]) => {
+    const sorted = [...values].sort((a, b) => a - b);
+    return sorted[Math.floor((sorted.length - 1) / 2)];
+  };
+  const medianWidth = median(portraits.map((p) => p.width));
+  const medianHeight = median(portraits.map((p) => p.height));
+  const medianAspect = medianWidth / medianHeight;
+  const rotatedAspect = medianHeight / (2 * medianWidth);
+  const rotated = portraits
+    .filter(({ id, assetId, width, height }) => {
+      if (id === coverId || marked.has(id)) return false;
+      if (book.assets[assetId || ""]?.rotated_spread) return true;
+      const aspect = width / height;
+      if (width >= medianWidth * 1.12 && height >= medianHeight * 1.04 && Math.abs(aspect - medianAspect) >= 0.03)
+        return true;
+      return (
+        Math.abs(rotatedAspect - medianAspect) >= 0.06 &&
+        Math.abs(aspect - rotatedAspect) <= 0.015 &&
+        Math.abs(aspect - medianAspect) >= 0.06
+      );
+    })
+    .map((p) => p.id);
+  return { wide, rotated };
+}
+
 export function splitPages(book: Book, ids: Set<string>, ratio = 0.5): Changes {
   if (!Number.isFinite(ratio) || ratio < 0.05 || ratio > 0.95)
     throw new Error(t("Split position must be between 5% and 95%"));

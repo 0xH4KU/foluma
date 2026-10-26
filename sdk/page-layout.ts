@@ -90,6 +90,15 @@ export function pageSize(page: Page): [number, number] {
   return (page.rotation || 0) % 180 ? [height, width] : [width, height];
 }
 
+export function cropViewBox(base: Page, edited: Page): [number, number, number, number] {
+  const [bL, bT, bR, bB] = cropBox(base), [cL, cT, cR, cB] = cropBox(edited);
+  const [width, height] = pageSize(edited);
+  if (edited.rotation === 90) return [bB - cB, cL - bL, width, height];
+  if (edited.rotation === 180) return [bR - cR, bB - cB, width, height];
+  if (edited.rotation === 270) return [cT - bT, bR - cR, width, height];
+  return [cL - bL, cT - bT, width, height];
+}
+
 export function readingPages(book: Book): Page[] {
   return book.pages.filter(page => !book.metadata.cover_only || page.id !== book.metadata.cover_id);
 }

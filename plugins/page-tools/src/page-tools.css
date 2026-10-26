@@ -39,6 +39,11 @@ button.primary { background: var(--selection, #2e6da5); border-color: var(--sele
 .spread-preview { display: flex; flex: none; box-shadow: 0 2px 10px #0002; }
 .preview-page, .virtual-gap { flex: 1; min-width: 0; position: relative; padding: 0; border: 0; border-radius: 0; }
 .preview-page > svg { display: block; width: 100%; height: 100%; }
+.crop-frame { fill: none; stroke: var(--accent, #2e6da5); stroke-width: 1.5px; stroke-dasharray: 4 3; pointer-events: none; }
+.crop-edge { stroke: transparent; stroke-width: 12px; pointer-events: stroke; }
+.crop-edge:hover { stroke: var(--focus-ring, #3778b555); }
+.crop-edge-ew { cursor: ew-resize; }
+.crop-edge-ns { cursor: ns-resize; }
 .preview-message { position: absolute; top: 45%; left: 0; right: 0; }
 .virtual-gap { background: var(--placeholder, #d7dadd); color: var(--muted); outline: 1px dashed var(--line); outline-offset: -1px; display: flex; align-items: center; justify-content: center; }
 .preview-navigation { display: flex; justify-content: center; align-items: center; gap: 20px; padding: 9px; border-top: 1px solid var(--line); background: var(--side); }

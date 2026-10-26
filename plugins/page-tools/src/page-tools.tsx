@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { createActionRunner } from "../../../sdk/actions.ts";
 import { getLocale, setLocale, subscribeLocale, t } from "../../../sdk/i18n.ts";
 import { usePagePreview, visibleRange } from "../../../sdk/previews.ts";
-import { PAGE_TOOLS_ID, appearanceData, cropFromMargins, imagePlacement, joinedSpread, pageColors, pageSize, pagesWithoutMargins, spreadGroups, validDeskew,
+import { PAGE_TOOLS_ID, appearanceData, cropFromMargins, cropViewBox, imagePlacement, joinedSpread, pageColors, pageSize, pagesWithoutMargins, spreadGroups, validDeskew,
   type CropMargins, type PageColor } from "../../../sdk/page-layout.ts";
 import type { Book, HostAPI, Page } from "../../../sdk/types.ts";
 import { CropControls, CropTool, useCropChannel, type CropEdit, type CropState } from "./crop-controls.tsx";
@@ -26,20 +26,65 @@ function Thumbnail({ book, page, host, position, selected, color, uncertain, sel
   </button>;
 }
 
-function PreviewPage({ book, page, edited, host, viewport, side, heightRatio, noMargins, color, selected, select }: {
-  book: Book; page: Page; edited: Page; host: HostAPI; viewport: [number, number]; side?: "left" | "right";
+function PreviewPage({ book, page, edited, margins, angle, editable, changeCrop, host, viewport, side, heightRatio, noMargins, color, selected, select }: {
+  book: Book; page: Page; edited: Page; margins: CropMargins; angle: number; editable: boolean;
+  changeCrop: (margins: CropMargins, angle: number) => void; host: HostAPI; viewport: [number, number]; side?: "left" | "right";
   heightRatio: number; noMargins: boolean; color: PageColor; selected: boolean; select: () => void;
 }) {
-  const { url, error } = usePagePreview(book, edited, host, 1600);
-  const [width, height] = pageSize(edited);
+  const svgRef = useRef<SVGSVGElement>(null);
+  const basePage = useMemo(() => edited.deskew !== page.deskew ? { ...page, deskew: edited.deskew } : page, [page, edited.deskew]);
+  const { url, error } = usePagePreview(book, basePage, host, 1600);
+  const [baseWidth, baseHeight] = pageSize(basePage);
+  const [offsetX, offsetY, width, height] = cropViewBox(basePage, edited);
   const placement = imagePlacement(width, height, viewport, side, heightRatio, noMargins);
+  const startEdgeDrag = (sideIndex: 0 | 1 | 2 | 3, event: React.PointerEvent<SVGLineElement>) => {
+    if (!editable || !svgRef.current) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const rect = svgRef.current.getBoundingClientRect();
+    const startX = event.clientX, startY = event.clientY;
+    const startMargins = [...margins] as CropMargins;
+    const fullWidth = Math.max(1, (placement.width * (rect.width / viewport[0])) / Math.max(0.01, (100 - startMargins[0] - startMargins[2]) / 100));
+    const fullHeight = Math.max(1, (placement.height * (rect.height / viewport[1])) / Math.max(0.01, (100 - startMargins[1] - startMargins[3]) / 100));
+    const move = (nextEvent: PointerEvent) => {
+      const dx = nextEvent.clientX - startX, dy = nextEvent.clientY - startY;
+      const delta = sideIndex === 0 ? (dx / fullWidth) * 100 : sideIndex === 1 ? (dy / fullHeight) * 100
+        : sideIndex === 2 ? (-dx / fullWidth) * 100 : (-dy / fullHeight) * 100;
+      const limit = 99 - startMargins[(sideIndex + 2) % 4];
+      const next = [...startMargins] as CropMargins;
+      next[sideIndex] = Math.round(Math.max(0, Math.min(limit, startMargins[sideIndex] + delta)) * 10) / 10;
+      changeCrop(next, angle);
+    };
+    const stop = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
+  };
+  const { x, y, width: pw, height: ph } = placement;
+  const edges: { side: 0 | 1 | 2 | 3; x1: number; y1: number; x2: number; y2: number; axis: "ew" | "ns" }[] = [
+    { side: 0, x1: x, y1: y, x2: x, y2: y + ph, axis: "ew" },
+    { side: 1, x1: x, y1: y, x2: x + pw, y2: y, axis: "ns" },
+    { side: 2, x1: x + pw, y1: y, x2: x + pw, y2: y + ph, axis: "ew" },
+    { side: 3, x1: x, y1: y + ph, x2: x + pw, y2: y + ph, axis: "ns" },
+  ];
   return <button className={`preview-page ${selected ? "selected" : ""}`} style={{ background: color, color: color === "black" ? "white" : "#25282c" }}
     aria-pressed={selected} aria-label={t("Select page {0}", book.pages.indexOf(page) + 1)} onClick={select}>
-    <svg viewBox={`0 0 ${viewport[0]} ${viewport[1]}`} role="img" aria-label={t("Page {0}", book.pages.indexOf(page) + 1)}>
-      {page.kind === "blank" ? <rect width="100%" height="100%" fill="white" /> : url &&
-        <svg {...placement} viewBox={`0 0 ${width} ${height}`} overflow="hidden">
-          <image href={url} width={width} height={height} preserveAspectRatio="none" />
-        </svg>}
+    <svg ref={svgRef} viewBox={`0 0 ${viewport[0]} ${viewport[1]}`} role="img" aria-label={t("Page {0}", book.pages.indexOf(page) + 1)}>
+      {page.kind === "blank" ? <rect width="100%" height="100%" fill="white" /> : url && <>
+        <svg {...placement} viewBox={`${offsetX} ${offsetY} ${width} ${height}`} overflow="hidden">
+          <image href={url} width={baseWidth} height={baseHeight} preserveAspectRatio="none" />
+        </svg>
+        {selected && editable && <g className="crop-handles">
+          <rect className="crop-frame" x={x} y={y} width={pw} height={ph} vectorEffect="non-scaling-stroke" />
+          {edges.map(edge => <line key={edge.side} className={`crop-edge crop-edge-${edge.axis}`}
+            x1={edge.x1} y1={edge.y1} x2={edge.x2} y2={edge.y2} vectorEffect="non-scaling-stroke"
+            onClick={event => event.stopPropagation()} onPointerDown={event => startEdgeDrag(edge.side, event)} />)}
+        </g>}
+      </>}
     </svg>
     {!url && page.kind === "image" && <span className="preview-message">{error || t("Loading preview…")}</span>}
   </button>;
@@ -194,7 +239,8 @@ function PageTools({ book, host }: { book: Book; host: HostAPI }) {
     const scan = async () => {
       while (cursor < pages.length && !controller.signal.aborted) {
         const page = pages[cursor++];
-        const url = await host.preview(previewBook, editedPage(page), 320, controller.signal);
+        const base = edits[page.id] && edits[page.id].angle !== (page.deskew || 0) ? { ...page, deskew: edits[page.id].angle } : page;
+        const url = await host.preview(previewBook, base, 320, controller.signal);
         const image = new Image(); image.crossOrigin = "anonymous"; image.src = url;
         await image.decode();
         if (controller.signal.aborted) return;
@@ -204,7 +250,7 @@ function PageTools({ book, host }: { book: Book; host: HostAPI }) {
         if (!context) throw new Error(t("Preview unavailable"));
         context.drawImage(image, 0, 0);
         const result = detectColor(context.getImageData(0, 0, canvas.width, canvas.height).data,
-          canvas.width, canvas.height);
+          canvas.width, canvas.height, edits[page.id]?.margins);
         detected[page.id] = result.color;
         if (!result.certain) checks.push(page.id);
         setProgress({ done: ++done, total: pages.length });
@@ -241,8 +287,38 @@ function PageTools({ book, host }: { book: Book; host: HostAPI }) {
     const page = groups[groupIndex + step]?.find(page => page !== null);
     if (page) setFocus(page.id);
   };
+  const openCrop = () => {
+    if (channel && host.openWindow) void execute(() => host.openWindow!({ plugin: PAGE_TOOLS_ID, view: "crop",
+      title: t("Crop"), width: 300, height: 330, persistent: true }));
+    else setCropping(true);
+  };
   const previewHeight = Math.max(1, Math.min(stageSize.height - 32, (stageSize.width - 32) / (viewport[0] / viewport[1] * Math.max(1, group.length))));
-  return <div className="page-tools">
+  return <div className="page-tools" tabIndex={-1} onKeyDown={event => {
+    if ((event.target as HTMLElement).matches("input,select,textarea") || busy) return;
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
+      if (dirty || !(event.shiftKey ? book.can_redo : book.can_undo)) return;
+      event.preventDefault();
+      void execute(() => host.rpc(event.shiftKey ? "document.redo" : "document.undo", { document_id: book.id }));
+    } else if (!event.metaKey && !event.ctrlKey && !event.altKey) {
+      if (event.key === "PageUp") {
+        if (cropState.canPrevious) { event.preventDefault(); navigatePage(-1); }
+      } else if (event.key === "PageDown") {
+        if (cropState.canNext) { event.preventDefault(); navigatePage(1); }
+      } else if (event.key === "ArrowLeft") {
+        event.preventDefault(); navigatePage(book.metadata.direction === "rtl" ? 1 : -1);
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault(); navigatePage(book.metadata.direction === "rtl" ? -1 : 1);
+      } else if (!event.repeat && event.key.toLowerCase() === "w" && editable) {
+        event.preventDefault(); chooseColor("white");
+      } else if (!event.repeat && event.key.toLowerCase() === "b" && editable) {
+        event.preventDefault(); chooseColor("black");
+      } else if (!event.repeat && event.key.toLowerCase() === "m" && editable && !joined && current) {
+        event.preventDefault(); beginDraft(); setNoMargins(old => ({ ...old, [current.id]: !noMarginsFor(current) })); setStatus("");
+      } else if (!event.repeat && event.key.toLowerCase() === "c" && editable) {
+        event.preventDefault(); openCrop();
+      }
+    }
+  }}>
     <header className="toolbar"><strong>{t("Crop and margins")}</strong>
       <button disabled={busy || stale || !book.pages.some(page => page.kind === "image")} onClick={detectAll}>{t("Detect all page colors")}</button>
       <button disabled={busy || stale || !book.pages.some(page => page.kind === "image" && !noMarginsFor(page))} onClick={() => {
@@ -275,11 +351,7 @@ function PageTools({ book, host }: { book: Book; host: HostAPI }) {
       </aside>
       <section className="preview-panel" aria-label={t("Spread preview with margins")}>
         <div className="page-controls"><strong>{current ? t("Page {0}", book.pages.indexOf(current) + 1) : t("No pages")}</strong>
-          <button disabled={!editable} aria-haspopup="dialog" onClick={() => {
-            if (channel && host.openWindow) void execute(() => host.openWindow!({ plugin: PAGE_TOOLS_ID, view: "crop",
-              title: t("Crop"), width: 300, height: 330, persistent: true }));
-            else setCropping(true);
-          }}>{t("Crop…")}</button>
+          <button disabled={!editable} aria-haspopup="dialog" onClick={openCrop}>{t("Crop…")}</button>
           <label className="margin-toggle"><input type="checkbox" disabled={!editable || joined}
             checked={!!current && !joined && !noMarginsFor(current)} onChange={event => {
               if (!current) return;
@@ -295,7 +367,9 @@ function PageTools({ book, host }: { book: Book; host: HostAPI }) {
         <p className="preview-note">{t("EPUB page size: {0} × {1}. Turning off margins removes the 2% inset; space needed to keep image proportions remains.", viewport[0], viewport[1])}</p>
         <div className="preview-stage" ref={stage}>
           <div className="spread-preview" style={{ height: previewHeight, width: previewHeight * viewport[0] / viewport[1] * group.length }}>
-            {group.map((page, slot) => page ? <PreviewPage key={page.id} book={previewBook} page={page} edited={editedPage(page)} host={host} viewport={viewport}
+            {group.map((page, slot) => page ? <PreviewPage key={page.id} book={previewBook} page={page} edited={editedPage(page)}
+              margins={edits[page.id]?.margins || [0, 0, 0, 0]} angle={edits[page.id]?.angle ?? page.deskew ?? 0}
+              editable={!busy && !stale && page.kind === "image"} changeCrop={changeCrop} host={host} viewport={viewport}
               side={joined ? slot === 0 ? "left" : "right" : undefined} heightRatio={heightRatio}
               noMargins={noMarginsFor(page)}
               color={colorFor(page)} selected={current?.id === page.id} select={() => { if (!busy) setFocus(page.id); }} />

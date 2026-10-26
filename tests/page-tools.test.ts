@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { cropBox, cropFromMargins, imagePlacement, joinedSpread, pageColors, pageSize, pagesWithoutMargins, spreadGroups, validDeskew } from "../sdk/page-layout.ts";
+import { cropBox, cropFromMargins, cropViewBox, imagePlacement, joinedSpread, pageColors, pageSize, pagesWithoutMargins, spreadGroups, validDeskew } from "../sdk/page-layout.ts";
 import { detectColor } from "../plugins/page-tools/src/detect-color.ts";
 import type { Book, Page } from "../sdk/types.ts";
 
@@ -70,6 +70,18 @@ test("preview crop dimensions match the export's integer bounds, rounding and ro
   assert.deepEqual(pageSize({ ...page, rotation: 90 }), [6, 9]);
   assert.deepEqual(cropBox({ ...page, width: 10, height: 10, crop: [0.05, 0.25, 0.8, 0.4] }), [0, 2, 8, 6]);
   assert.deepEqual(pageSize({ ...page, width: 1, height: 1, crop: [0.99, 0.99, 0.01, 0.01] }), [1, 1]);
+  const base: Page = { ...fixture().pages[0], width: 200, height: 100, crop: [0.1, 0.1, 0.8, 0.8] };
+  for (const rotation of [0, 90, 180, 270] as const) {
+    const oriented = { ...base, rotation };
+    const edited = { ...oriented, crop: cropFromMargins(oriented, [10, 20, 30, 40]) };
+    const [bw, bh] = pageSize(oriented);
+    assert.deepEqual(cropViewBox(oriented, edited), [
+      Math.round(bw * 0.1),
+      Math.round(bh * 0.2),
+      Math.round(bw * 0.6),
+      Math.round(bh * 0.4),
+    ]);
+  }
 });
 
 test("fine rotation accepts signed small angles and keeps the crop canvas dimensions", () => {
