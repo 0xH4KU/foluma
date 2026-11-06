@@ -5,6 +5,24 @@ import {test} from "node:test";
 import {createPreviewLoader} from "../desktop/previews.ts";
 import {previewKey} from "../sdk/previews.ts";
 import type {Book, Page} from "../sdk/types.ts";
+import { originalPage } from "../sdk/page-layout.ts";
+
+test("original comparison restores full source geometry without changing page identity or saved edits", async () => {
+  const book = { id: "book" } as Book;
+  const edited: Page = {id: "page", kind: "image", asset_id: "asset", width: 240, height: 320,
+    crop: [0.1, 0.2, 0.5, 0.6], rotation: 90, deskew: 1.2};
+  const before = structuredClone(edited), original = originalPage(edited);
+  assert.deepEqual(original.crop, [0, 0, 1, 1]);
+  assert.equal(original.rotation, 0);
+  assert.equal(original.deskew, 0);
+  assert.equal(original.id, edited.id);
+  assert.equal(original.asset_id, edited.asset_id);
+  assert.deepEqual(edited, before);
+  const calls: Page[] = [];
+  const load = createPreviewLoader(async (_book, page) => { calls.push(page); return page.rotation ? "edited.png" : "original.png"; });
+  assert.deepEqual(await Promise.all([load(book, edited), load(book, original)]), ["edited.png", "original.png"]);
+  assert.equal(calls.length, 2);
+});
 
 test("previews drop obsolete work, prioritize the current page, share requests and retry failures", async () => {
   const book = {id: "book"} as Book;

@@ -1,5 +1,13 @@
 # Foluma 0.1 validation
 
+## Review, chapters and original-image export (2026-10-30)
+
+All 97 Python tests and 55 TypeScript tests pass, along with Ruff, strict TypeScript including unused-symbol checks, the desktop/editor/page-tools builds and whitespace checks. Regressions cover direct original-image bytes, book/volume titles and current page numbers, ZIP filenames, overwrite/source protection, transient original previews, chapter ordering and split/restore/preset remapping, saved color checks, project/history retention and EPUB/PDF chapter navigation round-trips. EPUB imports ignore navigation destinations outside supported local pages; chapter titles containing XML punctuation and Chinese text retain their labels and destinations.
+
+Playwright exercised the built desktop and plugin bundles through an isolated synthetic Tauri bridge and generated previews in Chromium. Checks covered resolving all three review issue types and jumping to a page, chapter add/rename/remove, retaining input after a failed save, clearing a removed chapter's rename draft, direct-image and multi-image ZIP save dialogs, original toggle/hold-O/window-blur behavior, retained crop/margin drafts and persisted color checks. English and Traditional Chinese were inspected at 1180 × 820 and 860 × 600; chapter and checklist panels remain within the narrow window. The new chapter labels are translated.
+
+Updated development plugin packages are prepared in build/. Chapters use a flat list; nested imported navigation is flattened. The installed macOS app, native dialogs and external reading applications were not exercised, and no release app was rebuilt in this pass.
+
 ## Maintenance audit (2026-10-14)
 
 All 87 Python tests and 43 TypeScript tests passed, along with Ruff, strict TypeScript including unused-symbol checks, the desktop/editor/page-tools builds, Rust cargo check and whitespace checks. Regressions cover atomic multi-extension edits and undo, page appearance/review/spread remapping through split/restore/presets, repeated EPUB source images, bounded image/palette decompression, plugin metadata reads, failed-install rollback and concurrent download/settings/removal operations.

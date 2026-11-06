@@ -15,7 +15,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 from . import __version__
 from .cache import PreviewCache
 from .i18n import messages, t
-from .media import preview
+from .media import original_image_name, original_image_pages, preview
 from .model import (
     EngineError,
     Session,
@@ -299,6 +299,11 @@ class Engine:
                     if p["deskew"] and page["kind"] != "image":
                         raise ValueError(t("Only image pages can be rotated."))
                     page["deskew"] = p["deskew"]
+                if "rotation" in p:
+                    rotation = p["rotation"]
+                    if type(rotation) is not int or rotation not in (0, 90, 180, 270) or rotation and page["kind"] != "image":
+                        raise ValueError(t("Rotation must be 0, 90, 180 or 270 degrees for image pages."))
+                    page["rotation"] = rotation
                 background = p.get("background", page_background(current, page["id"]))
                 if background not in ("black", "white"):
                     raise ValueError(t("Invalid page background"))
@@ -795,12 +800,20 @@ class Engine:
             if provider
             else ".zip"
         )
+        image_name = None
+        if operation == "images.export":
+            selected = original_image_pages(book, p.get("page_ids"))
+            if len(selected) == 1 and Path(p.get("path", "")).suffix.lower() != ".zip":
+                image_name = original_image_name(book, book["pages"].index(selected[0]) + 1)
+                expected = Path(image_name).suffix
         with self.lock:
             if "directory" in p:
                 directory = Path(p["directory"]).resolve(strict=True)
                 if not directory.is_dir():
                     raise ValueError(t("Choose an output folder"))
                 stem = re.sub(r'[\x00-\x1f<>:"/\\|?*]', "_", book["metadata"]["title"]).strip().rstrip(". ")[:120] or "book"
+                if image_name:
+                    stem = Path(image_name).stem
                 if stem.upper().split(".")[0] in {
                     "CON", "PRN", "AUX", "NUL", *[f"COM{i}" for i in range(1, 10)], *[f"LPT{i}" for i in range(1, 10)],
                 }:

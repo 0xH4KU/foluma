@@ -1,6 +1,29 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type KeyboardEvent } from "react";
 import type { Book, HostAPI, Page } from "./types.ts";
 import { pageBackground } from "./page-layout.ts";
+
+export function useOriginalComparison() {
+  const [enabled, setEnabled] = useState(false);
+  const [held, setHeld] = useState(false);
+  useEffect(() => {
+    const release = () => setHeld(false);
+    const keyUp = (event: globalThis.KeyboardEvent) => { if (event.key.toLowerCase() === "o") release(); };
+    window.addEventListener("keyup", keyUp);
+    window.addEventListener("blur", release);
+    return () => { window.removeEventListener("keyup", keyUp); window.removeEventListener("blur", release); };
+  }, []);
+  return {
+    original: enabled || held,
+    toggle: () => setEnabled(value => !value),
+    keyDown: (event: KeyboardEvent) => {
+      if (!event.defaultPrevented && !event.metaKey && !event.ctrlKey && !event.altKey && event.key.toLowerCase() === "o" &&
+          !(event.target as HTMLElement).closest("input,select,textarea,[contenteditable=true]")) {
+        event.preventDefault();
+        setHeld(true);
+      }
+    },
+  };
+}
 
 export function visibleRange(count: number, top: number, height: number, rowHeight: number, columns: number) {
   return {

@@ -15,6 +15,24 @@ export function reviewData(book: Book): ReviewData {
 
 export type SpreadMark = [string, string];
 
+export type Chapter = { page_id: string; title: string };
+
+export function chapters(book: Book): Chapter[] {
+  const value = reviewData(book).chapters;
+  if (!Array.isArray(value)) return [];
+  const positions = new Map(book.pages.map((page, index) => [page.id, index]));
+  const seen = new Set<string>();
+  return value.filter((entry): entry is Chapter => {
+    if (!entry || typeof entry !== "object" || !positions.has(entry.page_id) ||
+        typeof entry.title !== "string" || !entry.title.trim() || entry.title.length > 4096) return false;
+    const key = JSON.stringify([entry.page_id, entry.title]);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).map(({ page_id, title }) => ({ page_id, title }))
+    .sort((a, b) => positions.get(a.page_id)! - positions.get(b.page_id)!);
+}
+
 export function spreadMarks(book: Book): SpreadMark[] {
   const value = reviewData(book).spreads;
   if (!Array.isArray(value)) return [];

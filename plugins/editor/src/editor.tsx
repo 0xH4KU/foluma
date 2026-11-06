@@ -5,6 +5,7 @@ import type { Book, Changes, HostAPI } from "../../../sdk/types";
 import { documentRef } from "../../../sdk/types";
 import { createActionRunner } from "../../../sdk/actions";
 import { REVIEW_EXTENSION_ID, reviewData } from "../../../sdk/review";
+import { useOriginalComparison } from "../../../sdk/previews";
 import {
   applyPreset,
   createPreset,
@@ -12,6 +13,7 @@ import {
   insertBlankPage,
   isPair,
   navigatePage,
+  originalImageName,
   restorePages,
   rotatePages,
   splitPages,
@@ -23,6 +25,7 @@ import { SpreadSuggestions } from "./spread-suggestions";
 import { setSpreadMarks, spreadMarks, toggleSpreadMark } from "./spreads";
 import type { ViewState } from "./thumbnails";
 import { EditorToolbar, PagePanel, PreviewPanel, Inspector } from "./editor-panels";
+import { ReviewTools } from "./review-tools";
 import "./editor.css";
 
 function readView(book: Book | null): ViewState {
@@ -137,6 +140,8 @@ function Editor({ host, book }: { host: HostAPI; book: Book | null }) {
   const execute = useMemo(() => createActionRunner(host, setBusy), [host]);
   const [batch, setBatch] = useState(false);
   const [suggestions, setSuggestions] = useState(false);
+  const [reviewTool, setReviewTool] = useState<"review" | "chapters" | null>(null);
+  const comparison = useOriginalComparison();
   const [batchPaths, setBatchPaths] = useState<string[]>([]);
   useEffect(
     () =>
@@ -264,16 +269,20 @@ function Editor({ host, book }: { host: HostAPI; book: Book | null }) {
   };
   const exportImages = (selection = ids) =>
     run(async () => {
-      const path = await host.saveFile(t("{0}-originals.zip", book.metadata.title), ["zip"]);
+      const images = book.pages.filter(page => selection.has(page.id) && page.kind === "image");
+      if (!images.length) return;
+      const single = images.length === 1;
+      const path = await host.saveFile(single ? originalImageName(book, images[0]) : t("{0}-originals.zip", book.metadata.title),
+        [single ? book.assets[images[0].asset_id!].ext : "zip"]);
       if (path) {
         await host.task({
           operation: "images.export",
           ...documentRef(book),
-          page_ids: [...selection],
+          page_ids: images.map(page => page.id),
           path,
           overwrite: true,
         });
-        host.notify(t("Originals from {0} selected pages exported", selection.size));
+        host.notify(t("Originals from {0} selected pages exported", images.length));
       }
     });
   const writePreset = () =>
@@ -467,6 +476,7 @@ function Editor({ host, book }: { host: HostAPI; book: Book | null }) {
       ref={editor}
       tabIndex={-1}
       onKeyDown={(event) => {
+        comparison.keyDown(event);
         if ((event.target as HTMLElement).matches("input,select,textarea") || busy) return;
         if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
           event.preventDefault();
@@ -542,12 +552,16 @@ function Editor({ host, book }: { host: HostAPI; book: Book | null }) {
         readPreset={readPreset}
         writePreset={writePreset}
         openBatch={() => setBatch(true)}
+        reviewTool={reviewTool}
+        openReviewTool={(tool) => setReviewTool(current => current === tool ? null : tool)}
         suggestions={suggestions}
         openSuggestions={() => {
           if (host.openWindow) void run(() => host.openWindow!({plugin: "org.foluma.editor", view: "spreads", title: t("Blank suggestions"), width: 360, height: 480}));
           else setSuggestions((open) => !open);
         }}
       />
+      {reviewTool && <ReviewTools key={reviewTool} mode={reviewTool} book={book} current={current} busy={busy}
+        host={host} select={select} save={changes => execute(() => host.apply(book, changes))} close={() => setReviewTool(null)} />}
       <div className={`editor-columns ${toolsOpen ? "with-tools" : ""}`}>
         <PagePanel
           book={book}
@@ -592,6 +606,8 @@ function Editor({ host, book }: { host: HostAPI; book: Book | null }) {
           nextFlag={nextFlag}
           splitRatio={splitRatio}
           splitPreview={splitPreview}
+          original={comparison.original}
+          toggleOriginal={comparison.toggle}
           contextMenu={contextMenu}
         />
         <Inspector

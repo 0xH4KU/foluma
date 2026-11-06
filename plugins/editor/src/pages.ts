@@ -4,6 +4,11 @@ import { PAGE_TOOLS_ID, appearanceData, pageSize, remapPageData, spreadGroups, v
 import { REVIEW_EXTENSION_ID, reviewData, spreadMarks, type SpreadMark } from "../../../sdk/review.ts";
 export { pageSize, readingPages, spreadGroups } from "../../../sdk/page-layout.ts";
 
+export function originalImageName(book: Book, page: Page): string {
+  const stem = Array.from(book.metadata.title.replace(/[\x00-\x1f<>:"/\\|?*]/g, "_").trim().replace(/[. ]+$/, "")).slice(0, 60).join("") || "book";
+  return `${stem}_${String(book.pages.indexOf(page) + 1).padStart(4, "0")}.${book.assets[page.asset_id!].ext}`;
+}
+
 export function parseRange(text: string, pages: Page[]): string[] {
   const chosen = new Set<number>();
   if (!text.trim()) throw new Error(t("Enter pages, for example 1-3, 5, 8-10"));

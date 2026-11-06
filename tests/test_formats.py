@@ -13,8 +13,8 @@ from unittest.mock import patch
 from zipfile import ZipFile, ZipInfo
 
 import pymupdf as fitz
-from foluma.media import crop_box, export_images, page_image, preview
-from foluma.model import new_id
+from foluma.media import crop_box, export_images, original_image_name, page_image, preview
+from foluma.model import chapters, new_id
 from foluma.plugins import Plugins, platform_id
 from foluma.service import Engine
 from foluma.storage import digest, open_project, save_project
@@ -66,6 +66,86 @@ class FormatPluginTests(unittest.TestCase):
             archive.writestr(worker, f"#!{sys.executable}\nimport json,sys\nfrom pathlib import Path\n"
                              "request=json.loads(sys.stdin.readline())\n" + program)
         return path
+
+    def test_original_image_exports_use_current_page_numbers_and_preserve_bytes_and_destinations(self):
+        book = self.task("import", path=str(self.pdf))
+        pages = [book["pages"][0] | {"id": new_id(), "source_page": 1} for _ in range(12)]
+        book = self.engine.call("document.apply", {"document_id": book["id"], "base_revision": book["revision"],
+            "changes": {"pages": pages, "metadata": {"title": "作品名稱 第01卷"}}})
+        selected = pages[-1]["id"]
+        payload = Path(book["assets"][pages[-1]["asset_id"]]["path"]).read_bytes()
+        params = {"document_id": book["id"], "base_revision": book["revision"], "page_ids": [selected]}
+        name = original_image_name(book, 12)
+        self.assertEqual(name, "作品名稱 第01卷_0012.jpg")
+        target = self.root / name
+        self.task("images.export", path=str(target), **params)
+        self.assertEqual(target.read_bytes(), payload)
+        target.write_bytes(b"keep")
+        self.task("images.export", "failed", path=str(target), **params)
+        self.assertEqual(target.read_bytes(), b"keep")
+        self.task("images.export", path=str(target), overwrite=True, **params)
+        self.assertEqual(target.read_bytes(), payload)
+        self.task("images.export", "failed", path=book["assets"][pages[-1]["asset_id"]]["path"], overwrite=True, **params)
+        result = self.task("images.export", directory=str(self.root), **params)
+        self.assertEqual(Path(result["path"]).name, "作品名稱 第01卷_0012 (2).jpg")
+        archive_path = self.root / "selection.zip"
+        self.task("images.export", path=str(archive_path), **(params | {"page_ids": [selected, pages[0]["id"]]}))
+        with ZipFile(archive_path) as archive:
+            self.assertEqual(archive.namelist(), ["作品名稱 第01卷_0001.jpg", "作品名稱 第01卷_0012.jpg"])
+            self.assertTrue(all(archive.read(name) == payload for name in archive.namelist()))
+        self.task("images.export", "failed", path=str(self.root / "wrong.png"), **params)
+        self.assertFalse((self.root / "wrong.png").exists())
+
+    def test_chapters_survive_projects_history_and_epub_pdf_navigation_roundtrips(self):
+        for identifier in ("org.foluma.export.pdf", "org.foluma.import.epub"):
+            self.engine.plugins.install_bundled(identifier)
+        self.restart()
+        book = self.task("import", path=str(self.pdf))
+        source = self.root / "story.png"
+        Image.new("RGB", (60, 100), "red").save(source)
+        book = self.task("images.import", document_id=book["id"], base_revision=book["revision"], paths=[str(source)], position=1)
+        pages = book["pages"] + [book["pages"][1] | {"id": new_id()}, {"id": new_id(), "kind": "blank", "width": 60, "height": 100}]
+        entries = [{"page_id": pages[3]["id"], "title": "附錄"}, {"page_id": pages[2]["id"], "title": '第一話 & <約定> "再見"'},
+                   {"page_id": pages[0]["id"], "title": "封面"}, {"page_id": pages[3]["id"], "title": "後記"}]
+        book = self.engine.call("document.apply", {"document_id": book["id"], "base_revision": book["revision"], "changes": {
+            "pages": pages, "metadata": {"cover_only": True}, "extensions": {
+                "org.foluma.editor": {"chapters": entries + [None, {"page_id": "gone", "title": "Gone"}]},
+                "org.foluma.page-tools": {"color_checks": [pages[2]["id"]]},
+            }}})
+        expected = chapters(book)
+        undone = self.engine.call("document.undo", {"document_id": book["id"]})
+        self.assertEqual(chapters(undone), [])
+        book = self.engine.call("document.redo", {"document_id": book["id"]})
+        project = self.root / "chapters.mteproj"
+        save_project(self.engine.session.book, project)
+        self.assertEqual(chapters(open_project(project)), expected)
+        self.assertEqual(open_project(project)["extensions"]["org.foluma.page-tools"]["color_checks"], [pages[2]["id"]])
+        epub, pdf = self.root / "chapters.epub", self.root / "chapters.pdf"
+        params = {"document_id": book["id"], "base_revision": book["revision"]}
+        self.task("export", path=str(epub), plugin_id="org.foluma.export.epub", **params)
+        self.task("export", path=str(pdf), plugin_id="org.foluma.export.pdf", **params)
+        with ZipFile(epub) as archive:
+            navigation = ET.fromstring(archive.read("EPUB/nav.xhtml"))
+            toc = next(node for node in navigation.findall(".//{*}nav") if node.get("{http://www.idpf.org/2007/ops}type") == "toc")
+            links = toc.findall(".//{*}a")
+            self.assertEqual([link.text for link in links], ["開始"] + [entry["title"] for entry in expected[1:]])
+            self.assertEqual([link.get("href") for link in links], ["pages/000002.xhtml", "pages/000003.xhtml", "pages/000004.xhtml", "pages/000004.xhtml"])
+        linked_epub = self.root / "external-navigation.epub"
+        with ZipFile(epub) as original, ZipFile(linked_epub, "w") as modified:
+            for member in original.infolist():
+                payload = original.read(member)
+                if member.filename == "EPUB/nav.xhtml":
+                    payload = payload.replace(b"</ol>", b'<li><a href="https://example.test/">External</a></li><li><a href="../../../outside">Outside</a></li></ol>', 1)
+                modified.writestr(member, payload)
+        imported = self.task("import", path=str(linked_epub), background=True)
+        self.assertEqual([entry["title"] for entry in chapters(imported)], [entry["title"] for entry in expected[1:]])
+        with fitz.open(pdf) as document:
+            self.assertEqual(document.get_toc(), [[1, entry["title"], next(i for i, page in enumerate(pages, 1) if page["id"] == entry["page_id"])] for entry in expected])
+        for path, wanted in ((epub, expected[1:]), (pdf, expected)):
+            imported = self.task("import", path=str(path), background=True, render=path.suffix == ".pdf")
+            self.assertEqual([entry["title"] for entry in chapters(imported)], [entry["title"] for entry in wanted])
+            self.assertEqual([next(i for i, page in enumerate(imported["pages"], 1) if page["id"] == entry["page_id"]) for entry in chapters(imported)],
+                             [next(i for i, page in enumerate(pages, 1) if page["id"] == entry["page_id"]) for entry in wanted])
 
     def test_quarter_turns_preserve_originals_and_match_preview_in_all_export_formats(self):
         self.assertEqual(crop_box({'width':1,'height':1,'crop':[0.99,0.99,0.01,0.01]}), (0,0,1,1))
@@ -120,7 +200,7 @@ class FormatPluginTests(unittest.TestCase):
         originals = self.root / 'originals.zip'
         export_images(restored, [page_id], str(originals))
         with ZipFile(originals) as archive:
-            self.assertEqual(archive.read('00001.png'), original)
+            self.assertEqual(archive.read(original_image_name(restored, 2)), original)
         for angle in [True, 90.0, -90, 45, None, '90']:
             pages = copy.deepcopy(restored['pages'])
             pages[1]['rotation'] = angle
@@ -189,7 +269,7 @@ class FormatPluginTests(unittest.TestCase):
         originals = self.root / "fine-originals.zip"
         export_images(reopened, [book["pages"][1]["id"]], str(originals))
         with ZipFile(originals) as archive:
-            self.assertEqual(archive.read("00001.png"), original)
+            self.assertEqual(archive.read(original_image_name(reopened, 2)), original)
         for result in expected:
             result.close()
 

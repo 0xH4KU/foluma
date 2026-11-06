@@ -82,3 +82,10 @@ Removed the optional scan-layout workspace and its unused host APIs, packaging s
 - [x] Share visible-range calculations between the editor and page tools; render only nearby crop-workspace thumbnails.
 - [x] Remove the dedicated local super-resolution benchmarks, models and Python environment from build/ into macOS Trash, retaining the original input PDF.
 - [x] Complete the regression suite, isolated browser checks, builds and Rust validation.
+
+## Review, chapters and original images, 2026-10-30
+
+- [x] Collect attention flags, invalid/misaligned spreads and saved margin-color checks in one page-editor checklist, with page navigation and direct confirmation actions.
+- [x] Compare full source images with edited results in both editing workspaces using a button or hold-O, retaining document history and pending crop drafts.
+- [x] Store flat chapter entries by stable page ID; retain them through reordering, split/restore, projects and undo/redo. Write EPUB navigation and PDF bookmarks, and read local EPUB 3/PDF navigation back into the chapter list.
+- [x] Export one original image directly as JPEG/PNG using the saved book/volume title and current editor page number. Keep ZIP export for multiple images with the same filenames and existing atomic output protections.

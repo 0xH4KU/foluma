@@ -7,7 +7,7 @@ from pathlib import Path
 
 from foluma.i18n import t
 from foluma.media import crop_box, load_asset
-from foluma.model import validate
+from foluma.model import chapters, validate
 from foluma.storage import check_sources
 from PIL import Image
 
@@ -24,6 +24,9 @@ def export_epub(book: dict, path: str, progress=lambda *_: None, *,
     pages = []
     loaded = 0
     meta = book["metadata"]
+    chapter_titles = {}
+    for entry in chapters(book):
+        chapter_titles.setdefault(entry["page_id"], []).append(entry["title"])
     reading = [page for page in book["pages"] if not meta["cover_only"] or page["id"] != meta["cover_id"]]
     positions = {page["id"]: index for index, page in enumerate(reading)}
     review = book["extensions"].get("org.foluma.editor", {})
@@ -87,6 +90,7 @@ def export_epub(book: dict, path: str, progress=lambda *_: None, *,
                 is_spread=page["id"] in joined,
                 background="black" if colors.get(page["id"]) == "black" else "white",
                 no_margins=page["id"] in no_margins,
+                chapter_titles=tuple(chapter_titles.get(page["id"], [])),
             )
         )
     cover = next(p for p in book["pages"] if p["id"] == meta["cover_id"])

@@ -5,6 +5,7 @@ import { Icon } from "../../../sdk/icons";
 import { moveBefore } from "../../../sdk/order";
 import { isPair, navigatePage, pageSize, parseRange, restorePages, rotatePages, spreadPages } from "./pages";
 import { PageImage, Thumbnails, type ViewState } from "./thumbnails";
+import { originalPage } from "../../../sdk/page-layout.ts";
 
 type SelectPage = (id: string, event?: React.MouseEvent) => void;
 type Update = (changes: Changes) => Promise<void>;
@@ -21,6 +22,8 @@ export function EditorToolbar({
   openBatch,
   suggestions,
   openSuggestions,
+  reviewTool,
+  openReviewTool,
 }: {
   book: Book;
   ids: Set<string>;
@@ -33,6 +36,8 @@ export function EditorToolbar({
   openBatch: () => void;
   suggestions: boolean;
   openSuggestions: () => void;
+  reviewTool: "review" | "chapters" | null;
+  openReviewTool: (tool: "review" | "chapters") => void;
 }) {
   return (
     <div className="editor-toolbar">
@@ -43,6 +48,8 @@ export function EditorToolbar({
         </span>
       </div>
       <div className="toolbar-actions">
+        <button aria-expanded={reviewTool === "review"} onClick={() => openReviewTool("review")}>{t("Review checklist…")}</button>
+        <button aria-expanded={reviewTool === "chapters"} onClick={() => openReviewTool("chapters")}>{t("Chapters…")}</button>
         <button aria-expanded={toolsOpen} aria-controls="page-inspector" onClick={toggleTools}>{t("Page tools")}</button>
         <button aria-expanded={suggestions} onClick={openSuggestions}>{t("Blank suggestions…")}</button>
         <button
@@ -233,6 +240,8 @@ export function PreviewPanel({
   splitRatio,
   splitPreview,
   contextMenu,
+  original,
+  toggleOriginal,
 }: {
   book: Book;
   host: HostAPI;
@@ -254,6 +263,8 @@ export function PreviewPanel({
   splitRatio: number;
   splitPreview: boolean;
   contextMenu: (id: string, at: { x: number; y: number }) => void;
+  original: boolean;
+  toggleOriginal: () => void;
 }) {
   const index = current ? book.pages.indexOf(current) : 0;
   const [jump, setJump] = useState<string | null>(null);
@@ -268,7 +279,8 @@ export function PreviewPanel({
     observer.observe(stage.current);
     return () => observer.disconnect();
   }, []);
-  const displayed = spread ? spreadPages(book, current?.id || null, gap) : current ? [current] : [];
+  const displayed = (spread ? spreadPages(book, current?.id || null, gap) : current ? [current] : [])
+    .map(page => page && original ? originalPage(page) : page);
   const aspect = (page: Page) => { const [width, height] = pageSize(page); return width / height; };
   const aspects = displayed.map((page) => (page ? aspect(page) : current ? aspect(current) : 1));
   const totalAspect = aspects.reduce((sum, value) => sum + value, 0) || 1;
@@ -288,6 +300,8 @@ export function PreviewPanel({
     <section className="preview-panel" aria-label={t("Page preview")}>
       <div className="preview-options">
         <strong>{t("Preview")}</strong>
+        <button disabled={!current || current.kind !== "image"} aria-pressed={original} title={t("Show original (hold O)")}
+          onClick={toggleOriginal}>{t("Show original")}</button>
         <div className="segmented">
           <button
             className={!spread ? "active" : ""}
@@ -384,7 +398,7 @@ export function PreviewPanel({
                   host={host}
                   size={1600}
                   splitRatio={
-                    splitPreview &&
+                    !original && splitPreview &&
                     !page.split &&
                     ids.has(page.id) &&
                     splitRatio >= 0.05 &&
@@ -398,7 +412,7 @@ export function PreviewPanel({
               )}
               {page && (
                 <small>
-                  {book.pages.indexOf(page) + 1}
+                  {book.pages.findIndex(candidate => candidate.id === page.id) + 1}
                   {page.source_page
                     ? ` · ${t("Source page {0}", page.source_page)}`
                     : ` · ${page.kind === "blank" ? t("Blank") : t("Inserted image")}`}

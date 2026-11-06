@@ -1,5 +1,6 @@
 import { t } from "../../../sdk/i18n.ts";
-import { REVIEW_EXTENSION_ID, reviewData, spreadMarks, type SpreadMark } from "../../../sdk/review.ts";
+import { REVIEW_EXTENSION_ID, chapters, reviewData, spreadMarks, type SpreadMark } from "../../../sdk/review.ts";
+import { appearanceData } from "../../../sdk/page-layout.ts";
 import type { Book, Changes } from "../../../sdk/types.ts";
 import { readingPages } from "./pages.ts";
 
@@ -52,4 +53,22 @@ export function spreadRecommendations(book: Book, gap: boolean) {
     boundary = spread.end + 1;
   }
   return { spreads, suggestions };
+}
+
+export type ReviewIssue = { kind: "attention" | "spread" | "color" | "chapter"; ids: string[]; message: string };
+
+export function reviewIssues(book: Book): ReviewIssue[] {
+  const flags = new Set(reviewData(book).review), colors = new Set(appearanceData(book).color_checks);
+  const issues: ReviewIssue[] = [];
+  for (const page of book.pages) {
+    if (flags.has(page.id)) issues.push({ kind: "attention", ids: [page.id], message: t("Page needs attention") });
+    if (colors.has(page.id)) issues.push({ kind: "color", ids: [page.id], message: t("Check this page's margin color") });
+  }
+  for (const spread of spreadRecommendations(book, true).spreads) {
+    if (spread.problem || !spread.aligned) issues.push({ kind: "spread", ids: spread.ids,
+      message: spread.problem || t("Add a blank page to align the marked spread before exporting.") });
+  }
+  if (book.metadata.cover_only && chapters(book).some(entry => entry.page_id === book.metadata.cover_id))
+    issues.push({ kind: "chapter", ids: [book.metadata.cover_id!], message: t("Chapters on a bookshelf-only cover are omitted from EPUB navigation.") });
+  return issues;
 }

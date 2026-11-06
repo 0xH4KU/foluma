@@ -98,12 +98,13 @@ small {
   background: var(--paper);
 }
 .editor-toolbar {
+  flex-wrap: wrap;
   min-height: 42px;
   border-bottom: 1px solid var(--line);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 9px;
+  padding: 5px 9px;
   gap: 12px;
   background: linear-gradient(var(--side), var(--paper));
 }
@@ -125,9 +126,21 @@ small {
 }
 .toolbar-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   align-items: center;
 }
+.review-tools { position: absolute; z-index: 4; top: 52px; right: 10px; left: auto; margin: 0; width: 410px; max-width: calc(100% - 20px); max-height: calc(100% - 64px); overflow: auto; padding: 12px; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 5px 20px #0003; }
+.review-tools > header { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; }
+.tool-list { list-style: none; padding: 0; margin: 10px 0 0; }
+.tool-list > li { display: grid; gap: 7px; padding: 10px 0; border-top: 1px solid var(--line); }
+.tool-list > li > button { justify-self: start; }
+.tool-page-links { display: flex; flex-wrap: wrap; gap: 5px; }
+.tool-empty { padding: 16px 0; }
+.chapter-form { display: grid; gap: 8px; margin-top: 12px; }
+.chapter-form label { display: grid; gap: 5px; }
+.chapter-link { max-width: 100%; text-align: left; white-space: normal; overflow-wrap: anywhere; }
+.preview-options button[aria-pressed="true"] { border-color: var(--accent); background: var(--hover); }
 .divider {
   height: 21px;
   width: 1px;

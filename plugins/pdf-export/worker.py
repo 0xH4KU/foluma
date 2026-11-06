@@ -5,7 +5,7 @@ import io
 import pymupdf as fitz
 from foluma.i18n import t
 from foluma.media import crop_box, load_asset
-from foluma.model import validate
+from foluma.model import chapters, validate
 from foluma.worker import run_plugin
 from PIL import Image
 
@@ -42,6 +42,8 @@ def handle(operation: str, params: dict, book: dict | None, progress):
                 placement = fitz.Rect(-left, -top, page["width"] - left, page["height"] - top) * scale
                 references[asset_id] = output.insert_image(placement, stream=payload, xref=reference, keep_proportion=False)
             progress(number, len(book["pages"]), t("Writing PDF pages"))
+        positions = {page["id"]: number for number, page in enumerate(book["pages"], 1)}
+        document.set_toc([[1, entry["title"], positions[entry["page_id"]]] for entry in chapters(book)])
         document.save(params["path"], garbage=4, deflate=True)
     return {"total": len(book["pages"])}
 

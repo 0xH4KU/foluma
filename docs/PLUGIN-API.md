@@ -39,6 +39,10 @@ Shared frontend helpers live in `sdk/order.ts` (stable item moves), `sdk/batch.t
 
 Review marks are a shared document contract: `ReviewData` in `sdk/types.ts`, with normalization in `sdk/review.ts` and `foluma.model.review_page_ids`. API 1 retains the historical `extensions["org.foluma.editor"].review` storage key so existing plugins and saved projects remain compatible. The value is a list of page IDs; duplicates, non-string values and IDs absent from the current pages are ignored. Other extension fields are preserved. Editors use this contract to write marks, and the project engine uses it to count pending attention and require explicit review confirmation.
 
+`extensions["org.foluma.editor"].chapters` is a flat list of `{page_id, title}` entries, normalized by `sdk/review.ts` and `foluma.model.chapters`. Titles must be nonempty strings of at most 4096 characters; invalid entries, stale page IDs and exact duplicates are ignored. Entries are read in current page order. Remapping assigns a split page's chapters to its first half in reading order and retains titles from both halves on restoration. EPUB navigation excludes a bookshelf-only cover; PDF bookmarks retain all pages.
+
+`extensions["org.foluma.page-tools"].color_checks` stores image page IDs awaiting margin-color confirmation. Apply retains these checks; a manual White/Black choice clears its page. The shared appearance remapper carries checks through split/restore/presets. Unknown extension fields remain intact.
+
 | RPC | Parameters / result |
 | --- | --- |
 | `document.get` | Current snapshot or `null` |
@@ -65,7 +69,7 @@ Review marks are a shared document contract: `ReviewData` in `sdk/types.ts`, wit
 | `document.release` | `document_id`; releases a background document after batch processing |
 | `app.locale` | Optional `code`; reads or persists the active interface language and returns available languages and messages |
 | `plugins.bundled`, `plugins.install_bundled` | List included offline packages or install one by `id` |
-| `document.preview` | `document_id`, `page_id`, `size` (64–2048), optional draft `crop`, `deskew` and `background` (`black` or `white`); managed resource path without document edits |
+| `document.preview` | `document_id`, `page_id`, `size` (64–2048), optional draft `crop`, `rotation` (0/90/180/270), `deskew` and `background` (`black` or `white`); managed resource path without document edits |
 | `project.open` | `path` to a `.mteproj` directory |
 | `project.save` | Document reference + `path` |
 | `project.relink` | Document reference + `source_id`, `path`; SHA-256 must match |
@@ -84,7 +88,7 @@ Managed projects automatically preparse unsaved books with rendering disabled. C
 | `series.open` | `entry_id`; opens its saved project or imports it lazily; accepts the same `render`, `dpi` and `background` options as import |
 | `export` | Document reference + output `path`, `overwrite`, optional `plugin_id` and opaque `options`; or `directory` for automatic naming with no overwrites. Directory exports require `plugin_id` when multiple exporters are active |
 | `images.import` | Document reference + image `paths`, zero-based insertion `position` |
-| `images.export` | Document reference + `page_ids`, `.zip` `path`, `overwrite`; full original images |
+| `images.export` | Document reference + `page_ids`, `path`, `overwrite`; one image accepts its original `.jpg`/`.png` extension, or `.zip` for one/many images. ZIP entries use the book title and current editor page numbers. Existing ZIP callers remain supported. |
 | `plugin` | Document reference + active `plugin_id`, opaque `input` |
 
 ## Plugin tool windows

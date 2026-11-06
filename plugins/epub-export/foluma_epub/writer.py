@@ -38,6 +38,7 @@ class EpubPage:
     is_spread: bool = False
     background: str = "white"
     no_margins: bool = False
+    chapter_titles: tuple[str, ...] = ()
 
     def load_image_data(self) -> bytes:
         if self.image_data_loader is not None:
@@ -389,6 +390,12 @@ def _nav_xhtml(
     if cover_page is not None:
         landmarks.append(f'        <li><a epub:type="cover" href="{cover_page.xhtml_href}">{cover_label}</a></li>')
     landmarks.append(f'        <li><a epub:type="bodymatter" href="{body_page.xhtml_href}">{body_label}</a></li>')
+    contents = [(page, label) for page in pages for label in page.chapter_titles]
+    links = []
+    if not contents or contents[0][0] != first_page:
+        links.append(f'        <li><a href="{first_page.xhtml_href}" data-foluma-start="true">{start_label}</a></li>')
+    links.extend(f'        <li><a href="{page.xhtml_href}">{html.escape(label)}</a></li>' for page, label in contents)
+    toc = "\n".join(links)
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="{language_xml}" xml:lang="{language_xml}">
@@ -399,7 +406,7 @@ def _nav_xhtml(
     <nav epub:type="toc" id="toc">
       <h1>{title_xml}</h1>
       <ol>
-        <li><a href="{first_page.xhtml_href}">{start_label}</a></li>
+{toc}
       </ol>
     </nav>
     <nav epub:type="landmarks" hidden="hidden">

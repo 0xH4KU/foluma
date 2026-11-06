@@ -159,6 +159,15 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(len({result, white, opposite}), 3)
         self.assertEqual(engine.session.book, book)
         self.assertFalse(engine.session.undo_stack)
+        original_preview = engine.call("document.preview", params | {"crop": [0, 0, 1, 1], "rotation": 0, "deskew": 0})
+        with Image.open(io.BytesIO(load_asset(book, page["asset_id"]))) as source:
+            with Image.open(engine.data / original_preview) as actual:
+                self.assertEqual(actual.size, source.size)
+                self.assertEqual(actual.tobytes(), source.tobytes())
+        self.assertEqual(engine.session.book, book)
+        for rotation in (True, None, "90", 90.0, -90, 45):
+            with self.assertRaises(ValueError):
+                engine.call("document.preview", params | {"rotation": rotation})
         for angle in (True, None, "1", float("nan"), float("inf"), -10.1, 10.1):
             with self.subTest(angle=angle):
                 with self.assertRaises(ValueError):

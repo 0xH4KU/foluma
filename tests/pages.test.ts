@@ -7,6 +7,7 @@ import {
   findSpreadsToSplit,
   insertBlankPage,
   navigatePage,
+  originalImageName,
   pageSize,
   parseRange,
   restorePages,
@@ -16,8 +17,8 @@ import {
   spreadPages,
 } from "../plugins/editor/src/pages.ts";
 import { moveBefore } from "../sdk/order.ts";
-import { REVIEW_EXTENSION_ID, reviewData } from "../sdk/review.ts";
-import { setSpreadMarks, spreadMarks, spreadRecommendations, toggleSpreadMark } from "../plugins/editor/src/spreads.ts";
+import { REVIEW_EXTENSION_ID, chapters, reviewData } from "../sdk/review.ts";
+import { reviewIssues, setSpreadMarks, spreadMarks, spreadRecommendations, toggleSpreadMark } from "../plugins/editor/src/spreads.ts";
 import { PAGE_TOOLS_ID, appearanceData, pageColors, pagesWithoutMargins } from "../sdk/page-layout.ts";
 
 function fixture(count = 4): Book {
@@ -57,6 +58,61 @@ function fixture(count = 4): Book {
     project_path: null,
   };
 }
+
+test("original image names use the volume title and current page number after reordering", () => {
+  const book = fixture(12);
+  book.metadata.title = "作品名稱 第01卷";
+  assert.equal(originalImageName(book, book.pages[11]), "作品名稱 第01卷_0012.jpg");
+  const moved = book.pages.pop()!;
+  book.pages.unshift(moved);
+  assert.equal(originalImageName(book, moved), "作品名稱 第01卷_0001.jpg");
+  book.metadata.title = " A/B:C?. ";
+  assert.equal(originalImageName(book, moved), "A_B_C__0001.jpg");
+});
+
+test("chapters follow page order, splits, restoration and preset remapping without duplicating split labels", () => {
+  const book = fixture();
+  book.extensions[REVIEW_EXTENSION_ID] = { review: [], chapters: [
+    { page_id: "page-4", title: "附錄" }, { page_id: "page-2", title: "第一話" },
+    { page_id: "page-2", title: "第一話" }, { page_id: "gone", title: "Gone" },
+    null, { page_id: "page-1", title: " " }, { page_id: "page-3", title: 5 },
+  ] };
+  assert.deepEqual(chapters(book).map(entry => entry.title), ["第一話", "附錄"]);
+  const replace = (before: Book, changes: ReturnType<typeof splitPages>): Book => ({ ...before,
+    pages: changes.pages!, metadata: { ...before.metadata, ...changes.metadata },
+    extensions: { ...before.extensions, ...changes.extensions },
+  });
+  const split = replace(book, splitPages(book, new Set(["page-2"])));
+  const halves = split.pages.filter(page => page.split);
+  assert.deepEqual(chapters(split)[0], { page_id: halves[0].id, title: "第一話" });
+  (split.extensions[REVIEW_EXTENSION_ID] as {chapters: unknown[]}).chapters.push({ page_id: halves[1].id, title: "插頁" });
+  const restored = replace(split, restorePages(split, new Set([halves[0].id])));
+  assert.deepEqual(chapters(restored).slice(0, 2), [
+    { page_id: "page-2", title: "第一話" }, { page_id: "page-2", title: "插頁" },
+  ]);
+  restored.pages.reverse();
+  assert.equal(chapters(restored)[0].title, "附錄");
+  const applied = replace(book, applyPreset(book, createPreset(book).payload, {}));
+  assert.deepEqual(chapters(applied), [
+    { page_id: applied.pages[1].id, title: "第一話" }, { page_id: applied.pages[3].id, title: "附錄" },
+  ]);
+});
+
+test("the review checklist combines marks, saved color checks and exported spread alignment", () => {
+  const book = fixture();
+  book.extensions[REVIEW_EXTENSION_ID] = { review: ["page-4"], spreads: [["page-1", "page-2"]] };
+  book.extensions[PAGE_TOOLS_ID] = { color_checks: ["page-3", "page-3", "gone"] };
+  const issues = reviewIssues(book);
+  assert.deepEqual(issues.map(issue => issue.kind).sort(), ["attention", "color", "spread"]);
+  assert.equal(issues.find(issue => issue.kind === "spread")?.message, "Add a blank page to align the marked spread before exporting.");
+  const changes = splitPages(book, new Set(["page-3"]));
+  const split = { ...book, pages: changes.pages!, extensions: { ...book.extensions, ...changes.extensions } };
+  assert.equal(appearanceData(split).color_checks.length, 2);
+  const restore = restorePages(split, new Set([split.pages[2].id]));
+  assert.deepEqual(appearanceData({ ...split, pages: restore.pages!, extensions: { ...split.extensions, ...restore.extensions } }).color_checks, ["page-3"]);
+  book.pages = book.pages.slice(1);
+  assert.match(reviewIssues(book).find(issue => issue.kind === "spread")!.message, /removed or split/);
+});
 
 test("page replacement preserves review, appearance, split restoration and portable spread marks together", () => {
   const book = fixture();

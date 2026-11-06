@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import io
+import re
 from contextlib import nullcontext
 from pathlib import Path
 from zipfile import ZIP_STORED, ZipFile
@@ -141,14 +142,35 @@ def import_images(paths: list[str], directory: Path) -> dict:
     return {"assets": assets, "pages": pages}
 
 
-def export_images(book: dict, page_ids: list[str], path: str, progress=lambda *_: None) -> dict:
-    selected = [p for p in book["pages"] if p["id"] in page_ids and p["kind"] == "image"]
+def original_image_pages(book: dict, page_ids: list[str]) -> list[dict]:
+    if not isinstance(page_ids, list) or not all(isinstance(identifier, str) for identifier in page_ids):
+        raise ValueError(t("Select at least one image"))
+    identifiers = set(page_ids)
+    selected = [p for p in book["pages"] if p["id"] in identifiers and p["kind"] == "image"]
     if not selected:
         raise ValueError(t("Select at least one image"))
+    return selected
+
+
+def original_image_name(book: dict, number: int) -> str:
+    page = book["pages"][number - 1]
+    stem = re.sub(r'[\x00-\x1f<>:"/\\|?*]', "_", book["metadata"]["title"]).strip().rstrip(". ")[:60] or "book"
+    return f"{stem}_{number:04d}.{book['assets'][page['asset_id']]['ext']}"
+
+
+def export_images(book: dict, page_ids: list[str], path: str, progress=lambda *_: None) -> dict:
+    selected = original_image_pages(book, page_ids)
     check_sources(book, {p["asset_id"] for p in selected})
+    if Path(path).suffix.lower() != ".zip":
+        if len(selected) != 1 or Path(path).suffix.lower() != f".{book['assets'][selected[0]['asset_id']]['ext']}":
+            raise ValueError(t("Choose the original image format or a ZIP archive"))
+        with Path(path).open("xb") as output:
+            output.write(load_asset(book, selected[0]["asset_id"]))
+        progress(1, 1, t("Exporting original images"))
+        return {"total": 1}
     with ZipFile(path, "x", compression=ZIP_STORED) as archive:
+        positions = {page["id"]: number for number, page in enumerate(book["pages"], 1)}
         for i, page in enumerate(selected, 1):
-            asset = book["assets"][page["asset_id"]]
-            archive.writestr(f"{i:05d}.{asset['ext']}", load_asset(book, page["asset_id"]))
+            archive.writestr(original_image_name(book, positions[page["id"]]), load_asset(book, page["asset_id"]))
             progress(i, len(selected), t("Exporting original images"))
     return {"total": len(selected)}

@@ -1,4 +1,4 @@
-import { REVIEW_EXTENSION_ID, reviewData, spreadMarks } from "./review.ts";
+import { REVIEW_EXTENSION_ID, chapters, reviewData, spreadMarks } from "./review.ts";
 import type { Book, Page } from "./types.ts";
 
 export const PAGE_TOOLS_ID = "org.foluma.page-tools";
@@ -25,7 +25,9 @@ export function appearanceData(book: Book) {
     ? Object.fromEntries(Object.entries(data.colors).filter(([id, color]) =>
       pages.has(id) && (color === "white" || color === "black"))) as Record<string, PageColor> : {};
   const ids = new Set(Array.isArray(data.no_margins) ? data.no_margins : []);
-  return { ...data, colors, no_margins: [...pages].filter(id => ids.has(id)) };
+  const checks = new Set(Array.isArray(data.color_checks) ? data.color_checks : []);
+  return { ...data, colors, no_margins: [...pages].filter(id => ids.has(id)),
+    color_checks: book.pages.filter(page => page.kind === "image" && checks.has(page.id)).map(page => page.id) };
 }
 
 export function pageColors(book: Book): Record<string, PageColor> {
@@ -52,6 +54,10 @@ export function remapPageData(book: Book, pages: Page[], origins: Map<string, st
     extensions[REVIEW_EXTENSION_ID] = {
       ...data,
       review: pages.filter(page => (origins.get(page.id) || [page.id]).some(id => marked.has(id))).map(page => page.id),
+      ...(Array.isArray(data.chapters) ? { chapters: chapters(book).flatMap(entry => {
+        const page_id = targets.get(entry.page_id)?.[0];
+        return page_id ? [{ ...entry, page_id }] : [];
+      }) } : {}),
       ...(Array.isArray(data.spreads) ? { spreads: spreadMarks(book).map(pair => {
         const mapped = pair.map(id => targets.get(id)?.length === 1 ? targets.get(id)![0] : id);
         return mapped[0] === mapped[1] ? pair : mapped;
@@ -70,8 +76,11 @@ export function remapPageData(book: Book, pages: Page[], origins: Map<string, st
       if (original ? savedMargins.has(original) : ids.some(id => savedMargins.has(id))) noMargins.add(page.id);
       else noMargins.delete(page.id);
     }
+    const checks = new Set(data.color_checks);
     extensions[PAGE_TOOLS_ID] = appearanceData({ ...book, pages,
-      extensions: { ...book.extensions, [PAGE_TOOLS_ID]: { ...data, colors, no_margins: [...noMargins] } } });
+      extensions: { ...book.extensions, [PAGE_TOOLS_ID]: { ...data, colors, no_margins: [...noMargins],
+        color_checks: pages.filter(page => (origins.get(page.id) || [page.id]).some(id => checks.has(id))).map(page => page.id),
+      } } });
   }
   return extensions;
 }
@@ -88,6 +97,10 @@ export function cropBox(page: Page): [number, number, number, number] {
 export function pageSize(page: Page): [number, number] {
   const [left, top, right, bottom] = cropBox(page), width = right - left, height = bottom - top;
   return (page.rotation || 0) % 180 ? [height, width] : [width, height];
+}
+
+export function originalPage(page: Page): Page {
+  return page.kind === "image" ? { ...page, crop: [0, 0, 1, 1], rotation: 0, deskew: 0 } : page;
 }
 
 export function cropViewBox(base: Page, edited: Page): [number, number, number, number] {

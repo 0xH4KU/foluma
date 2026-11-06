@@ -66,6 +66,23 @@ def review_page_ids(book: dict) -> set[str]:
     return {mark for mark in marks if isinstance(mark, str) and mark in pages} if isinstance(marks, list) else set()
 
 
+def chapters(book: dict) -> list[dict]:
+    data = book["extensions"].get(REVIEW_EXTENSION_ID, {})
+    entries = data.get("chapters", []) if isinstance(data, dict) else []
+    positions = {page["id"]: index for index, page in enumerate(book["pages"])}
+    result, seen = [], set()
+    for entry in entries if isinstance(entries, list) else []:
+        if (not isinstance(entry, dict) or not isinstance(entry.get("page_id"), str)
+                or entry["page_id"] not in positions or not isinstance(entry.get("title"), str)
+                or not entry["title"].strip() or len(entry["title"]) > 4096):
+            continue
+        key = entry["page_id"], entry["title"]
+        if key not in seen:
+            seen.add(key)
+            result.append({"page_id": entry["page_id"], "title": entry["title"]})
+    return sorted(result, key=lambda entry: positions[entry["page_id"]])
+
+
 def validate_metadata(meta: dict) -> None:
     if not isinstance(meta, dict):
         raise ValueError(t("Invalid book metadata"))

@@ -188,6 +188,11 @@ def import_pdf(path: str, asset_dir: Path, render: bool = False, dpi: int | str 
                 book["assets"][asset_id] = asset
                 book["pages"].append(image_page(asset_id, asset, i + 1))
             progress(i + 1, len(doc), t("Preparing pages"))
+        entries = [{"page_id": book["pages"][number - 1]["id"], "title": title}
+                   for _level, title, number in doc.get_toc()
+                   if 1 <= number <= len(book["pages"]) and isinstance(title, str) and title.strip() and len(title) <= 4096]
+        if entries:
+            book["extensions"]["org.foluma.editor"] = {"chapters": entries}
     if digest(source) != fingerprint:
         raise ValueError(t("PDF changed during import. Please try again."))
     validate(book)

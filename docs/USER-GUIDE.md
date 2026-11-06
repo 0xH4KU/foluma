@@ -104,6 +104,14 @@ Editor 0.4.9 also carries confirmed margin colors, per-page margin exceptions an
 
 **Simulate leading blank** previews the page pairing used by readers such as Apple Books. It does not insert a blank into the document or exported EPUB.
 
+**Review checklist…** in the page-editor toolbar collects attention marks, unresolved margin-color checks and invalid or misaligned spreads for the current book. Click a page number to inspect it, clear attention marks after checking, or confirm White/Black directly in the list. Spread checks use the actual EPUB export pairing, independently of the preview's leading-blank switch. Uncertain colors are retained after Apply, saving and reopening; edits support undo/redo.
+
+**Show original** in the page editor or Crop and margins switches the preview to the full source image before cropping, splitting and rotation. Press and hold **O** while the workspace has focus to compare temporarily; release it to return. Source comparison leaves saved edits and crop drafts intact. Crop handles and fields are disabled while viewing the original.
+
+**Chapters…** opens the current book's chapter list. Select a page, enter a chapter title and choose **Add chapter**. Click an entry to jump to its page, or use Rename/Remove. Chapters follow stable page IDs through reordering; splitting moves a chapter to the first half in reading order, and restoring a split retains its chapter titles. Project storage and undo/redo retain chapters. EPUB exports write chapter navigation; PDF exports write bookmarks. A bookshelf-only cover's chapter is omitted from EPUB navigation and appears in the review checklist. EPUB 3 navigation and local PDF bookmarks are retained on import as a flat list; nested chapter levels are flattened.
+
+**Export originals…** saves one selected image directly as its original JPEG or PNG, preserving its bytes. The suggested filename uses the saved book title (including any volume suffix) and its current editor page number, for example `作品名稱 第01卷_0012.jpg`. Several selected image pages produce a ZIP whose image filenames use the same book title and actual page numbers, rather than restarting at 1. Blank pages are skipped; split pages export their complete source image. The save dialog retains overwrite confirmation and source-file protection.
+
 | Action | Shortcut |
 | --- | --- |
 | Import book | ⌘O |

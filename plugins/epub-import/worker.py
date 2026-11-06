@@ -330,14 +330,32 @@ def handle(operation: str, params: dict, book: dict | None, progress):
                    if a["id"] in spread_ids and b["id"] in spread_ids]
         if spreads:
             book["extensions"]["org.foluma.editor"] = {"spreads": spreads}
+        page_ids = {member: candidate["id"] for member, candidate in zip(members, book["pages"])}
+        chapters = []
         cover_document = next((reference(package_member, item.get("href", "")) for item in
                                package.findall(f"{OPF}guide/{OPF}reference") if item.get("type") == "cover"), None)
         for member, item in resources.items():
-            if "nav" in item.get("properties", "").split() and not cover_document:
+            if "nav" in item.get("properties", "").split():
                 navigation = xml(archive, member, html=True)
-                cover_document = next((reference(member, link.get("href", "")) for navigation_list in
+                cover_document = cover_document or next((reference(member, link.get("href", "")) for navigation_list in
                                        navigation.findall(".//{*}nav") if "landmarks" in navigation_list.get(EPUB_TYPE, "").split()
                                        for link in navigation_list.findall(".//{*}a") if "cover" in link.get(EPUB_TYPE, "").split()), None)
+                for navigation_list in navigation.findall(".//{*}nav"):
+                    if "toc" not in navigation_list.get(EPUB_TYPE, "").split():
+                        continue
+                    links = navigation_list.findall(".//{*}a")
+                    for link in links:
+                        if link.get("data-foluma-start") == "true":
+                            continue
+                        title = "".join(link.itertext()).strip()
+                        try:
+                            target = reference(member, link.get("href", ""))
+                        except ValueError:
+                            continue
+                        if target in page_ids and title and len(title) <= 4096:
+                            chapters.append({"page_id": page_ids[target], "title": title})
+        if chapters:
+            book["extensions"].setdefault("org.foluma.editor", {})["chapters"] = chapters
         cover_image = next((member for member, item in resources.items() if "cover-image" in item.get("properties", "").split()), None)
         legacy_cover = metadata.find(f"{OPF}meta[@name='cover']")
         if not cover_image and legacy_cover is not None:

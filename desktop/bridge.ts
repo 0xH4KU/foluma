@@ -144,7 +144,7 @@ export async function task<T>(params: Record<string, unknown>, signal?: AbortSig
 }
 const preview = createPreviewLoader((current, page, size) =>
   rpc<string>("document.preview", {document_id: current.id, page_id: page.id, size,
-    ...(page.kind === "image" ? {crop: page.crop || [0, 0, 1, 1], deskew: page.deskew || 0, background: pageBackground(current, page.id)} : {}),
+    ...(page.kind === "image" ? {crop: page.crop || [0, 0, 1, 1], rotation: page.rotation || 0, deskew: page.deskew || 0, background: pageBackground(current, page.id)} : {}),
   }).then(resourceUrl));
 export function createWorkspaceHost(host: HostAPI, visible: () => boolean): HostAPI {
   return { ...host, onFileDrop: listener => host.onFileDrop?.(paths => {
