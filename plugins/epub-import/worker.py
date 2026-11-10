@@ -40,6 +40,7 @@ def check_style(style, member):
         "vertical-align": {"middle", "top", "bottom"}, "box-sizing": {"border-box", "content-box"},
         "color": {"#000", "#000000", "black", "#fff", "#ffffff", "white"},
         "white-space": {"normal", "nowrap"},
+        "margin": {"0 auto"},
         "color-scheme": {"normal", "light", "dark", "light dark", "dark light"},
         "page-break-before": {"always", "auto", "avoid"}, "page-break-after": {"always", "auto", "avoid"},
     }

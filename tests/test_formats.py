@@ -865,10 +865,10 @@ class FormatPluginTests(unittest.TestCase):
             h1 {font-size:100%; font-weight:normal;}
             input,textarea,select {*font-size:100%;}
             q:before,q:after {content:'';}
-            div.fs {text-align:center; vertical-align:top; border:0;}
+            div.fs {margin:0 auto; text-align:center; vertical-align:top; border:0;}
             div.fs a {display:block;}
             div.fs div {white-space:nowrap;}
-            img.singlePage {margin:0; text-align:center; vertical-align:top;}
+            img.singlePage {margin:0 auto; text-align:center; vertical-align:top;}
             img.singlePage.other, #unused {display:none;}
             @media screen and (min-width:1000px) {
                 @media (max-height:1000px) {img.twoPage {transform:rotate(90deg); max-width:75%;}}
@@ -928,6 +928,8 @@ class FormatPluginTests(unittest.TestCase):
                     stylesheet + 'img::before {content:"visible text";}',
                     stylesheet + '.unused, img {transform:rotate(90deg);}',
                     stylesheet + '@media screen {img {display:none;}}',
+                    stylesheet + 'img {margin:1px auto;}',
+                    stylesheet + 'img {padding:0 auto;}',
                     stylesheet + 'img {max-height:0px;}', stylesheet + '}'):
             with self.subTest(css=css):
                 invalid = self.root / "complex.epub"
