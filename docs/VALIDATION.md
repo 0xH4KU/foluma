@@ -1,5 +1,13 @@
 # Foluma 0.1 validation
 
+## Foluma 0.1.3 release and centered EPUB pages (2026-11-10)
+
+All 97 Python tests and 55 TypeScript tests pass, together with Ruff, synchronized app/engine version checks, strict TypeScript, the desktop/editor/page-tools production builds and whitespace checks. The shared comic EPUB fixture now uses `margin: 0 auto` on both its page wrapper and image, while nonzero margins and invalid automatic padding remain rejected. A project cache test now waits for completed import threads to finish cleanup before asserting that unused cached assets can be deleted; protection for active workers is unchanged.
+
+The macOS arm64 app, DMG, ten native plugin packages and release catalog were rebuilt for 0.1.3. Strict deep signature verification passes; the app retains its ad-hoc signature and hardened runtime without notarization. Package ZIP integrity, native worker permissions, catalog hashes, the DMG checksum and bundled plugin versions pass verification.
+
+The rebuilt app's frozen engine ran from `/tmp` with an isolated temporary profile, a system-only executable search path and no Python environment overrides. It reported 0.1.3, installed the three default plugins without errors and loaded EPUB import 0.1.9 after restart. A supplied 152-page image EPUB imported in spine order with its first-page cover, original image bytes and source file unchanged. First, middle and last previews loaded, and its native EPUB exporter produced a valid 152-page EPUB. Both engine instances shut down cleanly. Native UI interactions, installation dialogs and external reading applications were not manually rechecked for this release.
+
 ## Review, chapters and original-image export (2026-10-30)
 
 All 97 Python tests and 55 TypeScript tests pass, along with Ruff, strict TypeScript including unused-symbol checks, the desktop/editor/page-tools builds and whitespace checks. Regressions cover direct original-image bytes, book/volume titles and current page numbers, ZIP filenames, overwrite/source protection, transient original previews, chapter ordering and split/restore/preset remapping, saved color checks, project/history retention and EPUB/PDF chapter navigation round-trips. EPUB imports ignore navigation destinations outside supported local pages; chapter titles containing XML punctuation and Chinese text retain their labels and destinations.

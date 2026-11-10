@@ -836,7 +836,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(process.returncode, 0, stderr)
         response = json.loads(stdout)
         self.assertEqual(response["id"], 1)
-        self.assertEqual(response["result"]["version"], "0.1.2")
+        self.assertEqual(response["result"]["version"], "0.1.3")
 
     def test_series_independent_edits_review_export_and_restart(self):
         folder = self.root / "Series"
