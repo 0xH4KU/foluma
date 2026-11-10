@@ -710,6 +710,9 @@ class FolderProjectTests(unittest.TestCase):
     def test_saved_project_survives_cache_clear_restart_and_missing_source(self):
         item = self.create()['items'][0]
         book = self.task('series.open', entry_id=item['id'])
+        for thread in list(self.engine.threads):
+            thread.join(5)
+            self.assertFalse(thread.is_alive())
         cached = list((self.root / 'data/assets').iterdir())
         self.assertTrue(cached)
         self.assertGreater(self.call('storage.clear')['freed'], 0)
