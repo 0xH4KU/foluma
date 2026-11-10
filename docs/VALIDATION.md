@@ -6,6 +6,8 @@ All 97 Python tests and 55 TypeScript tests pass, together with Ruff, synchroniz
 
 The macOS arm64 app, DMG, ten native plugin packages and release catalog were rebuilt for 0.1.3. Strict deep signature verification passes; the app retains its ad-hoc signature and hardened runtime without notarization. Package ZIP integrity, native worker permissions, catalog hashes, the DMG checksum and bundled plugin versions pass verification.
 
+The GitHub Actions workflow now uses `macos-15`. The initial release checks could not start because GitHub retired its `macos-14` runners on November 2, 2026.
+
 The rebuilt app's frozen engine ran from `/tmp` with an isolated temporary profile, a system-only executable search path and no Python environment overrides. It reported 0.1.3, installed the three default plugins without errors and loaded EPUB import 0.1.9 after restart. A supplied 152-page image EPUB imported in spine order with its first-page cover, original image bytes and source file unchanged. First, middle and last previews loaded, and its native EPUB exporter produced a valid 152-page EPUB. Both engine instances shut down cleanly. Native UI interactions, installation dialogs and external reading applications were not manually rechecked for this release.
 
 ## Review, chapters and original-image export (2026-10-30)
